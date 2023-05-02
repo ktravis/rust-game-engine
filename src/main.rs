@@ -1,11 +1,15 @@
 use color::Color;
+use image::{DynamicImage, RgbaImage};
 use miniquad::*;
+use msdfgen::Vector2;
 use std::{path::Path, time::Duration};
+use transform::Transform2D;
 
 mod assets;
 mod atlas;
 mod color;
 mod default_shader;
+mod font;
 mod geom;
 mod inputs;
 mod mesh;
@@ -13,6 +17,7 @@ mod model;
 mod renderer;
 mod resources;
 mod sprite;
+mod text_shader;
 mod transform;
 
 use assets::{Assets, SpriteRef};
@@ -20,7 +25,7 @@ use assets::{Assets, SpriteRef};
 use geom::Point;
 use renderer::{DisplayMode, InstanceData, RenderPassOptions, Renderer};
 
-use glam::{vec3, Mat4, Quat, Vec2};
+use glam::{vec2, vec3, Mat4, Quat, Vec2, Vec3};
 
 const WINDOW_DIM: Point = Point { x: 960, y: 720 };
 const TARGET_FRAMERATE: u64 = 60;
@@ -32,7 +37,7 @@ struct Stage {
     input_axis_x: inputs::BindingRef,
     input_axis_y: inputs::BindingRef,
     xy: Vec2,
-    t: Texture,
+    sprite_atlas_texture: Texture,
     assets: Assets,
     frame_index: usize,
     s: SpriteRef,
@@ -47,6 +52,7 @@ struct Stage {
     crate_texture: Texture,
     render_target_size_px: Point<u32>,
     angle: f32,
+    render_scale: f32,
 }
 
 impl Stage {
@@ -72,11 +78,11 @@ impl Stage {
 
         let assets = Assets::new(Path::new("./res"));
 
-        let t = resources::texture_from_image(ctx, assets.atlas.image().clone());
+        let sprite_atlas_texture = resources::texture_from_image(ctx, assets.atlas.image());
 
         let crate_texture = resources::texture_from_image(
             ctx,
-            image::open(Path::new("res/images/crate.png"))
+            &image::open(Path::new("res/images/crate.png"))
                 .unwrap()
                 .into_rgba8(),
         );
@@ -119,6 +125,10 @@ impl Stage {
             .with_keys(KeyCode::W, KeyCode::S)
             .with_keys(KeyCode::Up, KeyCode::Down)
             .register();
+        input
+            .new_axis("scale")
+            .with_keys(KeyCode::F, KeyCode::R)
+            .register();
         input.register_new_button("quit", &[KeyCode::Escape]);
         input.register_new_button("next", &[KeyCode::P]);
         input.register_new_button("add", &[KeyCode::O]);
@@ -140,7 +150,7 @@ impl Stage {
             input_axis_y,
             camera_offset: Default::default(),
             xy: Vec2::default(),
-            t,
+            sprite_atlas_texture,
             assets,
             frame_index: 0,
             s,
@@ -152,6 +162,7 @@ impl Stage {
             crate_texture,
             render_target_size_px,
             angle: 0.,
+            render_scale: 1.,
         }
     }
 
@@ -161,7 +172,8 @@ impl Stage {
 
     fn update(&mut self, ctx: &mut GraphicsContext) -> bool {
         if self.assets.check_for_updates() {
-            self.t = resources::texture_from_image(ctx, self.assets.atlas.image().clone());
+            self.sprite_atlas_texture =
+                resources::texture_from_image(ctx, self.assets.atlas.image());
         }
 
         self.input.update();
@@ -170,8 +182,11 @@ impl Stage {
             return false;
         }
 
-        self.xy.x += 50. * self.delta * self.input.axis(self.input_axis_x).value();
-        self.xy.y += 50. * self.delta * self.input.axis(self.input_axis_y).value();
+        self.xy.x += 100. * self.delta * self.input.axis(self.input_axis_x).value();
+        self.xy.y += 100. * self.delta * self.input.axis(self.input_axis_y).value();
+        self.render_scale = (self.render_scale
+            + 20. * self.delta * self.input.axis_by_name("scale").value())
+        .clamp(0.5, 40.);
 
         if self.input.button_by_name("next").just_pressed() {
             self.frame_index = (self.frame_index + 1) % self.assets.get_sprite(self.s).frames.len();
@@ -202,7 +217,7 @@ impl Stage {
                 .renderer
                 .begin_offscreen_pass(ctx, RenderPassOptions::clear(Color::from(0x3f3f74ffu32)));
             r.push_transform(Mat4::from_translation(self.camera_offset.extend(1.0)));
-            r.set_texture(self.t);
+            r.set_texture(self.sprite_atlas_texture);
 
             let s = self.assets.get_sprite(self.s);
             let offset = Point::new(self.xy.x.floor() as _, self.xy.y.floor() as _);
@@ -238,6 +253,48 @@ impl Stage {
                 },
                 ..Default::default()
             });
+        }
+
+        {
+            let s = "abcdefghijkl";
+            let scale = self.render_scale.clamp(1., 20.);
+            let glyphs = s
+                .chars()
+                .map(|c| (self.renderer.font_atlas.glyph_data(c)))
+                .collect::<Vec<font::GlyphData>>();
+            let mut r = self.renderer.begin_text_pass(
+                ctx,
+                PassAction::Clear {
+                    color: None,
+                    depth: Some(1.),
+                    stencil: None,
+                },
+                Mat4::IDENTITY,
+                glam::Mat4::orthographic_lh(
+                    0.0,
+                    WINDOW_DIM.x as f32,
+                    WINDOW_DIM.y as f32,
+                    0.0,
+                    1.0,
+                    -1.0,
+                ),
+            );
+            let mut pos = glam::vec2(15. + self.xy.x, 430. + self.xy.y);
+            for glyph_data in glyphs {
+                let offset = glyph_data.bounds.pos * scale;
+                let glyph_quad_size = glyph_data.bounds.dim * scale;
+
+                r.draw_quad(InstanceData::<Transform2D> {
+                    transform: Transform2D {
+                        pos: pos + offset,
+                        scale: glyph_quad_size,
+                        angle: 0.,
+                    },
+                    subtexture: glyph_data.subtexture,
+                    ..Default::default()
+                });
+                pos.x += scale * glyph_data.metrics.bounds.dim.x;
+            }
         }
 
         ctx.commit_frame();

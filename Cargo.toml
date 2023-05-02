@@ -18,11 +18,18 @@ byteorder = "1.4"
 asefile = { version = "0.3", features = ["utils"] }
 notify = "5.1.0"
 rand = "0.8.5"
+fontdue="0.7"
 tobj = "3.2"
+msdfgen = "0.2.1"
+# msdf = "0.2"
+# freetype-rs = "0.32.0"
+ttf-parser = "0.18"
+# ttf-parser = "0.15"
+# mint = "0.5"
 
 
 [dependencies.image]
-version = "0.23"
+version = "0.23.1"
 default-features = false
 features = ["png", "jpeg", "tga"]
 

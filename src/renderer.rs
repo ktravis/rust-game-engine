@@ -1,7 +1,19 @@
 use glam::{vec2, vec3, Mat4, Quat, Vec2};
 use miniquad::*;
+use ttf_parser::Face;
 
-use crate::{color::*, default_shader, geom::*, mesh::Mesh, sprite::Sprite, transform::*};
+use crate::{
+    atlas::Atlas,
+    color::*,
+    default_shader,
+    font::{self, FontAtlas},
+    geom::*,
+    mesh::Mesh,
+    resources,
+    sprite::Sprite,
+    text_shader,
+    transform::*,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct InstanceData<T: ModelTransform> {
@@ -160,6 +172,9 @@ pub struct Renderer {
     pub default_texture: Texture,
     instance_vertex_buffer: Buffer,
     batch: RenderBatch,
+    pub font_atlas: FontAtlas,
+    text_bindings: Bindings,
+    text_pipeline: Pipeline,
 
     quad_mesh: MeshRef,
     cube_mesh: MeshRef,
@@ -190,8 +205,8 @@ impl Renderer {
         );
 
         let mut mesh_manager = MeshManager::default();
-        let quad_mesh = dbg!(mesh_manager.add("quad", quad::mesh()));
-        let cube_mesh = dbg!(mesh_manager.add("cube", cube::mesh()));
+        let quad_mesh = mesh_manager.add("quad", quad::mesh());
+        let cube_mesh = mesh_manager.add("cube", cube::mesh());
         let textures = vec![default_texture];
         let geometry_buffers = mesh_manager.buffers(ctx);
 
@@ -247,6 +262,69 @@ impl Renderer {
                 ..Default::default()
             },
         );
+        let text_shader = Shader::new(
+            ctx,
+            text_shader::VERTEX,
+            text_shader::FRAGMENT,
+            text_shader::meta(),
+        )
+        .expect("text shader creation failed");
+        let text_pipeline = Pipeline::with_params(
+            ctx,
+            &[
+                BufferLayout::default(), // pos
+                // instances
+                BufferLayout {
+                    step_func: VertexStep::PerInstance,
+                    ..Default::default()
+                },
+            ],
+            &[
+                // vertex data
+                VertexAttribute::with_buffer("position", VertexFormat::Float4, 0),
+                VertexAttribute::with_buffer("uv", VertexFormat::Float2, 0),
+                // instance data
+                VertexAttribute::with_buffer("uv_scale", VertexFormat::Float2, 1),
+                VertexAttribute::with_buffer("uv_offset", VertexFormat::Float2, 1),
+                VertexAttribute::with_buffer("tint", VertexFormat::Byte4, 1),
+                VertexAttribute::with_buffer("model", VertexFormat::Mat4, 1),
+            ],
+            text_shader,
+            PipelineParams {
+                depth_test: Comparison::LessOrEqual,
+                depth_write: true,
+                color_blend: Some(BlendState::new(
+                    Equation::Add,
+                    BlendFactor::Value(BlendValue::SourceAlpha),
+                    BlendFactor::OneMinusValue(BlendValue::SourceAlpha),
+                )),
+                alpha_blend: Some(BlendState::new(
+                    Equation::Add,
+                    BlendFactor::Zero,
+                    BlendFactor::One,
+                )),
+                // primitive_type: miniquad::PrimitiveType::Lines,
+                ..Default::default()
+            },
+        );
+        let b = std::fs::read("./res/fonts/Ubuntu-M.ttf").unwrap();
+        let face = Face::parse(&b, 0).unwrap();
+        let font_atlas = FontAtlas::new(face, Default::default()).unwrap();
+        let font_atlas_texture = resources::texture_from_image_with_params(
+            ctx,
+            font_atlas.image(),
+            TextureParams {
+                format: TextureFormat::RGBA8,
+                wrap: TextureWrap::Clamp,
+                filter: FilterMode::Linear,
+                width: font_atlas.image().width(),
+                height: font_atlas.image().height(),
+            },
+        );
+        let text_bindings = Bindings {
+            images: vec![font_atlas_texture],
+            ..bindings.clone()
+        };
         Self {
             display_mode,
             target_texture,
@@ -263,6 +341,9 @@ impl Renderer {
             geometry_buffers,
             quad_mesh,
             cube_mesh,
+            text_bindings,
+            text_pipeline,
+            font_atlas,
         }
     }
 
@@ -335,6 +416,35 @@ impl Renderer {
         } else {
             &self.bindings
         };
+        ctx.apply_bindings(bindings);
+        RenderPass {
+            ctx,
+            current_batch: &mut self.batch,
+            transform_stack: vec![],
+            instance_buffer: &mut self.instance_vertex_buffer,
+            mesh_manager: &mut self.mesh_manager,
+            bindings,
+            current_texture: None,
+            current_mesh: None,
+            quad_mesh: self.quad_mesh,
+            cube_mesh: self.cube_mesh,
+        }
+    }
+
+    pub fn begin_text_pass<'a>(
+        &'a mut self,
+        ctx: &'a mut GraphicsContext,
+        pass_action: PassAction,
+        view: Mat4,
+        projection: Mat4,
+    ) -> RenderPass<'a> {
+        if self.mesh_manager.needs_rebuild {
+            self.rebuild_buffers(ctx);
+        }
+        ctx.begin_pass(None, pass_action);
+        ctx.apply_pipeline(&self.text_pipeline);
+        ctx.apply_uniforms(&text_shader::Uniforms { view, projection });
+        let bindings = &self.text_bindings;
         ctx.apply_bindings(bindings);
         RenderPass {
             ctx,
@@ -432,7 +542,6 @@ impl RenderBatch {
 
 pub struct RenderPassOptions {
     pass_action: PassAction,
-    // pass_action: Option<Color>,
     view_transform: Mat4,
     /// Defaults to orthographic projection with bounds the same as the render target size
     projection: Option<Mat4>,
@@ -498,17 +607,6 @@ impl RenderPassOptions {
             ..self
         }
     }
-
-    // pub fn pass_action(&self) -> PassAction {
-    //     match self.clear_color {
-    //         Some(c) => PassAction::clear_color(c.r, c.g, c.b, c.a),
-    //         None => PassAction::Clear {
-    //             color: None,
-    //             depth: Some(1.),
-    //             stencil: None,
-    //         },
-    //     }
-    // }
 }
 
 pub struct RenderPass<'a> {
@@ -583,27 +681,8 @@ impl<'a> RenderPass<'a> {
         self.render_mesh(self.quad_mesh, quad);
     }
 
-    // pub fn draw_quad(&mut self, quad: InstanceData) {
-    //     if self.current_batch.instance_count() == RenderBatch::MAX_INSTANCES {
-    //         self.flush();
-    //     }
-    //     self.current_batch.add(quad.into());
-    // }
-
     pub fn draw_cube<T: ModelTransform>(&mut self, cube: InstanceData<T>) {
         self.render_mesh(self.cube_mesh, cube);
-        //     self.instance_buffer.update(
-        //         self.ctx,
-        //         &[RawInstanceData::from(InstanceData {
-        //             transform: Transform3D {
-        //                 rotation,
-        //                 ..Default::default()
-        //             },
-        //             ..Default::default()
-        //         })],
-        //     );
-        //     self.ctx
-        //         .draw(quad::INDICES.len() as _, cube::INDICES.len() as _, 1);
     }
 
     pub fn draw_sprite_frame(&mut self, pos: Point, s: &Sprite, i: usize) {
