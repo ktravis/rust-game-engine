@@ -1,5 +1,4 @@
 use color::Color;
-use image::{DynamicImage, RgbaImage};
 use miniquad::*;
 use msdfgen::Vector2;
 use std::{path::Path, time::Duration};
@@ -325,12 +324,12 @@ impl EventHandler for Stage {
         _repeat: bool,
     ) {
         self.input
-            .handle_key_change(keycode, inputs::KeyStateChange::Pressed);
+            .handle_key_change(keycode, inputs::StateChange::Pressed);
     }
 
     fn key_up_event(&mut self, _ctx: &mut Context, keycode: KeyCode, _keymods: KeyMods) {
         self.input
-            .handle_key_change(keycode, inputs::KeyStateChange::Released);
+            .handle_key_change(keycode, inputs::StateChange::Released);
     }
 
     fn resize_event(&mut self, _ctx: &mut Context, _width: f32, _height: f32) {}
@@ -344,6 +343,63 @@ impl EventHandler for Stage {
         //     ))
         // }
     }
+
+    fn mouse_motion_event(&mut self, _ctx: &mut Context, x: f32, y: f32) {
+        self.input.handle_mouse_motion(x, y)
+    }
+
+    fn mouse_wheel_event(&mut self, _ctx: &mut Context, _x: f32, _y: f32) {}
+
+    fn mouse_button_down_event(
+        &mut self,
+        _ctx: &mut Context,
+        _button: MouseButton,
+        _x: f32,
+        _y: f32,
+    ) {
+    }
+
+    fn mouse_button_up_event(
+        &mut self,
+        _ctx: &mut Context,
+        _button: MouseButton,
+        _x: f32,
+        _y: f32,
+    ) {
+    }
+
+    fn char_event(
+        &mut self,
+        _ctx: &mut Context,
+        _character: char,
+        _keymods: KeyMods,
+        _repeat: bool,
+    ) {
+    }
+
+    fn touch_event(&mut self, ctx: &mut Context, phase: TouchPhase, _id: u64, x: f32, y: f32) {
+        if phase == TouchPhase::Started {
+            self.mouse_button_down_event(ctx, MouseButton::Left, x, y);
+        }
+
+        if phase == TouchPhase::Ended {
+            self.mouse_button_up_event(ctx, MouseButton::Left, x, y);
+        }
+
+        if phase == TouchPhase::Moved {
+            self.mouse_motion_event(ctx, x, y);
+        }
+    }
+
+    fn raw_mouse_motion(&mut self, _ctx: &mut Context, _dx: f32, _dy: f32) {}
+
+    fn window_minimized_event(&mut self, _ctx: &mut Context) {}
+
+    fn window_restored_event(&mut self, _ctx: &mut Context) {}
+
+    fn quit_requested_event(&mut self, _ctx: &mut Context) {}
+
+    fn files_dropped_event(&mut self, _ctx: &mut Context) {}
 }
 
 fn main() {

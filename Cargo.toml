@@ -3,8 +3,6 @@ name = "miniquad-test"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 anyhow = "1.0"
 bitmask-enum = "2.1.0"
@@ -21,11 +19,7 @@ rand = "0.8.5"
 fontdue="0.7"
 tobj = "3.2"
 msdfgen = "0.2.1"
-# msdf = "0.2"
-# freetype-rs = "0.32.0"
 ttf-parser = "0.18"
-# ttf-parser = "0.15"
-# mint = "0.5"
 
 
 [dependencies.image]
