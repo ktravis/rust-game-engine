@@ -43,10 +43,15 @@ pub enum Binding {
 }
 
 impl Binding {
-    fn update(&mut self, key: KeyCodeOrMouseButton, change: StateChange) {
+    fn update(&mut self, input_change: InputChange) {
         match self {
-            Binding::Button(b) => b.update(key, change),
-            Binding::Axis(a) => a.update(key, change),
+            Binding::Button(b) => {
+                let InputChange::Digital { input, state_change } = input_change else {
+                    return;
+                };
+                b.update(input.raw, state_change);
+            }
+            Binding::Axis(a) => a.update(input_change),
         }
     }
 
@@ -91,6 +96,24 @@ enum AnalogInput {
     MouseWheelY,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]
+enum AnyInput {
+    Digital(DigitalInput),
+    Analog(AnalogInput),
+}
+
+impl From<DigitalInput> for AnyInput {
+    fn from(i: DigitalInput) -> Self {
+        Self::Digital(i)
+    }
+}
+
+impl From<AnalogInput> for AnyInput {
+    fn from(i: AnalogInput) -> Self {
+        Self::Analog(i)
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq)]
 enum InputChange {
     Digital {
@@ -103,6 +126,15 @@ enum InputChange {
     },
 }
 
+impl InputChange {
+    fn input(&self) -> AnyInput {
+        match *self {
+            InputChange::Digital { input, .. } => input.into(),
+            InputChange::Analog { input, .. } => input.into(),
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct ButtonBinding {
     pub name: String,
@@ -113,7 +145,7 @@ pub struct ButtonBinding {
 }
 
 impl ButtonBinding {
-    /// Returns whether this [`VirtualButton`] is down.
+    /// Returns whether this [`ButtonBinding`] is down.
     pub fn is_down(&self) -> bool {
         self.state.is_down
     }
@@ -158,18 +190,79 @@ impl Default for OverlapMode {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum AxisDirection {
     Left,
     Right,
+}
+
+impl AxisDirection {
+    fn value(self) -> f32 {
+        match self {
+            AxisDirection::Left => -1.,
+            AxisDirection::Right => 1.,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum DigitalAxisState {
+    None,
+    One(AxisDirection),
+    Both {
+        first: AxisDirection,
+        second: AxisDirection,
+    },
+}
+
+impl Default for DigitalAxisState {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+impl DigitalAxisState {
+    fn value(self, overlap_mode: OverlapMode) -> f32 {
+        use DigitalAxisState::*;
+        match self {
+            None => 0.,
+            One(dir) => dir.value(),
+            Both { first, second } => match overlap_mode {
+                OverlapMode::First => first.value(),
+                OverlapMode::Latest => second.value(),
+                OverlapMode::Neutral => 0.,
+            },
+        }
+    }
+    fn update(self, dir: AxisDirection, state_change: StateChange) -> Self {
+        use DigitalAxisState::*;
+        use StateChange::*;
+        match (self, state_change) {
+            (None, Pressed) => One(dir),
+            (One(held), Pressed) if held != dir => Both {
+                first: held,
+                second: dir,
+            },
+            (One(held), Released) if held == dir => None,
+            (Both { first, second }, Released) => {
+                if first == dir {
+                    One(second)
+                } else if second == dir {
+                    One(first)
+                } else {
+                    self
+                }
+            }
+            _ => self,
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
 enum RawAxisBinding {
     Digital {
         pair: (KeyCodeOrMouseButton, KeyCodeOrMouseButton),
-        /// 0: not held, 1: held first, 2: held second
-        state: (i8, i8),
+        state: DigitalAxisState,
     },
     Analog {
         input: AnalogInput,
@@ -181,7 +274,7 @@ impl From<(KeyCodeOrMouseButton, KeyCodeOrMouseButton)> for RawAxisBinding {
     fn from(pair: (KeyCodeOrMouseButton, KeyCodeOrMouseButton)) -> Self {
         RawAxisBinding::Digital {
             pair,
-            state: (0, 0),
+            state: DigitalAxisState::None,
         }
     }
 }
@@ -189,65 +282,39 @@ impl From<(KeyCodeOrMouseButton, KeyCodeOrMouseButton)> for RawAxisBinding {
 impl RawAxisBinding {
     fn value(&self, overlap_mode: OverlapMode) -> f32 {
         match self {
-            RawAxisBinding::Digital { state, .. } => match state {
-                (0, 0) => 0.,
-                (0, _r) => 1.,
-                (_l, 0) => -1.,
-                (l, r) => match overlap_mode {
-                    OverlapMode::First => -1. * (r - l) as f32,
-                    OverlapMode::Latest => (r - l) as f32,
-                    OverlapMode::Neutral => 0.,
-                },
-            },
+            RawAxisBinding::Digital { state, .. } => state.value(overlap_mode),
             RawAxisBinding::Analog { value, .. } => *value,
         }
     }
 
-    fn update(&mut self, key: KeyCodeOrMouseButton, change: StateChange) -> bool {
+    fn update(&mut self, input_change: InputChange) -> bool {
         use AxisDirection::*;
         use RawAxisBinding::*;
-        use StateChange::*;
         match self {
             Digital {
                 pair: (l, r),
                 state,
             } => {
+                let InputChange::Digital { input: DigitalInput { raw: key }, state_change } = input_change else {
+                    // this is an analog change
+                    return *state != DigitalAxisState::None;
+                };
                 let dir = if key == *l {
                     Left
                 } else if key == *r {
                     Right
                 } else {
-                    return *state != (0, 0);
+                    return *state != DigitalAxisState::None;
                 };
-                match state {
-                    (0, 0) => {
-                        if change == StateChange::Pressed {
-                            *state = match dir {
-                                Left => (1, 0),
-                                Right => (0, 1),
-                            }
-                        }
-                    }
-                    (0, _r) => match (change, dir) {
-                        (Pressed, Left) => *state = (2, 1),
-                        (Released, Right) => *state = (0, 0),
-                        _ => {}
-                    },
-                    (_l, 0) => match (change, dir) {
-                        (Released, Left) => *state = (0, 0),
-                        (Pressed, Right) => *state = (1, 2),
-                        _ => {}
-                    },
-                    (l, r) => match (change, dir) {
-                        (Released, Left) => *state = (0, 1),
-                        (Released, Right) => *state = (1, 0),
-                        _ => {}
-                    },
-                }
-                return *state != (0, 0);
+                *state = state.update(dir, state_change);
+                return *state != DigitalAxisState::None;
             }
-            Analog { input, value } => {
-                todo!();
+            Analog { value, .. } => {
+                if let InputChange::Analog { delta, .. } = input_change {
+                    *value += delta;
+                };
+                // else this is an analog change
+                return *value != 0.0;
             }
         };
     }
@@ -259,7 +326,6 @@ pub struct AxisBinding {
     overlap_mode: OverlapMode,
     raw: Vec<RawAxisBinding>,
     active_indices: Vec<usize>,
-    // activated_index: Option<usize>,
 }
 
 impl AxisBinding {
@@ -275,12 +341,12 @@ impl AxisBinding {
             .unwrap_or_default()
     }
 
-    fn update(&mut self, key: KeyCodeOrMouseButton, change: StateChange) {
+    fn update(&mut self, input_change: InputChange) {
         self.active_indices = self
             .raw
             .iter_mut()
             .enumerate()
-            .filter_map(|(i, raw)| raw.update(key, change).then_some(i))
+            .filter_map(|(i, raw)| raw.update(input_change).then_some(i))
             .collect();
     }
 }
@@ -294,8 +360,8 @@ pub struct ButtonBuilder<'a> {
 }
 
 impl<'a> ButtonBuilder<'a> {
-    pub fn with_key(mut self, key: KeyCode) -> Self {
-        self.button.keys.push(KeyCodeOrMouseButton::KeyCode(key));
+    pub fn with_key(mut self, key: impl Into<KeyCodeOrMouseButton>) -> Self {
+        self.button.keys.push(key.into());
         self
     }
 
@@ -331,27 +397,26 @@ impl<'a> AxisBuilder<'a> {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-enum InputEvent {
-    Key {
-        code: KeyCode,
-        state_change: StateChange,
-    },
-    MouseButton {
-        button: MouseButton,
-        state_change: StateChange,
-    },
-    MouseMotion(Vec2),
-    MouseWheel(Vec2),
-}
+// #[derive(Debug, Copy, Clone)]
+// enum InputEvent {
+//     Key {
+//         code: KeyCode,
+//         state_change: StateChange,
+//     },
+//     MouseButton {
+//         button: MouseButton,
+//         state_change: StateChange,
+//     },
+//     MouseMotion(Vec2),
+//     MouseWheel(Vec2),
+// }
 
 #[derive(Default, Debug)]
 pub struct Input {
     bindings: Vec<Binding>,
     by_name: HashMap<String, BindingRef>,
-    keycodes: HashMap<KeyCode, BindingRef>,
-    mouse_buttons: HashMap<MouseButton, BindingRef>,
-    buffered_keys: Vec<(KeyCode, StateChange)>,
+    bound_inputs: HashMap<AnyInput, BindingRef>,
+    buffered_inputs: Vec<InputChange>,
 }
 
 impl Input {
@@ -361,12 +426,23 @@ impl Input {
                 b.state.just_pressed = false;
             }
         }
-        for (key, change) in self.buffered_keys.drain(..) {
-            let b = self
-                .keycodes
-                .get(&key)
-                .unwrap_or_else(|| panic!("key {:?} not registered", key));
-            self.bindings[b.0].update(key.into(), change);
+        for input_change in self.buffered_inputs.drain(..) {
+            match input_change {
+                InputChange::Digital { input, .. } => {
+                    let b = self
+                        .bound_inputs
+                        .get(&AnyInput::Digital(input))
+                        .unwrap_or_else(|| panic!("key {:?} not registered", input.raw));
+                    self.bindings[b.0].update(input_change);
+                }
+                InputChange::Analog { input, .. } => {
+                    let b = self
+                        .bound_inputs
+                        .get(&AnyInput::Analog(input))
+                        .unwrap_or_else(|| panic!("analog input {:?} not registered", input));
+                    self.bindings[b.0].update(input_change);
+                }
+            }
         }
     }
 
@@ -434,12 +510,23 @@ impl Input {
         }
     }
 
-    pub fn handle_key_change(&mut self, key: KeyCode, change: StateChange) {
+    pub fn handle_key_or_button_change(
+        &mut self,
+        key: impl Into<KeyCodeOrMouseButton>,
+        state_change: StateChange,
+    ) {
+        self.buffer_input_event(InputChange::Digital {
+            input: DigitalInput { raw: key.into() },
+            state_change,
+        });
+    }
+
+    fn buffer_input_event(&mut self, change: InputChange) {
         // if we don't have any buttons registered for this key, just ignore
-        if self.keycodes.get(&key).is_none() {
+        if !self.bound_inputs.contains_key(&change.input()) {
             return;
         }
-        self.buffered_keys.push((key, change));
+        self.buffered_inputs.push(change);
     }
 
     pub fn handle_mouse_motion(&mut self, x: f32, y: f32) {
@@ -450,18 +537,12 @@ impl Input {
         let index = self.bindings.len();
         let button_ref = BindingRef(index);
         for key in &b.keys {
-            self.add_binding_key_or_button(key, button_ref);
+            self.bound_inputs
+                .insert(AnyInput::Digital(DigitalInput { raw: *key }), button_ref);
         }
         self.by_name.insert(b.name.clone(), button_ref);
         self.bindings.push(Binding::Button(b));
         button_ref
-    }
-
-    fn add_binding_key_or_button(&mut self, k: &KeyCodeOrMouseButton, r: BindingRef) {
-        match k {
-            KeyCodeOrMouseButton::KeyCode(kc) => self.keycodes.insert(*kc, r),
-            KeyCodeOrMouseButton::MouseButton(mb) => self.mouse_buttons.insert(*mb, r),
-        };
     }
 
     fn register_axis(&mut self, a: AxisBinding) -> BindingRef {
@@ -470,10 +551,15 @@ impl Input {
         for raw in &a.raw {
             match raw {
                 RawAxisBinding::Digital { pair: (l, r), .. } => {
-                    self.add_binding_key_or_button(l, axis_binding);
-                    self.add_binding_key_or_button(r, axis_binding);
+                    self.bound_inputs
+                        .insert(AnyInput::Digital(DigitalInput { raw: *l }), axis_binding);
+                    self.bound_inputs
+                        .insert(AnyInput::Digital(DigitalInput { raw: *r }), axis_binding);
                 }
-                RawAxisBinding::Analog { .. } => todo!(),
+                RawAxisBinding::Analog { input, .. } => {
+                    self.bound_inputs
+                        .insert(AnyInput::Analog(*input), axis_binding);
+                }
             }
         }
         self.by_name.insert(a.name.clone(), axis_binding);

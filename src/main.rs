@@ -130,7 +130,11 @@ impl Stage {
             .register();
         input.register_new_button("quit", &[KeyCode::Escape]);
         input.register_new_button("next", &[KeyCode::P]);
-        input.register_new_button("add", &[KeyCode::O]);
+        input
+            .new_button("add")
+            .with_key(KeyCode::O)
+            .with_key(MouseButton::Left)
+            .register();
 
         let sprite_pos = (0..10)
             .map(|_| {
@@ -324,12 +328,12 @@ impl EventHandler for Stage {
         _repeat: bool,
     ) {
         self.input
-            .handle_key_change(keycode, inputs::StateChange::Pressed);
+            .handle_key_or_button_change(keycode, inputs::StateChange::Pressed);
     }
 
     fn key_up_event(&mut self, _ctx: &mut Context, keycode: KeyCode, _keymods: KeyMods) {
         self.input
-            .handle_key_change(keycode, inputs::StateChange::Released);
+            .handle_key_or_button_change(keycode, inputs::StateChange::Released);
     }
 
     fn resize_event(&mut self, _ctx: &mut Context, _width: f32, _height: f32) {}
@@ -353,19 +357,17 @@ impl EventHandler for Stage {
     fn mouse_button_down_event(
         &mut self,
         _ctx: &mut Context,
-        _button: MouseButton,
+        button: MouseButton,
         _x: f32,
         _y: f32,
     ) {
+        self.input
+            .handle_key_or_button_change(button, inputs::StateChange::Pressed);
     }
 
-    fn mouse_button_up_event(
-        &mut self,
-        _ctx: &mut Context,
-        _button: MouseButton,
-        _x: f32,
-        _y: f32,
-    ) {
+    fn mouse_button_up_event(&mut self, _ctx: &mut Context, button: MouseButton, _x: f32, _y: f32) {
+        self.input
+            .handle_key_or_button_change(button, inputs::StateChange::Released);
     }
 
     fn char_event(
