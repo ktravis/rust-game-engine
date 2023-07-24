@@ -80,6 +80,7 @@ impl FontAtlas {
         let mut map = Bitmap::new(resolution, resolution);
         let mut original_size = None;
         for c in config.chars {
+            assert!(!c.is_whitespace());
             let glyph_id = face.glyph_index(dbg!(c)).unwrap();
             let mut shape = face.glyph_shape(glyph_id).unwrap();
 

@@ -10,7 +10,7 @@ mod color;
 mod default_shader;
 mod font;
 mod geom;
-mod inputs;
+mod input;
 mod mesh;
 mod model;
 mod renderer;
@@ -32,9 +32,9 @@ const TARGET_FRAMERATE: u64 = 60;
 struct Stage {
     camera_offset: Vec2,
     renderer: Renderer,
-    input: inputs::Input,
-    input_axis_x: inputs::BindingRef,
-    input_axis_y: inputs::BindingRef,
+    input: input::Input,
+    input_axis_x: input::BindingRef,
+    input_axis_y: input::BindingRef,
     xy: Vec2,
     sprite_atlas_texture: Texture,
     assets: Assets,
@@ -47,6 +47,7 @@ struct Stage {
     delta: f32,
     frame_counter: usize,
     frame_timer: f32,
+    sampled_fps: f32,
     target_frame_duration: f64,
     crate_texture: Texture,
     render_target_size_px: Point<u32>,
@@ -113,11 +114,12 @@ impl Stage {
             DisplayMode::Centered,
         );
 
-        let mut input = inputs::Input::default();
+        let mut input = input::Input::default();
         let input_axis_x = input
             .new_axis("x")
             .with_keys(KeyCode::A, KeyCode::D)
             .with_keys(KeyCode::Left, KeyCode::Right)
+            // .with_analog_input_axis(input::AnalogInput::MouseMotionX)
             .register();
         let input_axis_y = input
             .new_axis("y")
@@ -127,6 +129,7 @@ impl Stage {
         input
             .new_axis("scale")
             .with_keys(KeyCode::F, KeyCode::R)
+            .with_analog_input_axis(input::AnalogInput::MouseWheelY)
             .register();
         input.register_new_button("quit", &[KeyCode::Escape]);
         input.register_new_button("next", &[KeyCode::P]);
@@ -161,6 +164,7 @@ impl Stage {
             delta: 0.,
             frame_counter: 0,
             frame_timer: 0.,
+            sampled_fps: 0.,
             target_frame_duration: 1. / TARGET_FRAMERATE as f64,
             crate_texture,
             render_target_size_px,
@@ -183,6 +187,12 @@ impl Stage {
 
         if self.input.button_by_name("quit").state.just_pressed {
             return false;
+        }
+        if self.frame_counter >= 50 {
+            self.sampled_fps = self.frame_counter as f32 / self.frame_timer;
+            println!("fps: {:.1}", self.sampled_fps);
+            self.frame_counter = 0;
+            self.frame_timer = 0.0;
         }
 
         self.xy.x += 100. * self.delta * self.input.axis(self.input_axis_x).value();
@@ -210,11 +220,6 @@ impl Stage {
     }
 
     fn draw(&mut self, ctx: &mut GraphicsContext) {
-        if self.frame_counter >= 50 {
-            println!("fps: {:.1}", self.frame_counter as f32 / self.frame_timer);
-            self.frame_counter = 0;
-            self.frame_timer = 0.0;
-        }
         {
             let mut r = self
                 .renderer
@@ -259,7 +264,7 @@ impl Stage {
         }
 
         {
-            let s = "abcdefghijkl";
+            let s = format!("fps:{:.0}", self.sampled_fps);
             let scale = self.render_scale.clamp(1., 20.);
             let glyphs = s
                 .chars()
@@ -282,7 +287,7 @@ impl Stage {
                     -1.0,
                 ),
             );
-            let mut pos = glam::vec2(15. + self.xy.x, 430. + self.xy.y);
+            let mut pos = glam::vec2(10., 40.);
             for glyph_data in glyphs {
                 let offset = glyph_data.bounds.pos * scale;
                 let glyph_quad_size = glyph_data.bounds.dim * scale;
@@ -328,12 +333,12 @@ impl EventHandler for Stage {
         _repeat: bool,
     ) {
         self.input
-            .handle_key_or_button_change(keycode, inputs::StateChange::Pressed);
+            .handle_key_or_button_change(keycode, input::StateChange::Pressed);
     }
 
     fn key_up_event(&mut self, _ctx: &mut Context, keycode: KeyCode, _keymods: KeyMods) {
         self.input
-            .handle_key_or_button_change(keycode, inputs::StateChange::Released);
+            .handle_key_or_button_change(keycode, input::StateChange::Released);
     }
 
     fn resize_event(&mut self, _ctx: &mut Context, _width: f32, _height: f32) {}
@@ -352,7 +357,16 @@ impl EventHandler for Stage {
         self.input.handle_mouse_motion(x, y)
     }
 
-    fn mouse_wheel_event(&mut self, _ctx: &mut Context, _x: f32, _y: f32) {}
+    fn mouse_wheel_event(&mut self, _ctx: &mut Context, x: f32, y: f32) {
+        if x != 0. {
+            self.input
+                .handle_analog_axis_change(input::AnalogInput::MouseWheelX, x);
+        }
+        if y != 0. {
+            self.input
+                .handle_analog_axis_change(input::AnalogInput::MouseWheelY, y);
+        }
+    }
 
     fn mouse_button_down_event(
         &mut self,
@@ -362,12 +376,12 @@ impl EventHandler for Stage {
         _y: f32,
     ) {
         self.input
-            .handle_key_or_button_change(button, inputs::StateChange::Pressed);
+            .handle_key_or_button_change(button, input::StateChange::Pressed);
     }
 
     fn mouse_button_up_event(&mut self, _ctx: &mut Context, button: MouseButton, _x: f32, _y: f32) {
         self.input
-            .handle_key_or_button_change(button, inputs::StateChange::Released);
+            .handle_key_or_button_change(button, input::StateChange::Released);
     }
 
     fn char_event(
