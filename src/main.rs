@@ -10,6 +10,8 @@ mod color;
 mod default_shader;
 mod font;
 mod geom;
+
+#[macro_use]
 mod input;
 mod mesh;
 mod model;
@@ -22,6 +24,7 @@ mod transform;
 use assets::{Assets, SpriteRef};
 
 use geom::Point;
+use input::{AnalogInput, ControlsManager, InputManager, KeyCode};
 use renderer::{DisplayMode, InstanceData, RenderPassOptions, Renderer};
 
 use glam::{vec2, vec3, Mat4, Quat, Vec2, Vec3};
@@ -29,12 +32,25 @@ use glam::{vec2, vec3, Mat4, Quat, Vec2, Vec3};
 const WINDOW_DIM: Point = Point { x: 960, y: 720 };
 const TARGET_FRAMERATE: u64 = 60;
 
+declare_inputs! {
+    GameControls {
+        axes [
+            x => (KeyCode::A, KeyCode::D), AnalogInput::MouseMotionX;
+            y => (KeyCode::W, KeyCode::S);
+            scale => (KeyCode::F, KeyCode::R);
+        ]
+        buttons [
+            quit => KeyCode::Escape;
+            next => KeyCode::P;
+            add => KeyCode::O;
+        ]
+    }
+}
+
 struct Stage {
     camera_offset: Vec2,
     renderer: Renderer,
-    input: input::Input,
-    input_axis_x: input::BindingRef,
-    input_axis_y: input::BindingRef,
+    input: InputManager<GameControls>,
     xy: Vec2,
     sprite_atlas_texture: Texture,
     assets: Assets,
@@ -114,31 +130,6 @@ impl Stage {
             DisplayMode::Centered,
         );
 
-        let mut input = input::Input::default();
-        let input_axis_x = input
-            .new_axis("x")
-            .with_keys(KeyCode::A, KeyCode::D)
-            .with_keys(KeyCode::Left, KeyCode::Right)
-            // .with_analog_input_axis(input::AnalogInput::MouseMotionX)
-            .register();
-        let input_axis_y = input
-            .new_axis("y")
-            .with_keys(KeyCode::W, KeyCode::S)
-            .with_keys(KeyCode::Up, KeyCode::Down)
-            .register();
-        input
-            .new_axis("scale")
-            .with_keys(KeyCode::F, KeyCode::R)
-            .with_analog_input_axis(input::AnalogInput::MouseWheelY)
-            .register();
-        input.register_new_button("quit", &[KeyCode::Escape]);
-        input.register_new_button("next", &[KeyCode::P]);
-        input
-            .new_button("add")
-            .with_key(KeyCode::O)
-            .with_key(MouseButton::Left)
-            .register();
-
         let sprite_pos = (0..10)
             .map(|_| {
                 Point::new(
@@ -151,9 +142,7 @@ impl Stage {
         Stage {
             sprite_pos,
             renderer,
-            input,
-            input_axis_x,
-            input_axis_y,
+            input: Default::default(),
             camera_offset: Default::default(),
             xy: Vec2::default(),
             sprite_atlas_texture,
@@ -183,28 +172,24 @@ impl Stage {
                 resources::texture_from_image(ctx, self.assets.atlas.image());
         }
 
-        self.input.update();
-
-        if self.input.button_by_name("quit").state.just_pressed {
+        if self.input.buttons.quit.state.just_pressed {
             return false;
         }
         if self.frame_counter >= 50 {
             self.sampled_fps = self.frame_counter as f32 / self.frame_timer;
-            println!("fps: {:.1}", self.sampled_fps);
             self.frame_counter = 0;
             self.frame_timer = 0.0;
         }
 
-        self.xy.x += 100. * self.delta * self.input.axis(self.input_axis_x).value();
-        self.xy.y += 100. * self.delta * self.input.axis(self.input_axis_y).value();
-        self.render_scale = (self.render_scale
-            + 20. * self.delta * self.input.axis_by_name("scale").value())
-        .clamp(0.5, 40.);
+        self.xy.x += 100. * self.delta * self.input.axes.x.value();
+        self.xy.y += 100. * self.delta * self.input.axes.y.value();
+        self.render_scale =
+            (self.render_scale + 20. * self.delta * self.input.axes.scale.value()).clamp(0.5, 40.);
 
-        if self.input.button_by_name("next").just_pressed() {
+        if self.input.buttons.next.just_pressed() {
             self.frame_index = (self.frame_index + 1) % self.assets.get_sprite(self.s).frames.len();
         }
-        if self.input.button_by_name("add").is_down() {
+        if self.input.buttons.add.is_down() {
             println!("{}", self.sprite_pos.len());
             for _ in 0..100 {
                 self.sprite_pos.push(Point::new(
@@ -323,6 +308,8 @@ impl EventHandler for Stage {
         if !Stage::update(self, ctx) {
             ctx.request_quit();
         }
+        // Do this after the frame is done updating, so we can clear state and update controls for the next frame.
+        self.input.end_frame_update();
     }
 
     fn key_down_event(

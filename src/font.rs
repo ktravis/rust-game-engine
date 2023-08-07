@@ -81,7 +81,7 @@ impl FontAtlas {
         let mut original_size = None;
         for c in config.chars {
             assert!(!c.is_whitespace());
-            let glyph_id = face.glyph_index(dbg!(c)).unwrap();
+            let glyph_id = face.glyph_index(c).unwrap();
             let mut shape = face.glyph_shape(glyph_id).unwrap();
 
             let mut shape_bounds = shape.get_bound();

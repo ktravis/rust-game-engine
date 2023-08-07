@@ -1,61 +1,32 @@
 use crate::input::DigitalInput;
+use log::error;
 
-use super::{AnalogInput, ButtonState, InputChange, KeyCodeOrMouseButton, StateChange};
+use super::{AnalogInput, AnyInput, ButtonState, InputChange, KeyCodeOrMouseButton, StateChange};
 
 #[derive(Debug, Clone)]
-pub enum Binding {
-    Button(ButtonBinding),
-    Axis(AxisBinding),
-}
-
-impl Binding {
-    pub(super) fn update(&mut self, input_change: InputChange) {
-        match self {
-            Binding::Button(b) => {
-                let InputChange::Digital { input, state_change } = input_change else {
-                    return;
-                };
-                b.update(input.raw, state_change);
-            }
-            Binding::Axis(a) => a.update(input_change),
-        }
-    }
-
-    pub(super) fn clear(&mut self) {
-        match self {
-            Binding::Button(b) => b.state.just_pressed = false,
-            Binding::Axis(a) => a.raw.iter_mut().for_each(|raw| match raw {
-                RawAxisBinding::Digital { .. } => {}
-                RawAxisBinding::Analog { value, .. } => *value = 0.,
-            }),
-        }
-    }
-
-    pub fn button(&self) -> &ButtonBinding {
-        match self {
-            Binding::Button(b) => b,
-            _ => panic!("binding is not a button"),
-        }
-    }
-
-    pub fn axis(&self) -> &AxisBinding {
-        match self {
-            Binding::Axis(a) => a,
-            _ => panic!("binding is not an axis"),
-        }
-    }
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct ButtonBinding {
-    pub name: String,
+pub struct ButtonBinding<C: std::fmt::Debug> {
+    pub control: C,
     pub state: ButtonState,
-    pub(super) keys: Vec<KeyCodeOrMouseButton>,
     pub(super) triggered_key: Option<KeyCodeOrMouseButton>,
+    pub(super) inputs: Vec<KeyCodeOrMouseButton>,
+    pub(crate) dirty: bool,
     // TODO: timing window for press?
 }
 
-impl ButtonBinding {
+impl<C> ButtonBinding<C>
+where
+    C: std::fmt::Debug,
+{
+    pub(crate) fn new(control: C, inputs: Vec<KeyCodeOrMouseButton>) -> Self {
+        Self {
+            control,
+            state: Default::default(),
+            triggered_key: None,
+            inputs,
+            dirty: true,
+        }
+    }
+
     /// Returns whether this [`ButtonBinding`] is down.
     pub fn is_down(&self) -> bool {
         self.state.is_down
@@ -65,23 +36,49 @@ impl ButtonBinding {
         self.state.just_pressed
     }
 
-    fn update(&mut self, key: KeyCodeOrMouseButton, change: StateChange) {
+    pub fn changed(&self) -> bool {
+        self.dirty
+    }
+
+    pub fn update(&mut self, input_change: Option<InputChange>) {
+        let Some(input_change) = input_change else {
+            // request to clear
+            self.clear();
+            return;
+        };
+        let InputChange::Digital { input: DigitalInput { raw }, state_change } = input_change else {
+            error!("Button {:?} discarding non-digital input: {:?}", self.control, input_change);
+            return;
+        };
         match self.triggered_key {
-            Some(k) if k == key => {
-                self.state.update(change);
-                if change == StateChange::Released {
+            Some(key) if key == raw => {
+                self.state.update(state_change);
+                if state_change == StateChange::Released {
                     self.triggered_key.take();
                 }
             }
             // the triggered key does not match, no change
             Some(_) => {}
             None => {
-                if change == StateChange::Pressed {
-                    self.state.update(change);
-                    self.triggered_key = Some(key);
+                if state_change == StateChange::Pressed {
+                    self.state.update(state_change);
+                    self.triggered_key = Some(raw);
                 }
             }
         }
+    }
+
+    pub fn bound_inputs(&self) -> Vec<AnyInput> {
+        self.inputs
+            .iter()
+            .cloned()
+            .map(DigitalInput::from)
+            .map(AnyInput::from)
+            .collect()
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.state.just_pressed = false;
     }
 }
 
@@ -102,7 +99,7 @@ impl Default for OverlapMode {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub(super) enum AxisDirection {
+pub(crate) enum AxisDirection {
     Left,
     Right,
 }
@@ -117,7 +114,7 @@ impl AxisDirection {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub(super) enum DigitalAxisState {
+pub(crate) enum DigitalAxisState {
     None,
     One(AxisDirection),
     Both {
@@ -170,7 +167,7 @@ impl DigitalAxisState {
 }
 
 #[derive(Copy, Clone, Debug)]
-pub(super) enum RawAxisBinding {
+pub(crate) enum RawAxisBinding {
     Digital {
         pair: (KeyCodeOrMouseButton, KeyCodeOrMouseButton),
         state: DigitalAxisState,
@@ -181,12 +178,22 @@ pub(super) enum RawAxisBinding {
     },
 }
 
-impl From<(KeyCodeOrMouseButton, KeyCodeOrMouseButton)> for RawAxisBinding {
-    fn from(pair: (KeyCodeOrMouseButton, KeyCodeOrMouseButton)) -> Self {
+impl<A, B> From<(A, B)> for RawAxisBinding
+where
+    A: Into<KeyCodeOrMouseButton>,
+    B: Into<KeyCodeOrMouseButton>,
+{
+    fn from((a, b): (A, B)) -> Self {
         RawAxisBinding::Digital {
-            pair,
+            pair: (a.into(), b.into()),
             state: DigitalAxisState::None,
         }
+    }
+}
+
+impl From<AnalogInput> for RawAxisBinding {
+    fn from(input: AnalogInput) -> Self {
+        Self::Analog { input, value: 0.0 }
     }
 }
 
@@ -233,15 +240,26 @@ impl RawAxisBinding {
     }
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct AxisBinding {
-    pub name: String,
+#[derive(Debug, Clone)]
+pub struct AxisBinding<C> {
+    pub control: C,
     pub(super) overlap_mode: OverlapMode,
     pub(super) raw: Vec<RawAxisBinding>,
     pub(super) active_indices: Vec<usize>,
+    pub(crate) dirty: bool,
 }
 
-impl AxisBinding {
+impl<C> AxisBinding<C> {
+    pub(crate) fn new(control: C, raw: Vec<RawAxisBinding>) -> Self {
+        Self {
+            control,
+            raw,
+            overlap_mode: Default::default(),
+            active_indices: Default::default(),
+            dirty: true,
+        }
+    }
+
     /// Value from -1.0 to 1.0
     pub fn value(&self) -> f32 {
         // TODO: overlap_mode isn't respected if two separate raw bindings
@@ -254,12 +272,44 @@ impl AxisBinding {
             .unwrap_or_default()
     }
 
-    fn update(&mut self, input_change: InputChange) {
+    pub fn update(&mut self, input_change: Option<InputChange>) {
+        let Some(input_change) = input_change else {
+            // request to clear
+            self.clear();
+            return;
+        };
         self.active_indices = self
             .raw
             .iter_mut()
             .enumerate()
             .filter_map(|(i, raw)| raw.update(input_change).then_some(i))
             .collect();
+    }
+
+    pub fn bound_inputs(&self) -> Vec<AnyInput> {
+        let mut inputs = Vec::new();
+        for r in &self.raw {
+            match r {
+                RawAxisBinding::Digital {
+                    pair: (low, high), ..
+                } => {
+                    inputs.push(AnyInput::Digital(low.into()));
+                    inputs.push(AnyInput::Digital(high.into()));
+                }
+                RawAxisBinding::Analog { input, .. } => inputs.push(input.into()),
+            };
+        }
+        inputs
+    }
+
+    pub fn changed(&self) -> bool {
+        self.dirty
+    }
+
+    fn clear(&mut self) {
+        self.raw.iter_mut().for_each(|raw| match raw {
+            RawAxisBinding::Digital { .. } => {}
+            RawAxisBinding::Analog { value, .. } => *value = 0.,
+        });
     }
 }

@@ -20,6 +20,7 @@ fontdue="0.7"
 tobj = "3.2"
 msdfgen = "0.2.1"
 ttf-parser = "0.18"
+log = "0.4.19"
 
 
 [dependencies.image]

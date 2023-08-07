@@ -1,12 +1,9 @@
-use std::collections::HashMap;
+use std::ops::Deref;
+use std::ops::DerefMut;
 
 use glam::Vec2;
 pub use miniquad::KeyCode;
-use miniquad::MouseButton;
-
-use super::{
-    AxisBinding, AxisBuilder, Binding, BindingRef, ButtonBinding, ButtonBuilder, RawAxisBinding,
-};
+pub use miniquad::MouseButton;
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
 pub enum StateChange {
@@ -21,8 +18,20 @@ pub struct ButtonState {
 }
 
 #[derive(Debug, Copy, Clone, Eq, Hash, PartialEq)]
-pub(crate) struct DigitalInput {
+pub struct DigitalInput {
     pub raw: KeyCodeOrMouseButton,
+}
+
+impl From<KeyCodeOrMouseButton> for DigitalInput {
+    fn from(raw: KeyCodeOrMouseButton) -> Self {
+        Self { raw }
+    }
+}
+
+impl From<&KeyCodeOrMouseButton> for DigitalInput {
+    fn from(raw: &KeyCodeOrMouseButton) -> Self {
+        Self { raw: *raw }
+    }
 }
 
 impl ButtonState {
@@ -67,7 +76,7 @@ pub enum AnalogInput {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]
-enum AnyInput {
+pub enum AnyInput {
     Digital(DigitalInput),
     Analog(AnalogInput),
 }
@@ -78,14 +87,35 @@ impl From<DigitalInput> for AnyInput {
     }
 }
 
-impl From<AnalogInput> for AnyInput {
-    fn from(i: AnalogInput) -> Self {
-        Self::Analog(i)
+impl From<&DigitalInput> for AnyInput {
+    fn from(i: &DigitalInput) -> Self {
+        Self::Digital(*i)
+    }
+}
+
+impl From<&AnalogInput> for AnyInput {
+    fn from(i: &AnalogInput) -> Self {
+        Self::Analog(*i)
+    }
+}
+
+impl From<KeyCodeOrMouseButton> for AnyInput {
+    fn from(raw: KeyCodeOrMouseButton) -> Self {
+        Self::Digital(raw.into())
+    }
+}
+
+impl<T> From<T> for AnyInput
+where
+    T: Into<AnalogInput>,
+{
+    fn from(a: T) -> Self {
+        Self::Analog(a.into())
     }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
-pub(crate) enum InputChange {
+pub enum InputChange {
     Digital {
         input: DigitalInput,
         state_change: StateChange,
@@ -97,7 +127,7 @@ pub(crate) enum InputChange {
 }
 
 impl InputChange {
-    fn input(&self) -> AnyInput {
+    pub fn input(&self) -> AnyInput {
         match *self {
             InputChange::Digital { input, .. } => input.into(),
             InputChange::Analog { input, .. } => input.into(),
@@ -121,62 +151,42 @@ impl Cursor {
     }
 }
 
-#[derive(Default, Debug)]
-pub struct Input {
-    bindings: Vec<Binding>,
-    by_name: HashMap<String, BindingRef>,
-    bound_inputs: HashMap<AnyInput, BindingRef>,
-    buffered_inputs: Vec<InputChange>,
-    mouse: Cursor,
+#[derive(Debug, Default)]
+pub struct InputManager<Controls: ControlsManager + Default> {
+    pub mouse: Cursor,
+    pub controls: Controls,
 }
 
-impl Input {
-    pub fn axis(&'_ self, b: BindingRef) -> &'_ AxisBinding {
-        &self.bindings[b.0].axis()
-    }
+impl<C: ControlsManager + Default> Deref for InputManager<C> {
+    type Target = C;
 
-    pub fn axis_by_name(&'_ self, name: impl AsRef<str>) -> &'_ AxisBinding {
-        let name = name.as_ref();
-        let b = self
-            .by_name
-            .get(name)
-            .unwrap_or_else(|| panic!("no key {} found", name));
-        match &self.bindings[b.0] {
-            Binding::Axis(a) => a,
-            _ => panic!("binding {} is not an axis", name),
-        }
+    fn deref(&self) -> &Self::Target {
+        &self.controls
     }
+}
 
-    fn buffer_input_event(&mut self, change: InputChange) {
-        // if we don't have any buttons registered for this key, just ignore
-        if !self.bound_inputs.contains_key(&change.input()) {
-            return;
-        }
-        self.buffered_inputs.push(change);
+impl<C: ControlsManager + Default> DerefMut for InputManager<C> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.controls
     }
+}
 
-    pub fn button(&'_ self, b: BindingRef) -> &'_ ButtonBinding {
-        &self.bindings[b.0].button()
-    }
+pub trait ControlsManager {
+    type ControlSet: Sized + std::fmt::Debug + Copy + Eq + std::hash::Hash;
+    fn handle_input(&mut self, change: InputChange);
+    fn controls<'a>() -> &'a [Self::ControlSet];
+    fn bound_inputs(&self, control: &Self::ControlSet) -> Vec<AnyInput>;
 
-    pub fn button_by_name(&'_ self, name: impl AsRef<str>) -> &'_ ButtonBinding {
-        let name = name.as_ref();
-        let b = self
-            .by_name
-            .get(name)
-            .unwrap_or_else(|| panic!("no key {} found", name));
-        match &self.bindings[b.0] {
-            Binding::Button(b) => b,
-            _ => panic!("binding {} is not a button", name),
-        }
-    }
+    /// Clear the last frame-specific state of all defined controls at the beginning of a frame.
+    fn end_frame_update(&mut self);
+}
 
-    pub fn get(&'_ self, b: BindingRef) -> &'_ Binding {
-        &self.bindings[b.0]
-    }
-
+impl<Controls> InputManager<Controls>
+where
+    Controls: ControlsManager + Default,
+{
     pub fn handle_analog_axis_change(&mut self, input: AnalogInput, value: f32) {
-        self.buffer_input_event(InputChange::Analog { input, value });
+        self.handle_input(InputChange::Analog { input, value });
     }
 
     pub fn handle_key_or_button_change(
@@ -184,7 +194,7 @@ impl Input {
         key: impl Into<KeyCodeOrMouseButton>,
         state_change: StateChange,
     ) {
-        self.buffer_input_event(InputChange::Digital {
+        self.handle_input(InputChange::Digital {
             input: DigitalInput { raw: key.into() },
             state_change,
         });
@@ -193,92 +203,17 @@ impl Input {
     pub fn handle_mouse_motion(&mut self, x: f32, y: f32) {
         self.mouse.update_position(Vec2::new(x, y));
         if let Some(d) = self.mouse.last_change {
-            println!("testing {}", d);
             if d.x != 0. {
-                self.buffer_input_event(InputChange::Analog {
+                self.handle_input(InputChange::Analog {
                     input: AnalogInput::MouseMotionX,
                     value: d.x,
                 });
             }
             if d.y != 0. {
-                self.buffer_input_event(InputChange::Analog {
+                self.handle_input(InputChange::Analog {
                     input: AnalogInput::MouseMotionY,
                     value: d.y,
                 });
-            }
-        }
-    }
-
-    pub fn new_axis(&'_ mut self, name: impl Into<String>) -> AxisBuilder<'_> {
-        AxisBuilder::for_input(self, name.into())
-    }
-
-    pub fn new_button(&'_ mut self, name: impl Into<String>) -> ButtonBuilder<'_> {
-        ButtonBuilder::for_input(self, name.into())
-    }
-
-    pub(super) fn register_axis(&mut self, a: AxisBinding) -> BindingRef {
-        let index = self.bindings.len();
-        let axis_binding = BindingRef(index);
-        for raw in &a.raw {
-            match raw {
-                RawAxisBinding::Digital { pair: (l, r), .. } => {
-                    self.bound_inputs
-                        .insert(AnyInput::Digital(DigitalInput { raw: *l }), axis_binding);
-                    self.bound_inputs
-                        .insert(AnyInput::Digital(DigitalInput { raw: *r }), axis_binding);
-                }
-                RawAxisBinding::Analog { input, .. } => {
-                    self.bound_inputs
-                        .insert(AnyInput::Analog(*input), axis_binding);
-                }
-            }
-        }
-        self.by_name.insert(a.name.clone(), axis_binding);
-        self.bindings.push(Binding::Axis(a));
-        axis_binding
-    }
-
-    pub(super) fn register_button(&mut self, b: ButtonBinding) -> BindingRef {
-        let index = self.bindings.len();
-        let button_ref = BindingRef(index);
-        for key in &b.keys {
-            self.bound_inputs
-                .insert(AnyInput::Digital(DigitalInput { raw: *key }), button_ref);
-        }
-        self.by_name.insert(b.name.clone(), button_ref);
-        self.bindings.push(Binding::Button(b));
-        button_ref
-    }
-
-    pub fn register_new_button(&mut self, name: impl Into<String>, keys: &[KeyCode]) -> BindingRef {
-        let mut builder = self.new_button(name);
-        for k in keys {
-            builder = builder.with_key(*k);
-        }
-        builder.register()
-    }
-
-    pub fn update(&mut self) {
-        for b in &mut self.bindings {
-            b.clear();
-        }
-        for input_change in self.buffered_inputs.drain(..) {
-            match input_change {
-                InputChange::Digital { input, .. } => {
-                    let b = self
-                        .bound_inputs
-                        .get(&AnyInput::Digital(input))
-                        .unwrap_or_else(|| panic!("key {:?} not registered", input.raw));
-                    self.bindings[b.0].update(input_change);
-                }
-                InputChange::Analog { input, .. } => {
-                    let b = self
-                        .bound_inputs
-                        .get(&AnyInput::Analog(input))
-                        .unwrap_or_else(|| panic!("analog input {:?} not registered", input));
-                    self.bindings[b.0].update(input_change);
-                }
             }
         }
     }
