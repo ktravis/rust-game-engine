@@ -1,56 +1,43 @@
-use color::Color;
+use controlset_derive::ControlSet;
 use miniquad::*;
-use msdfgen::Vector2;
-use std::{path::Path, time::Duration};
-use transform::Transform2D;
+use std::path::Path;
 
-mod assets;
-mod atlas;
-mod color;
-mod default_shader;
-mod font;
-mod geom;
+use rust_game_engine::transform::Transform2D;
+use rust_game_engine::{
+    assets::{Assets, SpriteRef},
+    color::Color,
+    default_shader, font, resources, transform,
+};
 
-#[macro_use]
-mod input;
-mod mesh;
-mod model;
-mod renderer;
-mod resources;
-mod sprite;
-mod text_shader;
-mod transform;
+use rust_game_engine::geom::Point;
+use rust_game_engine::input::{self, AnalogInput::*, Axis, Button, InputManager, KeyCode as Key};
+use rust_game_engine::renderer::{DisplayMode, InstanceData, RenderPassOptions, Renderer};
 
-use assets::{Assets, SpriteRef};
-
-use geom::Point;
-use input::{AnalogInput, ControlsManager, InputManager, KeyCode};
-use renderer::{DisplayMode, InstanceData, RenderPassOptions, Renderer};
-
-use glam::{vec2, vec3, Mat4, Quat, Vec2, Vec3};
+use glam::{vec3, Mat4, Quat, Vec2};
 
 const WINDOW_DIM: Point = Point { x: 960, y: 720 };
 const TARGET_FRAMERATE: u64 = 60;
 
-declare_inputs! {
-    GameControls {
-        axes [
-            x => (KeyCode::A, KeyCode::D), AnalogInput::MouseMotionX;
-            y => (KeyCode::W, KeyCode::S);
-            scale => (KeyCode::F, KeyCode::R);
-        ]
-        buttons [
-            quit => KeyCode::Escape;
-            next => KeyCode::P;
-            add => KeyCode::O;
-        ]
-    }
+#[derive(ControlSet)]
+struct Controls {
+    #[bind((Key::A, Key::D), MouseMotionX)]
+    x: Axis,
+    #[bind((Key::W, Key::S), MouseMotionY)]
+    y: Axis,
+    #[bind((Key::F, Key::R))]
+    scale: Axis,
+    #[bind(Key::Escape)]
+    quit: Button,
+    #[bind(Key::P)]
+    next: Button,
+    #[bind(Key::O)]
+    add: Button,
 }
 
 struct Stage {
     camera_offset: Vec2,
     renderer: Renderer,
-    input: InputManager<GameControls>,
+    input: InputManager<Controls>,
     xy: Vec2,
     sprite_atlas_texture: Texture,
     assets: Assets,
@@ -172,7 +159,7 @@ impl Stage {
                 resources::texture_from_image(ctx, self.assets.atlas.image());
         }
 
-        if self.input.buttons.quit.state.just_pressed {
+        if self.input.quit.just_pressed {
             return false;
         }
         if self.frame_counter >= 50 {
@@ -181,15 +168,15 @@ impl Stage {
             self.frame_timer = 0.0;
         }
 
-        self.xy.x += 100. * self.delta * self.input.axes.x.value();
-        self.xy.y += 100. * self.delta * self.input.axes.y.value();
+        self.xy.x += 100. * self.delta * self.input.x.value();
+        self.xy.y += 100. * self.delta * self.input.y.value();
         self.render_scale =
-            (self.render_scale + 20. * self.delta * self.input.axes.scale.value()).clamp(0.5, 40.);
+            (self.render_scale + 20. * self.delta * self.input.scale.value()).clamp(0.5, 40.);
 
-        if self.input.buttons.next.just_pressed() {
+        if self.input.next.just_pressed() {
             self.frame_index = (self.frame_index + 1) % self.assets.get_sprite(self.s).frames.len();
         }
-        if self.input.buttons.add.is_down() {
+        if self.input.add.is_down() {
             println!("{}", self.sprite_pos.len());
             for _ in 0..100 {
                 self.sprite_pos.push(Point::new(

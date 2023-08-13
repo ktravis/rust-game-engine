@@ -1,5 +1,5 @@
 [package]
-name = "miniquad-test"
+name = "rust-game-engine"
 version = "0.1.0"
 edition = "2021"
 
@@ -21,6 +21,8 @@ tobj = "3.2"
 msdfgen = "0.2.1"
 ttf-parser = "0.18"
 log = "0.4.19"
+
+controlset-derive = { path = "controlset-derive" }
 
 
 [dependencies.image]

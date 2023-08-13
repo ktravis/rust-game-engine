@@ -1,139 +1,10 @@
+use std::collections::HashMap;
 use std::ops::Deref;
 use std::ops::DerefMut;
 
 use glam::Vec2;
-pub use miniquad::KeyCode;
-pub use miniquad::MouseButton;
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
-pub enum StateChange {
-    Pressed,
-    Released,
-}
-
-#[derive(Debug, Default, Copy, Clone)]
-pub struct ButtonState {
-    pub just_pressed: bool,
-    pub is_down: bool,
-}
-
-#[derive(Debug, Copy, Clone, Eq, Hash, PartialEq)]
-pub struct DigitalInput {
-    pub raw: KeyCodeOrMouseButton,
-}
-
-impl From<KeyCodeOrMouseButton> for DigitalInput {
-    fn from(raw: KeyCodeOrMouseButton) -> Self {
-        Self { raw }
-    }
-}
-
-impl From<&KeyCodeOrMouseButton> for DigitalInput {
-    fn from(raw: &KeyCodeOrMouseButton) -> Self {
-        Self { raw: *raw }
-    }
-}
-
-impl ButtonState {
-    pub fn update(&mut self, change: StateChange) {
-        match change {
-            StateChange::Pressed => {
-                self.just_pressed = !self.is_down;
-                self.is_down = true;
-            }
-            StateChange::Released => {
-                self.just_pressed = false;
-                self.is_down = false;
-            }
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]
-pub enum KeyCodeOrMouseButton {
-    KeyCode(KeyCode),
-    MouseButton(MouseButton),
-}
-
-impl From<KeyCode> for KeyCodeOrMouseButton {
-    fn from(kc: KeyCode) -> Self {
-        KeyCodeOrMouseButton::KeyCode(kc)
-    }
-}
-
-impl From<MouseButton> for KeyCodeOrMouseButton {
-    fn from(kc: MouseButton) -> Self {
-        KeyCodeOrMouseButton::MouseButton(kc)
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]
-pub enum AnalogInput {
-    MouseMotionX,
-    MouseMotionY,
-    MouseWheelX,
-    MouseWheelY,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]
-pub enum AnyInput {
-    Digital(DigitalInput),
-    Analog(AnalogInput),
-}
-
-impl From<DigitalInput> for AnyInput {
-    fn from(i: DigitalInput) -> Self {
-        Self::Digital(i)
-    }
-}
-
-impl From<&DigitalInput> for AnyInput {
-    fn from(i: &DigitalInput) -> Self {
-        Self::Digital(*i)
-    }
-}
-
-impl From<&AnalogInput> for AnyInput {
-    fn from(i: &AnalogInput) -> Self {
-        Self::Analog(*i)
-    }
-}
-
-impl From<KeyCodeOrMouseButton> for AnyInput {
-    fn from(raw: KeyCodeOrMouseButton) -> Self {
-        Self::Digital(raw.into())
-    }
-}
-
-impl<T> From<T> for AnyInput
-where
-    T: Into<AnalogInput>,
-{
-    fn from(a: T) -> Self {
-        Self::Analog(a.into())
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub enum InputChange {
-    Digital {
-        input: DigitalInput,
-        state_change: StateChange,
-    },
-    Analog {
-        input: AnalogInput,
-        value: f32,
-    },
-}
-
-impl InputChange {
-    pub fn input(&self) -> AnyInput {
-        match *self {
-            InputChange::Digital { input, .. } => input.into(),
-            InputChange::Analog { input, .. } => input.into(),
-        }
-    }
-}
+use super::{AnalogInput, AnyInput, DigitalInput, InputChange, KeyCodeOrMouseButton, StateChange};
 
 #[derive(Default, Debug)]
 pub struct Cursor {
@@ -151,13 +22,26 @@ impl Cursor {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct InputManager<Controls: ControlsManager + Default> {
+#[derive(Debug)]
+pub struct InputManager<Controls: ControlSet> {
     pub mouse: Cursor,
     pub controls: Controls,
+    inputs_by_control: HashMap<Controls::Control, Vec<AnyInput>>,
+    controls_by_input: HashMap<AnyInput, Vec<Controls::Control>>,
 }
 
-impl<C: ControlsManager + Default> Deref for InputManager<C> {
+impl<C: ControlSet + Default> Default for InputManager<C> {
+    fn default() -> Self {
+        Self {
+            mouse: Cursor::default(),
+            controls: C::default(),
+            inputs_by_control: HashMap::default(),
+            controls_by_input: HashMap::default(),
+        }
+    }
+}
+
+impl<C: ControlSet> Deref for InputManager<C> {
     type Target = C;
 
     fn deref(&self) -> &Self::Target {
@@ -165,28 +49,27 @@ impl<C: ControlsManager + Default> Deref for InputManager<C> {
     }
 }
 
-impl<C: ControlsManager + Default> DerefMut for InputManager<C> {
+impl<C: ControlSet> DerefMut for InputManager<C> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.controls
     }
 }
 
-pub trait ControlsManager {
-    type ControlSet: Sized + std::fmt::Debug + Copy + Eq + std::hash::Hash;
-    fn handle_input(&mut self, change: InputChange);
-    fn controls<'a>() -> &'a [Self::ControlSet];
-    fn bound_inputs(&self, control: &Self::ControlSet) -> Vec<AnyInput>;
-
-    /// Clear the last frame-specific state of all defined controls at the beginning of a frame.
-    fn end_frame_update(&mut self);
+pub trait ControlSet {
+    type Control: Sized + std::fmt::Debug + Copy + Eq + std::hash::Hash;
+    fn controls<'a>() -> &'a [Self::Control];
+    fn handle_input(&mut self, control: &Self::Control, change: Option<InputChange>);
+    fn bound_inputs(&self, control: &Self::Control) -> Vec<AnyInput>;
+    fn control_changed(&self, control: &Self::Control) -> bool;
+    fn clear_control_changed(&mut self, control: &Self::Control);
 }
 
 impl<Controls> InputManager<Controls>
 where
-    Controls: ControlsManager + Default,
+    Controls: ControlSet,
 {
     pub fn handle_analog_axis_change(&mut self, input: AnalogInput, value: f32) {
-        self.handle_input(InputChange::Analog { input, value });
+        self.handle_input_change(InputChange::Analog { input, value });
     }
 
     pub fn handle_key_or_button_change(
@@ -194,7 +77,7 @@ where
         key: impl Into<KeyCodeOrMouseButton>,
         state_change: StateChange,
     ) {
-        self.handle_input(InputChange::Digital {
+        self.handle_input_change(InputChange::Digital {
             input: DigitalInput { raw: key.into() },
             state_change,
         });
@@ -204,17 +87,52 @@ where
         self.mouse.update_position(Vec2::new(x, y));
         if let Some(d) = self.mouse.last_change {
             if d.x != 0. {
-                self.handle_input(InputChange::Analog {
+                self.handle_input_change(InputChange::Analog {
                     input: AnalogInput::MouseMotionX,
                     value: d.x,
                 });
             }
             if d.y != 0. {
-                self.handle_input(InputChange::Analog {
+                self.handle_input_change(InputChange::Analog {
                     input: AnalogInput::MouseMotionY,
                     value: d.y,
                 });
             }
+        }
+    }
+
+    fn handle_input_change(&mut self, input_change: InputChange) {
+        let Some(controls_to_update) = self.controls_by_input.get(&input_change.input()) else {
+            return;
+        };
+        for control in controls_to_update {
+            self.controls.handle_input(control, Some(input_change));
+        }
+    }
+
+    fn update_mappings(&mut self) {
+        self.inputs_by_control.clear();
+        self.controls_by_input.clear();
+
+        for control in Controls::controls() {
+            self.inputs_by_control
+                .insert(*control, self.bound_inputs(&control));
+            self.bound_inputs(control).iter().for_each(|i| {
+                self.controls_by_input.entry(*i).or_default().push(*control);
+            });
+            self.clear_control_changed(control);
+        }
+    }
+
+    pub fn end_frame_update(&mut self) {
+        for control in Controls::controls() {
+            if self.control_changed(control) {
+                self.update_mappings();
+                break;
+            }
+        }
+        for control in Controls::controls() {
+            self.handle_input(control, None);
         }
     }
 }
