@@ -32,6 +32,7 @@ struct Controls {
     next: Button,
     #[bind(Key::O)]
     add: Button,
+    blah: Button,
 }
 
 struct Stage {

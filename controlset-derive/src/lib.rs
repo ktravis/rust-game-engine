@@ -1,8 +1,7 @@
 use proc_macro2::{Ident, Span, TokenStream};
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, quote_spanned};
 use syn::{
-    punctuated::Punctuated, Data, DeriveInput, Error, Expr, ExprArray, Fields, MetaList, Result,
-    Token,
+    punctuated::Punctuated, spanned::Spanned, Data, DeriveInput, Error, Expr, Fields, Result, Token,
 };
 
 #[proc_macro_derive(ControlSet, attributes(bind))]
@@ -79,13 +78,19 @@ impl ControlSetData {
                     let e = a.meta.require_list()?;
                     let t = e.parse_args_with(Punctuated::<Expr, Token![,]>::parse_terminated)?;
                     for item in t {
-                        bindings.push(item);
+                        bindings.push(quote_spanned! (item.span()=>
+                            (#item).into()
+                        ));
                     }
+                    if bindings.len() == 0 {
+                        return Err(Error::new_spanned(e, "bind attribute expects arguments"));
+                    }
+                    break;
                 }
             }
-            fields.push(quote!(
+            fields.push(quote_spanned!(f.span()=>
                 #field_ident : <#ty>::new(vec![
-                    #((#bindings).into(),)*
+                    #(#bindings,)*
                 ])
             ));
         }
