@@ -180,6 +180,13 @@ impl Axis {
         }
     }
 
+    pub fn with_overlap_mode(self, overlap_mode: OverlapMode) -> Self {
+        Self {
+            overlap_mode,
+            ..self
+        }
+    }
+
     /// Value from -1.0 to 1.0
     pub fn value(&self) -> f32 {
         // TODO: overlap_mode isn't respected if two separate raw bindings

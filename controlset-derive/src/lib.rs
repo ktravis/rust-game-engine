@@ -1,10 +1,11 @@
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote, quote_spanned};
 use syn::{
-    punctuated::Punctuated, spanned::Spanned, Data, DeriveInput, Error, Expr, Fields, Result, Token,
+    punctuated::Punctuated, spanned::Spanned, Data, DeriveInput, Error, Expr, ExprLit, Fields, Lit,
+    Result, Token,
 };
 
-#[proc_macro_derive(ControlSet, attributes(bind))]
+#[proc_macro_derive(ControlSet, attributes(bind, overlap_mode))]
 pub fn derive_control_set(ts: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let ast = syn::parse_macro_input!(ts as DeriveInput);
     expand_control_set(ast)
@@ -73,11 +74,13 @@ impl ControlSetData {
             let field_ident = f.ident.clone().expect("field must be named");
             let ty = f.ty.clone();
             let mut bindings = vec![];
+            let mut overlap_mode: Option<TokenStream> = None;
             for a in &f.attrs {
                 if a.path().is_ident("bind") {
                     let e = a.meta.require_list()?;
-                    let t = e.parse_args_with(Punctuated::<Expr, Token![,]>::parse_terminated)?;
-                    for item in t {
+                    let args =
+                        e.parse_args_with(Punctuated::<Expr, Token![,]>::parse_terminated)?;
+                    for item in args {
                         bindings.push(quote_spanned! (item.span()=>
                             (#item).into()
                         ));
@@ -85,13 +88,41 @@ impl ControlSetData {
                     if bindings.len() == 0 {
                         return Err(Error::new_spanned(e, "bind attribute expects arguments"));
                     }
-                    break;
+                } else if a.path().is_ident("overlap_mode") {
+                    let kv = a.meta.require_name_value()?;
+                    if let Expr::Lit(ExprLit {
+                        lit: Lit::Str(s), ..
+                    }) = &kv.value
+                    {
+                        overlap_mode = Some(match s.value().as_str() {
+                            "first" => quote!(::rust_game_engine::input::OverlapMode::First),
+                            "latest" => quote!(::rust_game_engine::input::OverlapMode::Latest),
+                            "neutral" => quote!(::rust_game_engine::input::OverlapMode::Neutral),
+                            x => {
+                                return Err(Error::new_spanned(
+                                    kv.value.clone(),
+                                    format!("Unrecognized overlap_mode '{}'", x),
+                                ));
+                            }
+                        });
+                    } else {
+                        return Err(Error::new_spanned(
+                            kv.value.clone(),
+                            format!("Expected overlap_mode as string literal"),
+                        ));
+                    }
                 }
             }
+            let with_overlap_mode = overlap_mode.map(|e| {
+                quote_spanned!(e.span()=>
+                    . with_overlap_mode ( #e )
+                )
+            });
             fields.push(quote_spanned!(f.span()=>
                 #field_ident : <#ty>::new(vec![
                     #(#bindings,)*
                 ])
+                #with_overlap_mode
             ));
         }
 
