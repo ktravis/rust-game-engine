@@ -59,7 +59,7 @@ impl Model {
         Ok(Model { meshes })
     }
 
-    pub fn as_single_mesh(self) -> Mesh {
+    pub fn to_single_mesh(self) -> Mesh {
         self.meshes
             .into_iter()
             .map(|ModelMesh { mesh, .. }| mesh)

@@ -2,13 +2,11 @@ use std::collections::HashMap;
 
 use glam::{vec2, Vec2};
 use image::{Pixel, Rgba, RgbaImage};
-use msdfgen::{
-    Bitmap, Bound, FillRule, FontExt, Framing, MsdfGeneratorConfig, Projection, Range, Vector2,
-};
+use msdfgen::{Bitmap, Bound, FillRule, FontExt, Framing, MsdfGeneratorConfig, Range};
 
 use crate::{
     atlas::{Atlas, AtlasBuilder},
-    geom::{Point, Rect},
+    geom::Rect,
 };
 use ttf_parser::Face;
 
