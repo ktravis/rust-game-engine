@@ -8,7 +8,7 @@ use msdfgen::{
 
 use crate::{
     atlas::{Atlas, AtlasBuilder},
-    geom::Rect,
+    geom::{Point, Rect},
 };
 use ttf_parser::Face;
 
@@ -41,10 +41,17 @@ impl std::ops::Deref for GlyphData {
     }
 }
 
+impl std::ops::DerefMut for GlyphData {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.metrics
+    }
+}
+
 pub struct FontAtlas {
     atlas: Atlas,
     glyph_data: HashMap<char, GlyphData>,
-    pub line_height: i16,
+    pub line_height_units: i16,
+    pub line_height_pixels: f32,
     pub pixels_per_em: u32,
     pub pixel_scale: f32,
     pub units_per_em: u16,
@@ -185,10 +192,14 @@ impl FontAtlas {
         //     }
         // }
 
+        let line_height_units = face.line_gap() + face.height();
+        let line_height_pixels = line_height_units as f32 * pixels_per_unit;
+
         Ok(FontAtlas {
             atlas,
             glyph_data,
-            line_height: face.line_gap() + face.height(),
+            line_height_units,
+            line_height_pixels,
             pixels_per_em: config.pixels_per_em,
             pixel_scale: pixels_per_unit,
             units_per_em,
@@ -204,6 +215,52 @@ impl FontAtlas {
             .glyph_data
             .get(&glyph)
             .expect(&format!("glyph not found in atlas: {}", glyph))
+    }
+
+    pub fn layout_text<'a>(
+        &'a self,
+        text: &'a str,
+        opts: LayoutOptions,
+    ) -> impl Iterator<Item = GlyphData> + 'a {
+        let mut cursor = Vec2::default();
+        text.chars().filter_map(move |c| {
+            if c.is_whitespace() {
+                match c {
+                    ' ' => cursor.x += 0.25 * (self.pixels_per_em as f32) * opts.scale,
+                    '\t' => cursor.x += 2. * (self.pixels_per_em as f32) * opts.scale,
+                    '\n' => {
+                        cursor.x = 0.0;
+                        cursor.y += self.line_height_pixels * opts.scale;
+                    }
+                    _ => {}
+                }
+                None
+            } else {
+                let mut glyph_data = self.glyph_data(c);
+                glyph_data.bounds.pos.y *= opts.scale;
+                glyph_data.bounds.pos += cursor;
+                glyph_data.bounds.dim *= opts.scale;
+                cursor.x += glyph_data.bounds.dim.x;
+                Some(glyph_data)
+            }
+        })
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct LayoutOptions {
+    pub scale: f32,
+}
+
+impl Default for LayoutOptions {
+    fn default() -> Self {
+        Self { scale: 1.0 }
+    }
+}
+
+impl LayoutOptions {
+    pub fn scale(scale: f32) -> Self {
+        Self { scale }
     }
 }
 

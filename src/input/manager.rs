@@ -4,23 +4,9 @@ use std::ops::DerefMut;
 
 use glam::Vec2;
 
-use super::{AnalogInput, AnyInput, DigitalInput, InputChange, KeyCodeOrMouseButton, StateChange};
-
-#[derive(Default, Debug)]
-pub struct Cursor {
-    position: Vec2,
-    last_change: Option<Vec2>,
-}
-
-impl Cursor {
-    pub fn update_position(&mut self, new_position: Vec2) {
-        self.last_change = Some(match self.last_change {
-            Some(_) => new_position - self.position,
-            None => Vec2::ZERO,
-        });
-        self.position = new_position;
-    }
-}
+use super::{
+    AnalogInput, AnyInput, Cursor, DigitalInput, InputChange, KeyCodeOrMouseButton, StateChange,
+};
 
 #[derive(Debug)]
 pub struct InputManager<Controls: ControlSet> {
@@ -84,20 +70,20 @@ where
     }
 
     pub fn handle_mouse_motion(&mut self, x: f32, y: f32) {
-        self.mouse.update_position(Vec2::new(x, y));
-        if let Some(d) = self.mouse.last_change {
-            if d.x != 0. {
-                self.handle_input_change(InputChange::Analog {
-                    input: AnalogInput::MouseMotionX,
-                    value: d.x,
-                });
-            }
-            if d.y != 0. {
-                self.handle_input_change(InputChange::Analog {
-                    input: AnalogInput::MouseMotionY,
-                    value: d.y,
-                });
-            }
+        let Some(d) = self.mouse.update_position(Vec2::new(x, y)) else {
+            return;
+        };
+        if d.x != 0. {
+            self.handle_input_change(InputChange::Analog {
+                input: AnalogInput::MouseMotionX,
+                value: d.x,
+            });
+        }
+        if d.y != 0. {
+            self.handle_input_change(InputChange::Analog {
+                input: AnalogInput::MouseMotionY,
+                value: d.y,
+            });
         }
     }
 

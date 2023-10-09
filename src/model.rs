@@ -1,13 +1,20 @@
-use crate::{geom::VertexData, mesh::Mesh};
+use crate::geom::VertexData;
+use crate::{geom::ModelVertexData, mesh::Mesh};
 
 #[derive(Clone, Default, Debug)]
-pub struct ModelMesh<V = VertexData, I = u16> {
+pub struct ModelMesh<V = ModelVertexData, I = u16>
+where
+    V: VertexData,
+{
     mesh: Mesh<V, I>,
     material: Option<tobj::Material>,
 }
 
 #[derive(Clone, Default, Debug)]
-pub struct Model<V = VertexData, I = u16> {
+pub struct Model<V = ModelVertexData, I = u16>
+where
+    V: VertexData,
+{
     meshes: Vec<ModelMesh<V, I>>,
 }
 
@@ -42,7 +49,7 @@ impl Model {
                         .step_by(2)
                         .map(|(i, _)| glam::vec2(raw_mesh.texcoords[i], raw_mesh.texcoords[i + 1])),
                 )
-                .map(|(pos, uv)| VertexData { pos, uv })
+                .map(|(pos, uv)| ModelVertexData { pos, uv })
                 .collect();
             let indices = raw_mesh.indices.iter().map(|i| *i as u16).collect();
             let mesh = Mesh { vertices, indices };

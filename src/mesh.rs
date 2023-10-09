@@ -1,12 +1,15 @@
-use crate::geom::VertexData;
+use crate::geom::{ModelVertexData, VertexData};
 
 #[derive(Clone, Default, Debug)]
-pub struct Mesh<V = VertexData, I = u16> {
+pub struct Mesh<V = ModelVertexData, I = u16>
+where
+    V: VertexData,
+{
     pub vertices: Vec<V>,
     pub indices: Vec<I>,
 }
 
-impl<V, I, E> Mesh<V, I>
+impl<V: VertexData, I, E> Mesh<V, I>
 where
     I: std::ops::Add<I, Output = I> + std::convert::TryFrom<usize, Error = E>,
     E: std::fmt::Debug,

@@ -130,7 +130,7 @@ impl RawAxisBinding {
         use AxisDirection::*;
         use DigitalAxisState::*;
         use RawAxisBinding::*;
-        match self {
+        return match self {
             Digital {
                 pair: (l, r),
                 state,
@@ -147,7 +147,7 @@ impl RawAxisBinding {
                     return *state != None;
                 };
                 *state = state.update(dir, state_change);
-                return *state != None;
+                *state != None
             }
             Analog { value, .. } => {
                 if let InputChange::Analog {
@@ -156,7 +156,7 @@ impl RawAxisBinding {
                 {
                     *value = new_value;
                 };
-                return *value != 0.0;
+                *value != 0.0
             }
         };
     }

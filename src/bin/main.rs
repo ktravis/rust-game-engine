@@ -1,19 +1,26 @@
 use controlset_derive::ControlSet;
 use miniquad::*;
+use rust_game_engine::font::{FontAtlas, LayoutOptions};
+use std::cell::Cell;
 use std::path::Path;
+use std::rc::Rc;
+use ttf_parser::Face;
 
-use rust_game_engine::transform::Transform2D;
 use rust_game_engine::{
     assets::{Assets, SpriteRef},
     color::Color,
-    default_shader, font, resources, transform,
+    default_shader, model_shader, resources, text_shader, transform,
 };
 
-use rust_game_engine::geom::Point;
+use rust_game_engine::geom::{cube, quad, ModelVertexData, Point};
 use rust_game_engine::input::{self, AnalogInput::*, Axis, Button, InputManager, KeyCode as Key};
-use rust_game_engine::renderer::{DisplayMode, InstanceData, RenderPassOptions, Renderer};
+use rust_game_engine::renderer::{
+    BasicRenderPipeline, DisplayMode, InstancedRenderPipeline, ModelInstanceData,
+    OffscreenFramebuffer, RawInstanceData, RenderPassOptions, RenderTarget, TextDisplayOptions,
+};
 
 use glam::{vec3, Mat4, Quat, Vec2};
+use rust_game_engine::mesh_manager::{MeshManager, MeshOffsets};
 
 const WINDOW_DIM: Point = Point { x: 960, y: 720 };
 const TARGET_FRAMERATE: u64 = 60;
@@ -35,9 +42,16 @@ struct Controls {
     blah: Button,
 }
 
+struct RenderPipelines {
+    basic: BasicRenderPipeline,
+    model: InstancedRenderPipeline<ModelVertexData, RawInstanceData>,
+    text: InstancedRenderPipeline<ModelVertexData, RawInstanceData>,
+}
+
 struct Stage {
     camera_offset: Vec2,
-    renderer: Renderer,
+    // renderer: Renderer,
+    font_atlas: FontAtlas,
     input: InputManager<Controls>,
     xy: Vec2,
     sprite_atlas_texture: Texture,
@@ -57,6 +71,13 @@ struct Stage {
     render_target_size_px: Point<u32>,
     angle: f32,
     render_scale: f32,
+    backbuffer_target: OffscreenFramebuffer,
+    render_pipelines: RenderPipelines,
+    // text_render_pipeline: InstancedRenderPipeline<ModelVertexData, RawInstanceData>,
+    mesh_manager: MeshManager<ModelVertexData>,
+    font_texture: Texture,
+    quad_mesh: Rc<Cell<MeshOffsets>>,
+    cube_mesh: Rc<Cell<MeshOffsets>>,
 }
 
 impl Stage {
@@ -91,13 +112,13 @@ impl Stage {
                 .into_rgba8(),
         );
 
-        let shader = Shader::new(
+        let model_shader = Shader::new(
             ctx,
-            default_shader::VERTEX,
-            default_shader::FRAGMENT,
-            default_shader::meta(),
+            model_shader::VERTEX,
+            model_shader::FRAGMENT,
+            model_shader::meta(),
         )
-        .expect("default shader creation failed");
+        .expect("model shader creation failed");
 
         let depth_texture = Texture::new_render_texture(
             ctx,
@@ -109,14 +130,44 @@ impl Stage {
             },
         );
 
-        let renderer = Renderer::new(
+        let b = std::fs::read("./res/fonts/Ubuntu-M.ttf").unwrap();
+        let face = Face::parse(&b, 0).unwrap();
+        let font_atlas = FontAtlas::new(face, Default::default()).unwrap();
+        let font_texture = resources::texture_from_image_with_params(
             ctx,
-            render_target_texture,
-            depth_texture,
-            // None,
-            shader,
-            DisplayMode::Centered,
+            font_atlas.image(),
+            TextureParams {
+                format: TextureFormat::RGBA8,
+                wrap: TextureWrap::Clamp,
+                filter: FilterMode::Linear,
+                width: font_atlas.image().width(),
+                height: font_atlas.image().height(),
+            },
         );
+
+        // let renderer = Renderer::new(ctx, font_texture, model_shader);
+        let basic_shader = Shader::new(
+            ctx,
+            default_shader::VERTEX,
+            default_shader::FRAGMENT,
+            default_shader::meta(),
+        )
+        .expect("default shader creation failed");
+        let text_shader = Shader::new(
+            ctx,
+            text_shader::VERTEX,
+            text_shader::FRAGMENT,
+            text_shader::meta(),
+        )
+        .expect("text shader creation failed");
+        let render_pipelines = RenderPipelines {
+            basic: BasicRenderPipeline::new(ctx, basic_shader),
+            model: InstancedRenderPipeline::new(ctx, model_shader),
+            text: InstancedRenderPipeline::new(ctx, text_shader),
+        };
+
+        let backbuffer_target =
+            OffscreenFramebuffer::new(ctx, render_target_texture, depth_texture);
 
         let sprite_pos = (0..10)
             .map(|_| {
@@ -127,9 +178,13 @@ impl Stage {
             })
             .collect();
         let s = assets.get_sprite_ref("guy").unwrap();
+        let mut mesh_manager = MeshManager::default();
+        let quad_mesh = mesh_manager.add("quad", quad::mesh());
+        let cube_mesh = mesh_manager.add("cube", cube::mesh());
         Stage {
             sprite_pos,
-            renderer,
+            // renderer,
+            font_atlas,
             input: Default::default(),
             camera_offset: Default::default(),
             xy: Vec2::default(),
@@ -147,6 +202,12 @@ impl Stage {
             render_target_size_px,
             angle: 0.,
             render_scale: 1.,
+            backbuffer_target,
+            mesh_manager,
+            font_texture,
+            quad_mesh,
+            cube_mesh,
+            render_pipelines,
         }
     }
 
@@ -193,28 +254,41 @@ impl Stage {
     }
 
     fn draw(&mut self, ctx: &mut GraphicsContext) {
+        let geometry_buffers = self.mesh_manager.buffers(ctx);
         {
-            let mut r = self
-                .renderer
-                .begin_offscreen_pass(ctx, RenderPassOptions::clear(Color::from(0x3f3f74ffu32)));
+            let mut r = self.render_pipelines.model.begin_pass(
+                ctx,
+                self.backbuffer_target.into(),
+                &geometry_buffers,
+                Some(vec![self.sprite_atlas_texture]),
+                self.quad_mesh.clone(),
+                RenderPassOptions::clear(Color::from(0x3f3f74ffu32)),
+            );
             r.push_transform(Mat4::from_translation(self.camera_offset.extend(1.0)));
-            r.set_texture(self.sprite_atlas_texture);
+            // r.set_texture(self.sprite_atlas_texture);
 
             let s = self.assets.get_sprite(self.s);
-            let offset = Point::new(self.xy.x.floor() as _, self.xy.y.floor() as _);
             for xy in &self.sprite_pos {
-                r.draw_sprite_frame(offset + *xy, s, self.frame_index);
+                r.draw_sprite_frame(self.xy + xy.as_vec2(), s, self.frame_index);
             }
         }
 
         // draw a screen-sized quad using the previously rendered offscreen render-target as texture
-        self.renderer.draw_to_screen(ctx);
+        self.backbuffer_target.draw_to_screen(
+            ctx,
+            &mut self.render_pipelines.basic,
+            DisplayMode::Centered,
+        );
 
         {
-            let mut r = self.renderer.begin_screen_pass(
+            let mut r = self.render_pipelines.model.begin_pass(
                 ctx,
+                RenderTarget::Default,
+                &geometry_buffers,
+                Some(vec![self.crate_texture]),
+                self.quad_mesh.clone(),
                 RenderPassOptions::clear_depth(1.)
-                    .with_projection(glam::Mat4::perspective_lh(
+                    .with_projection(Mat4::perspective_lh(
                         60f32.to_radians(),
                         WINDOW_DIM.x as f32 / WINDOW_DIM.y as f32,
                         0.01,
@@ -223,59 +297,59 @@ impl Stage {
                     .with_view_transform(Mat4::look_at_lh(
                         vec3(self.xy.x / 10., 1., self.xy.y / 10. - 4.),
                         vec3(0., 0., 0.),
-                        vec3(0., 1., 0.),
+                        vec3(0., -1., 0.),
                     )),
             );
             r.set_texture(self.crate_texture);
-            r.draw_cube(InstanceData {
-                transform: transform::Transform3D {
-                    rotation: Quat::from_rotation_x(self.angle) * Quat::from_rotation_y(self.angle),
+            r.render_mesh(
+                self.cube_mesh.clone(),
+                ModelInstanceData {
+                    transform: transform::Transform3D {
+                        rotation: Quat::from_rotation_x(self.angle)
+                            * Quat::from_rotation_y(self.angle),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
-                ..Default::default()
-            });
+            );
         }
 
         {
-            let s = format!("fps:{:.0}", self.sampled_fps);
+            let s = format!("fps: {:.0}", self.sampled_fps);
             let scale = self.render_scale.clamp(1., 20.);
-            let glyphs = s
-                .chars()
-                .map(|c| (self.renderer.font_atlas.glyph_data(c)))
-                .collect::<Vec<font::GlyphData>>();
-            let mut r = self.renderer.begin_text_pass(
+            let mut r = self.render_pipelines.text.begin_pass(
                 ctx,
-                PassAction::Clear {
-                    color: None,
-                    depth: Some(1.),
-                    stencil: None,
-                },
-                Mat4::IDENTITY,
-                glam::Mat4::orthographic_lh(
+                RenderTarget::Default,
+                &geometry_buffers,
+                Some(vec![self.font_texture]),
+                self.quad_mesh.clone(),
+                RenderPassOptions::clear_depth(1.0).with_projection(Mat4::orthographic_lh(
                     0.0,
                     WINDOW_DIM.x as f32,
                     WINDOW_DIM.y as f32,
                     0.0,
                     1.0,
                     -1.0,
-                ),
+                )),
             );
-            let mut pos = glam::vec2(10., 40.);
-            for glyph_data in glyphs {
-                let offset = glyph_data.bounds.pos * scale;
-                let glyph_quad_size = glyph_data.bounds.dim * scale;
-
-                r.draw_quad(InstanceData::<Transform2D> {
-                    transform: Transform2D {
-                        pos: pos + offset,
-                        scale: glyph_quad_size,
-                        angle: 0.,
-                    },
-                    subtexture: glyph_data.subtexture,
-                    ..Default::default()
-                });
-                pos.x += scale * glyph_data.metrics.bounds.dim.x;
-            }
+            r.draw_text(
+                (10., 40.).into(),
+                &s,
+                &self.font_atlas,
+                TextDisplayOptions {
+                    color: Color::WHITE,
+                    layout: LayoutOptions::scale(scale),
+                },
+            );
+            r.draw_text(
+                self.input.mouse.position(),
+                "test\nokay right? nice.",
+                &self.font_atlas,
+                TextDisplayOptions {
+                    color: Color::WHITE,
+                    layout: LayoutOptions::scale(scale),
+                },
+            );
         }
 
         ctx.commit_frame();
@@ -285,7 +359,7 @@ impl Stage {
 impl EventHandler for Stage {
     fn update(&mut self, ctx: &mut Context) {
         self.frame_counter += 1;
-        let time = miniquad::date::now();
+        let time = date::now();
         self.delta = if self.frame_start < 0.0 {
             1.0 / 60.0
         } else {
@@ -300,24 +374,6 @@ impl EventHandler for Stage {
         self.input.end_frame_update();
     }
 
-    fn key_down_event(
-        &mut self,
-        _ctx: &mut Context,
-        keycode: KeyCode,
-        _keymods: KeyMods,
-        _repeat: bool,
-    ) {
-        self.input
-            .handle_key_or_button_change(keycode, input::StateChange::Pressed);
-    }
-
-    fn key_up_event(&mut self, _ctx: &mut Context, keycode: KeyCode, _keymods: KeyMods) {
-        self.input
-            .handle_key_or_button_change(keycode, input::StateChange::Released);
-    }
-
-    fn resize_event(&mut self, _ctx: &mut Context, _width: f32, _height: f32) {}
-
     fn draw(&mut self, ctx: &mut Context) {
         Stage::draw(self, ctx);
         // let current_frame_time = miniquad::date::now() - self.frame_start + 0.0005;
@@ -328,18 +384,18 @@ impl EventHandler for Stage {
         // }
     }
 
+    fn resize_event(&mut self, _ctx: &mut Context, _width: f32, _height: f32) {}
+
     fn mouse_motion_event(&mut self, _ctx: &mut Context, x: f32, y: f32) {
         self.input.handle_mouse_motion(x, y)
     }
 
     fn mouse_wheel_event(&mut self, _ctx: &mut Context, x: f32, y: f32) {
         if x != 0. {
-            self.input
-                .handle_analog_axis_change(input::AnalogInput::MouseWheelX, x);
+            self.input.handle_analog_axis_change(MouseWheelX, x);
         }
         if y != 0. {
-            self.input
-                .handle_analog_axis_change(input::AnalogInput::MouseWheelY, y);
+            self.input.handle_analog_axis_change(MouseWheelY, y);
         }
     }
 
@@ -366,6 +422,22 @@ impl EventHandler for Stage {
         _keymods: KeyMods,
         _repeat: bool,
     ) {
+    }
+
+    fn key_down_event(
+        &mut self,
+        _ctx: &mut Context,
+        keycode: KeyCode,
+        _keymods: KeyMods,
+        _repeat: bool,
+    ) {
+        self.input
+            .handle_key_or_button_change(keycode, input::StateChange::Pressed);
+    }
+
+    fn key_up_event(&mut self, _ctx: &mut Context, keycode: KeyCode, _keymods: KeyMods) {
+        self.input
+            .handle_key_or_button_change(keycode, input::StateChange::Released);
     }
 
     fn touch_event(&mut self, ctx: &mut Context, phase: TouchPhase, _id: u64, x: f32, y: f32) {
@@ -399,5 +471,5 @@ fn main() {
         window_height: WINDOW_DIM.y,
         ..Default::default()
     };
-    miniquad::start(config, |ctx| Box::new(Stage::new(ctx)));
+    start(config, |ctx| Box::new(Stage::new(ctx)));
 }

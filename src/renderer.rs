@@ -1,29 +1,59 @@
-use glam::{vec2, vec3, Mat4, Quat, Vec2};
+use glam::{vec2, Mat4, Vec2};
 use miniquad::*;
-use ttf_parser::Face;
+use std::cell::Cell;
+use std::marker::PhantomData;
+use std::rc::Rc;
 
+use crate::mesh_manager::MeshOffsets;
 use crate::{
-    atlas::Atlas,
     color::*,
-    default_shader,
-    font::{self, FontAtlas},
+    font::{FontAtlas, LayoutOptions},
     geom::*,
-    mesh::Mesh,
-    resources,
+    mesh_manager::GeometryBuffers,
     sprite::Sprite,
     text_shader,
     transform::*,
 };
 
+#[derive(Clone)]
+pub struct RenderSet {
+    shader: Shader,
+    pipeline: Pipeline,
+    bindings: Bindings,
+}
+
+pub trait VertexLayout {
+    fn vertex_layout() -> Vec<VertexAttribute>;
+}
+
+pub trait InstanceData: Copy + Default + Sized + VertexLayout {}
+
+impl VertexLayout for () {
+    fn vertex_layout() -> Vec<VertexAttribute> {
+        vec![]
+    }
+}
+
+impl InstanceData for () {}
+
 #[derive(Debug, Clone, Copy)]
-pub struct InstanceData<T: ModelTransform> {
-    pub tint: Color,
+pub struct ModelInstanceData<T: ModelTransform> {
     pub subtexture: Rect,
+    pub tint: Color,
     pub transform: T,
 }
 
-impl<T: ModelTransform> From<InstanceData<T>> for RawInstanceData {
-    fn from(other: InstanceData<T>) -> Self {
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RawInstanceData {
+    uv_scale: Vec2,
+    uv_offset: Vec2,
+    tint: [u8; 4],
+    model: Mat4,
+}
+
+impl<T: ModelTransform> From<ModelInstanceData<T>> for RawInstanceData {
+    fn from(other: ModelInstanceData<T>) -> Self {
         RawInstanceData {
             uv_scale: other.subtexture.dim,
             uv_offset: other.subtexture.pos,
@@ -33,7 +63,7 @@ impl<T: ModelTransform> From<InstanceData<T>> for RawInstanceData {
     }
 }
 
-impl<T: ModelTransform> Default for InstanceData<T> {
+impl<T: ModelTransform> Default for ModelInstanceData<T> {
     fn default() -> Self {
         Self {
             transform: Default::default(),
@@ -43,19 +73,63 @@ impl<T: ModelTransform> Default for InstanceData<T> {
     }
 }
 
+impl InstanceData for RawInstanceData {}
+
+impl VertexLayout for RawInstanceData {
+    fn vertex_layout() -> Vec<VertexAttribute> {
+        vec![
+            VertexAttribute::with_buffer("uv_scale", VertexFormat::Float2, 1),
+            VertexAttribute::with_buffer("uv_offset", VertexFormat::Float2, 1),
+            VertexAttribute::with_buffer("tint", VertexFormat::Byte4, 1),
+            VertexAttribute::with_buffer("model", VertexFormat::Mat4, 1),
+        ]
+    }
+}
+
+impl Default for RawInstanceData {
+    fn default() -> Self {
+        Self {
+            uv_scale: Default::default(),
+            uv_offset: Default::default(),
+            tint: Color::WHITE.as_u8(),
+            model: Default::default(),
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy)]
-pub struct RawInstanceData {
-    uv_scale: Vec2,
-    uv_offset: Vec2,
-    tint: [u8; 4],
-    model: Mat4,
+pub struct InstancedModelVertexData {
+    geometry_data: ModelVertexData,
+    instance_data: RawInstanceData,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum DisplayMode {
     Stretch,
     Centered,
+}
+
+impl DisplayMode {
+    pub fn scaling_matrix(self, actual: Vec2, target: Vec2) -> Mat4 {
+        match self {
+            DisplayMode::Stretch => Mat4::from_scale(target.extend(1.0)),
+            DisplayMode::Centered => {
+                let scale = (target.x / actual.x).min(target.y / actual.y);
+
+                let scaled_target_size = scale * actual;
+                let display_region = Transform2D {
+                    pos: vec2(
+                        (target.x - scaled_target_size.x) / 2.0,
+                        (target.y - scaled_target_size.y) / 2.0,
+                    ),
+                    scale: scaled_target_size,
+                    ..Default::default()
+                };
+                display_region.model_transform()
+            }
+        }
+    }
 }
 
 #[rustfmt::skip]
@@ -66,131 +140,122 @@ const DEFAULT_TEXTURE_DATA: [u8; 16] = [
     255, 0, 255, 255,
 ];
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct MeshRef(usize);
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-struct MeshOffsets {
-    offset: u16,
-    count: u16,
+#[derive(Debug, Copy, Clone)]
+pub struct OffscreenFramebuffer {
+    pub color: Texture,
+    pub depth: Option<Texture>,
+    pass: miniquad::RenderPass,
 }
 
-#[derive(Default)]
-pub struct MeshManager {
-    mesh_refs: Vec<(String, MeshOffsets)>,
-    vertices: Vec<VertexData>,
-    indices: Vec<u16>,
-    needs_rebuild: bool,
-}
-
-impl MeshManager {
-    pub fn add(&mut self, name: impl Into<String>, mesh: Mesh) -> MeshRef {
-        let mesh_ref = MeshOffsets {
-            offset: self.indices.len() as _,
-            count: mesh.indices.len() as _,
-        };
-        let vertex_offset: u16 = self.vertices.len() as _;
-        self.vertices.extend(mesh.vertices.iter().cloned());
-        self.indices
-            .extend(mesh.indices.iter().map(|i| i + vertex_offset));
-        let mesh_index = self.mesh_refs.len();
-        self.mesh_refs.push((name.into(), mesh_ref));
-        self.needs_rebuild = true;
-        MeshRef(mesh_index)
-    }
-
-    pub fn get(&self, name: impl AsRef<str>) -> Option<MeshRef> {
-        let name = name.as_ref();
-        self.mesh_refs
-            .iter()
-            .enumerate()
-            .find_map(|(i, (mesh_name, r))| (mesh_name == name).then_some(MeshRef(i)))
-    }
-
-    pub fn buffers(&mut self, ctx: &mut GraphicsContext) -> GeometryBuffers {
-        self.needs_rebuild = false;
-        GeometryBuffers::from_slices(ctx, &self.vertices, &self.indices)
-    }
-
-    fn offsets(&self, MeshRef(index): MeshRef) -> Option<MeshOffsets> {
-        self.mesh_refs
-            .iter()
-            .enumerate()
-            .find_map(|(i, (_, o))| (i == index).then_some(*o))
-    }
-}
-
-pub struct GeometryBuffers {
-    vertices: Buffer,
-    indices: Buffer,
-}
-
-impl GeometryBuffers {
-    pub fn from_meshes(ctx: &mut GraphicsContext, meshes: &[Mesh]) -> Self {
-        let (vertices, indices): (Vec<VertexData>, Vec<u16>) =
-            meshes
-                .iter()
-                .fold((vec![], vec![]), |(mut verts, mut inds), m| {
-                    verts.extend(m.vertices.iter());
-                    inds.extend(m.indices.iter());
-                    (verts, inds)
-                });
-        Self::from_slices(ctx, &vertices, &indices)
-    }
-
-    pub fn from_slices(
+impl OffscreenFramebuffer {
+    pub fn new(
         ctx: &mut GraphicsContext,
-        vertices: &[VertexData],
-        indices: &[u16],
+        color: Texture,
+        depth: impl Into<Option<Texture>>,
     ) -> Self {
-        GeometryBuffers {
-            vertices: Buffer::immutable(ctx, BufferType::VertexBuffer, vertices),
-            indices: Buffer::immutable(ctx, BufferType::IndexBuffer, indices),
+        let depth = depth.into();
+        let pass = miniquad::RenderPass::new(ctx, color, depth);
+        Self { color, depth, pass }
+    }
+
+    pub fn render_pass(&self) -> miniquad::RenderPass {
+        self.pass
+    }
+
+    pub fn draw_to_screen<I: InstanceData, B: Batcher>(
+        &self,
+        ctx: &mut GraphicsContext,
+        // TODO: types here
+        render_pipeline: &mut InstancedRenderPipeline<ModelVertexData, I, B>,
+        display_mode: DisplayMode,
+    ) {
+        self.draw_to(ctx, render_pipeline, display_mode, RenderTarget::Default)
+    }
+
+    pub fn draw_to<I: InstanceData, B: Batcher>(
+        &self,
+        ctx: &mut GraphicsContext,
+        // TODO: types here
+        render_pipeline: &mut InstancedRenderPipeline<ModelVertexData, I, B>,
+        display_mode: DisplayMode,
+        render_target: RenderTarget,
+    ) {
+        let (w, h) = ctx.screen_size();
+
+        let mut quad_mesh = quad::mesh();
+        // we need a quad with flipped uv's, because the texture is top-down in memory
+        quad_mesh
+            .vertices
+            .iter_mut()
+            .for_each(|v| v.uv.y = 1.0 - v.uv.y);
+        let quad_buffers = GeometryBuffers::from_meshes(ctx, &[quad_mesh]);
+        let mut render_pass = render_pipeline.begin_pass(
+            ctx,
+            render_target,
+            &quad_buffers,
+            Some(vec![self.color]),
+            Rc::new(Cell::new(MeshOffsets {
+                offset: 0,
+                count: quad::INDICES.len() as _,
+            })),
+            RenderPassOptions {
+                pass_action: PassAction::clear_color(0., 0., 0., 0.),
+                view_transform: display_mode.scaling_matrix(
+                    vec2(self.color.width as f32, self.color.height as f32),
+                    vec2(w, h),
+                ),
+                projection: Some(Mat4::orthographic_lh(0.0, w, h, 0.0, 1.0, -1.0)),
+            },
+        );
+        render_pass.draw_quad(B::Item::default());
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum RenderTarget {
+    Offscreen(OffscreenFramebuffer),
+    Default,
+}
+
+impl RenderTarget {
+    pub fn render_pass(&self) -> Option<miniquad::RenderPass> {
+        match self {
+            RenderTarget::Offscreen(target) => Some(target.render_pass()),
+            RenderTarget::Default => None,
         }
     }
 }
 
-impl Drop for GeometryBuffers {
-    fn drop(&mut self) {
-        self.vertices.delete();
-        self.indices.delete();
+impl Default for RenderTarget {
+    fn default() -> Self {
+        Self::Default
     }
 }
 
-pub struct Renderer {
-    pub mesh_manager: MeshManager,
-    pub target_texture: Texture,
-    pub depth_texture: Option<Texture>,
-    textures: Vec<Texture>,
-    geometry_buffers: GeometryBuffers,
-
-    display_mode: DisplayMode,
-    render_pass: miniquad::RenderPass,
-    pipeline: Pipeline,
-    bindings: Bindings,
-    screen_bindings: Bindings,
-    pub default_texture: Texture,
-    instance_vertex_buffer: Buffer,
-    batch: RenderBatch,
-    pub font_atlas: FontAtlas,
-    text_bindings: Bindings,
-    text_pipeline: Pipeline,
-
-    quad_mesh: MeshRef,
-    cube_mesh: MeshRef,
+impl From<OffscreenFramebuffer> for RenderTarget {
+    fn from(fb: OffscreenFramebuffer) -> Self {
+        Self::Offscreen(fb)
+    }
 }
 
-impl Renderer {
-    pub fn new(
-        ctx: &mut GraphicsContext,
-        target_texture: Texture,
-        depth_texture: impl Into<Option<Texture>>,
-        shader: miniquad::Shader,
-        display_mode: DisplayMode,
-    ) -> Self {
-        let depth_texture = depth_texture.into();
-        let render_pass = miniquad::RenderPass::new(ctx, target_texture, depth_texture);
+#[derive(Clone)]
+pub struct InstancedRenderPipeline<V: VertexData, I: InstanceData, B: Batcher = RenderBatch<I>> {
+    // This will be a shader abstraction that shares the same vertex layout
+    shader: Shader, /*<V, I>*/
+    raw_pipeline: Pipeline,
+    instance_vertex_buffer: Buffer,
+    pipeline_params: PipelineParams,
+    // TODO: remove this? reuse?
+    batch: B,
+    default_texture: Texture,
+    _marker: PhantomData<V>,
+    _marker2: PhantomData<I>,
+}
 
+pub type BasicRenderPipeline = InstancedRenderPipeline<ModelVertexData, (), NoopBatcher>;
+
+impl<V: VertexData, I: InstanceData, B: Batcher> InstancedRenderPipeline<V, I, B> {
+    pub fn new(ctx: &mut GraphicsContext, shader: Shader) -> Self {
         let default_texture = Texture::new(
             ctx,
             TextureAccess::Static,
@@ -204,338 +269,204 @@ impl Renderer {
             },
         );
 
-        let mut mesh_manager = MeshManager::default();
-        let quad_mesh = mesh_manager.add("quad", quad::mesh());
-        let cube_mesh = mesh_manager.add("cube", cube::mesh());
-        let textures = vec![default_texture];
-        let geometry_buffers = mesh_manager.buffers(ctx);
-
         let instance_vertex_buffer = Buffer::stream(
             ctx,
             BufferType::VertexBuffer,
-            RenderBatch::MAX_INSTANCES * std::mem::size_of::<RawInstanceData>(),
+            128 * std::mem::size_of::<I>(),
         );
-        let bindings = Bindings {
-            vertex_buffers: vec![geometry_buffers.vertices, instance_vertex_buffer],
-            index_buffer: geometry_buffers.indices,
-            images: textures.clone(),
+
+        let mut default_vertex_attributes = V::vertex_layout();
+        default_vertex_attributes.extend(I::vertex_layout());
+
+        // TODO: pass this in
+        let pipeline_params = PipelineParams {
+            depth_test: Comparison::LessOrEqual,
+            depth_write: true,
+            color_blend: Some(BlendState::new(
+                Equation::Add,
+                BlendFactor::Value(BlendValue::SourceAlpha),
+                BlendFactor::OneMinusValue(BlendValue::SourceAlpha),
+            )),
+            alpha_blend: Some(BlendState::new(
+                Equation::Add,
+                BlendFactor::Zero,
+                BlendFactor::One,
+            )),
+            cull_face: CullFace::Back,
+            // primitive_type: miniquad::PrimitiveType::Lines,
+            ..Default::default()
         };
-        let screen_bindings = Bindings {
-            images: vec![target_texture],
-            ..bindings.clone()
-        };
-        let pipeline = Pipeline::with_params(
+
+        let mut buffer_layouts = vec![BufferLayout::default()];
+        if I::vertex_layout().len() > 0 {
+            buffer_layouts.push(BufferLayout {
+                step_func: VertexStep::PerInstance,
+                ..Default::default()
+            });
+        }
+
+        let raw_pipeline = Pipeline::with_params(
             ctx,
-            &[
-                BufferLayout::default(), // pos
-                // instances
-                BufferLayout {
-                    step_func: VertexStep::PerInstance,
-                    ..Default::default()
-                },
-            ],
-            &[
-                // vertex data
-                VertexAttribute::with_buffer("position", VertexFormat::Float4, 0),
-                VertexAttribute::with_buffer("uv", VertexFormat::Float2, 0),
-                // instance data
-                VertexAttribute::with_buffer("uv_scale", VertexFormat::Float2, 1),
-                VertexAttribute::with_buffer("uv_offset", VertexFormat::Float2, 1),
-                VertexAttribute::with_buffer("tint", VertexFormat::Byte4, 1),
-                VertexAttribute::with_buffer("model", VertexFormat::Mat4, 1),
-            ],
+            &buffer_layouts,
+            &default_vertex_attributes,
             shader,
-            PipelineParams {
-                depth_test: Comparison::LessOrEqual,
-                depth_write: true,
-                color_blend: Some(BlendState::new(
-                    Equation::Add,
-                    BlendFactor::Value(BlendValue::SourceAlpha),
-                    BlendFactor::OneMinusValue(BlendValue::SourceAlpha),
-                )),
-                alpha_blend: Some(BlendState::new(
-                    Equation::Add,
-                    BlendFactor::Zero,
-                    BlendFactor::One,
-                )),
-                // primitive_type: miniquad::PrimitiveType::Lines,
-                ..Default::default()
-            },
+            pipeline_params,
         );
-        let text_shader = Shader::new(
-            ctx,
-            text_shader::VERTEX,
-            text_shader::FRAGMENT,
-            text_shader::meta(),
-        )
-        .expect("text shader creation failed");
-        let text_pipeline = Pipeline::with_params(
-            ctx,
-            &[
-                BufferLayout::default(), // pos
-                // instances
-                BufferLayout {
-                    step_func: VertexStep::PerInstance,
-                    ..Default::default()
-                },
-            ],
-            &[
-                // vertex data
-                VertexAttribute::with_buffer("position", VertexFormat::Float4, 0),
-                VertexAttribute::with_buffer("uv", VertexFormat::Float2, 0),
-                // instance data
-                VertexAttribute::with_buffer("uv_scale", VertexFormat::Float2, 1),
-                VertexAttribute::with_buffer("uv_offset", VertexFormat::Float2, 1),
-                VertexAttribute::with_buffer("tint", VertexFormat::Byte4, 1),
-                VertexAttribute::with_buffer("model", VertexFormat::Mat4, 1),
-            ],
-            text_shader,
-            PipelineParams {
-                depth_test: Comparison::LessOrEqual,
-                depth_write: true,
-                color_blend: Some(BlendState::new(
-                    Equation::Add,
-                    BlendFactor::Value(BlendValue::SourceAlpha),
-                    BlendFactor::OneMinusValue(BlendValue::SourceAlpha),
-                )),
-                alpha_blend: Some(BlendState::new(
-                    Equation::Add,
-                    BlendFactor::Zero,
-                    BlendFactor::One,
-                )),
-                // primitive_type: miniquad::PrimitiveType::Lines,
-                ..Default::default()
-            },
-        );
-        let b = std::fs::read("./res/fonts/Ubuntu-M.ttf").unwrap();
-        let face = Face::parse(&b, 0).unwrap();
-        let font_atlas = FontAtlas::new(face, Default::default()).unwrap();
-        let font_atlas_texture = resources::texture_from_image_with_params(
-            ctx,
-            font_atlas.image(),
-            TextureParams {
-                format: TextureFormat::RGBA8,
-                wrap: TextureWrap::Clamp,
-                filter: FilterMode::Linear,
-                width: font_atlas.image().width(),
-                height: font_atlas.image().height(),
-            },
-        );
-        let text_bindings = Bindings {
-            images: vec![font_atlas_texture],
-            ..bindings.clone()
-        };
+
         Self {
-            display_mode,
-            target_texture,
-            depth_texture,
-            render_pass,
-            bindings,
-            screen_bindings,
-            pipeline,
-            default_texture,
+            shader,
+            raw_pipeline,
             instance_vertex_buffer,
+            pipeline_params,
             batch: Default::default(),
-            mesh_manager,
-            textures,
-            geometry_buffers,
-            quad_mesh,
-            cube_mesh,
-            text_bindings,
-            text_pipeline,
-            font_atlas,
+            default_texture,
+            _marker: Default::default(),
+            _marker2: Default::default(),
         }
     }
 
-    fn rebuild_buffers(&mut self, ctx: &mut GraphicsContext) {
-        self.geometry_buffers = self.mesh_manager.buffers(ctx);
-        self.bindings = {
-            Bindings {
-                vertex_buffers: vec![self.geometry_buffers.vertices, self.instance_vertex_buffer],
-                index_buffer: self.geometry_buffers.indices,
-                images: self.textures.clone(),
-            }
-        };
-        self.screen_bindings = Bindings {
-            images: vec![self.target_texture],
-            ..self.bindings.clone()
-        };
-    }
-
-    pub fn draw_to_screen(&mut self, ctx: &mut GraphicsContext) {
-        let (w, h) = ctx.screen_size();
-        let modelview = match self.display_mode {
-            DisplayMode::Stretch => Mat4::from_scale(vec3(w, h, 1.0)),
-            DisplayMode::Centered => {
-                let render_target_size = vec2(
-                    self.target_texture.width as _,
-                    self.target_texture.height as _,
-                );
-                let scale = (w / render_target_size.x).min(h / render_target_size.y);
-
-                let scaled_target_size = scale * render_target_size;
-                let display_region = Transform2D {
-                    pos: vec2(
-                        (w - scaled_target_size.x) / 2.0,
-                        (h - scaled_target_size.y) / 2.0,
-                    ),
-                    scale: scaled_target_size,
-                    ..Default::default()
-                };
-                display_region.model_transform()
-            }
-        };
-        let mut render_pass = self.begin_screen_pass(
-            ctx,
-            RenderPassOptions {
-                pass_action: PassAction::clear_color(0., 0., 0., 0.),
-                view_transform: modelview,
-                // projection: todo!(),
-                projection: Some(glam::Mat4::orthographic_lh(0.0, w, 0.0, h, 1.0, -1.0)),
-            },
-        );
-        render_pass.draw_quad(InstanceData::<Transform2D>::default());
-    }
-
-    fn begin_pass<'a>(
+    pub fn begin_pass<'a>(
         &'a mut self,
         ctx: &'a mut GraphicsContext,
-        pass_action: PassAction,
-        view: Mat4,
-        projection: Mat4,
-        default: bool,
-    ) -> RenderPass<'a> {
-        if self.mesh_manager.needs_rebuild {
-            self.rebuild_buffers(ctx);
-        }
-        ctx.begin_pass((!default).then_some(self.render_pass), pass_action);
-        ctx.apply_pipeline(&self.pipeline);
-        ctx.apply_uniforms(&default_shader::Uniforms { view, projection });
-        let bindings = if default {
-            &self.screen_bindings
-        } else {
-            &self.bindings
-        };
-        ctx.apply_bindings(bindings);
-        RenderPass {
-            ctx,
-            current_batch: &mut self.batch,
-            transform_stack: vec![],
-            instance_buffer: &mut self.instance_vertex_buffer,
-            mesh_manager: &mut self.mesh_manager,
-            bindings,
-            current_texture: None,
-            current_mesh: None,
-            quad_mesh: self.quad_mesh,
-            cube_mesh: self.cube_mesh,
-        }
-    }
-
-    pub fn begin_text_pass<'a>(
-        &'a mut self,
-        ctx: &'a mut GraphicsContext,
-        pass_action: PassAction,
-        view: Mat4,
-        projection: Mat4,
-    ) -> RenderPass<'a> {
-        if self.mesh_manager.needs_rebuild {
-            self.rebuild_buffers(ctx);
-        }
-        ctx.begin_pass(None, pass_action);
-        ctx.apply_pipeline(&self.text_pipeline);
-        ctx.apply_uniforms(&text_shader::Uniforms { view, projection });
-        let bindings = &self.text_bindings;
-        ctx.apply_bindings(bindings);
-        RenderPass {
-            ctx,
-            current_batch: &mut self.batch,
-            transform_stack: vec![],
-            instance_buffer: &mut self.instance_vertex_buffer,
-            mesh_manager: &mut self.mesh_manager,
-            bindings,
-            current_texture: None,
-            current_mesh: None,
-            quad_mesh: self.quad_mesh,
-            cube_mesh: self.cube_mesh,
-        }
-    }
-
-    pub fn begin_screen_pass<'a>(
-        &'a mut self,
-        ctx: &'a mut GraphicsContext,
+        render_target: RenderTarget,
+        geometry_buffers: &GeometryBuffers<V>,
+        textures: Option<Vec<Texture>>,
+        quad_mesh: Rc<Cell<MeshOffsets>>,
         RenderPassOptions {
             pass_action,
             view_transform,
             projection,
         }: RenderPassOptions,
-    ) -> RenderPass<'a> {
-        self.begin_pass(ctx, pass_action, view_transform, projection.unwrap(), true)
-    }
-
-    pub fn begin_offscreen_pass<'a>(
-        &'a mut self,
-        ctx: &'a mut GraphicsContext,
-        RenderPassOptions {
-            pass_action,
-            view_transform,
-            projection,
-        }: RenderPassOptions,
-    ) -> RenderPass<'a> {
+    ) -> RenderPass<'a, B> {
         let projection = projection.unwrap_or_else(|| {
-            glam::Mat4::orthographic_lh(
-                0.0,
-                self.target_texture.width as _,
-                self.target_texture.height as _,
-                0.0,
-                1.0,
-                -1.0,
-            )
+            let RenderTarget::Offscreen(o) = render_target else {
+                panic!("what");
+            };
+            Mat4::orthographic_lh(0.0, o.color.width as _, o.color.height as _, 0.0, 1.0, -1.0)
         });
-        self.begin_pass(ctx, pass_action, view_transform, projection, false)
+        ctx.begin_pass(render_target.render_pass(), pass_action);
+        ctx.apply_pipeline(&self.raw_pipeline);
+        ctx.apply_uniforms(&text_shader::Uniforms {
+            view: view_transform,
+            projection,
+        });
+        let images = textures.unwrap_or_else(|| vec![self.default_texture]);
+        let mut vertex_buffers = vec![geometry_buffers.vertices];
+        if I::vertex_layout().len() > 0 {
+            vertex_buffers.push(self.instance_vertex_buffer);
+        }
+
+        let bindings = Bindings {
+            vertex_buffers,
+            index_buffer: geometry_buffers.indices,
+            images,
+        };
+        ctx.apply_bindings(&bindings);
+        RenderPass {
+            ctx,
+            current_batch: Default::default(),
+            transform_stack: vec![],
+            instance_buffer: self.instance_vertex_buffer,
+            bindings,
+            current_texture: None,
+            current_mesh: None,
+            quad_mesh,
+        }
     }
 }
 
-// pub trait RenderBatch<T> {
-//     fn apply(&mut self);
-//     fn add<T>(data: T)
-//     fn clear(&mut self);
-// }
+pub trait Batcher: Default {
+    type Item: InstanceData;
+    fn add(&mut self, instance_data: Self::Item);
+    fn active_instances(&self) -> &[Self::Item];
+    fn instance_count(&self) -> usize;
+    fn full(&self) -> bool;
+    fn clear(&mut self);
+}
+
+#[derive(Debug, Copy, Clone, Default)]
+pub struct NoopBatcher(bool);
+
+impl Batcher for NoopBatcher {
+    type Item = ();
+
+    fn add(&mut self, _instance_data: Self::Item) {
+        self.0 = true;
+    }
+
+    #[inline]
+    fn active_instances(&self) -> &[Self::Item] {
+        if self.0 {
+            &[()]
+        } else {
+            &[]
+        }
+    }
+
+    #[inline]
+    fn instance_count(&self) -> usize {
+        if self.0 {
+            1
+        } else {
+            0
+        }
+    }
+
+    #[inline]
+    fn full(&self) -> bool {
+        self.0
+    }
+
+    #[inline]
+    fn clear(&mut self) {
+        self.0 = false;
+    }
+}
 
 // TODO add "render params" to compare against
-struct RenderBatch {
+#[derive(Clone)]
+pub struct RenderBatch<I: InstanceData = RawInstanceData, const MAX_INSTANCES: usize = 128>
+where
+    I: Sized,
+{
     next_instance: usize,
-    instances: [RawInstanceData; Self::MAX_INSTANCES],
+    instances: [I; MAX_INSTANCES],
 }
 
-impl Default for RenderBatch {
+impl<I: InstanceData, const N: usize> Default for RenderBatch<I, N> {
     fn default() -> Self {
         Self {
             next_instance: 0,
-            instances: [Default::default(); Self::MAX_INSTANCES],
+            instances: [Default::default(); N],
         }
     }
 }
 
-impl RenderBatch {
-    pub const MAX_INSTANCES: usize = 128;
+impl<I: InstanceData, const N: usize> Batcher for RenderBatch<I, N> {
+    type Item = I;
 
-    pub fn add(&mut self, instance_data: RawInstanceData) {
+    fn add(&mut self, instance_data: I) {
         self.instances[self.next_instance] = instance_data;
         self.next_instance += 1;
     }
 
     #[inline]
-    pub fn active_instances(&self) -> &[RawInstanceData] {
+    fn active_instances(&self) -> &[I] {
         &self.instances[..self.next_instance]
     }
 
     #[inline]
-    pub fn instance_count(&self) -> usize {
+    fn instance_count(&self) -> usize {
         self.next_instance
     }
 
     #[inline]
-    pub fn clear(&mut self) {
+    fn full(&self) -> bool {
+        self.next_instance == N
+    }
+
+    #[inline]
+    fn clear(&mut self) {
         self.next_instance = 0;
     }
 }
@@ -596,7 +527,7 @@ impl RenderPassOptions {
 
     pub fn orthographic(w: f32, h: f32) -> Self {
         Self {
-            projection: Some(glam::Mat4::orthographic_lh(0.0, w, 0.0, h, 1.0, -1.0)),
+            projection: Some(Mat4::orthographic_lh(0.0, w, 0.0, h, 1.0, -1.0)),
             ..Default::default()
         }
     }
@@ -609,37 +540,34 @@ impl RenderPassOptions {
     }
 }
 
-pub struct RenderPass<'a> {
-    instance_buffer: &'a mut Buffer,
+pub struct RenderPass<'a, B: Batcher = RenderBatch> {
     ctx: &'a mut GraphicsContext,
-    current_batch: &'a mut RenderBatch,
-    mesh_manager: &'a mut MeshManager,
+    instance_buffer: Buffer,
+    current_batch: B,
     transform_stack: Vec<Mat4>,
-    bindings: &'a Bindings,
+    bindings: Bindings,
     current_texture: Option<Texture>,
-    current_mesh: Option<MeshRef>,
+    current_mesh: Option<Rc<Cell<MeshOffsets>>>,
     // TODO put this in some abstraction layer?
-    quad_mesh: MeshRef,
-    cube_mesh: MeshRef,
+    quad_mesh: Rc<Cell<MeshOffsets>>,
 }
 
-impl<'a> Drop for RenderPass<'a> {
+impl<'a, B: Batcher> Drop for RenderPass<'a, B> {
     fn drop(&mut self) {
         self.flush();
         self.ctx.end_render_pass();
     }
 }
 
-impl<'a> RenderPass<'a> {
+impl<'a, B: Batcher> RenderPass<'a, B> {
     #[inline]
     pub fn flush(&mut self) {
-        let mesh = self.current_mesh.unwrap();
-        let offsets = self.mesh_manager.offsets(mesh).unwrap();
-        self.instance_buffer
-            .update(self.ctx, self.current_batch.active_instances());
+        let mesh = self.current_mesh.clone().unwrap().get();
+        let active_instances = self.current_batch.active_instances();
+        self.instance_buffer.update(self.ctx, active_instances);
         self.ctx.draw(
-            offsets.offset as _,
-            offsets.count as _,
+            mesh.offset as _,
+            mesh.count as _,
             self.current_batch.instance_count() as _,
         );
         self.current_batch.clear();
@@ -654,7 +582,9 @@ impl<'a> RenderPass<'a> {
     }
 
     pub fn set_texture(&mut self, t: Texture) {
-        // TODO if current texture is set and different from t, flush first
+        if self.current_texture.is_some_and(|x| x != t) {
+            self.flush();
+        }
         self.current_texture = Some(t);
         let bindings = Bindings {
             images: vec![t],
@@ -663,34 +593,30 @@ impl<'a> RenderPass<'a> {
         self.ctx.apply_bindings(&bindings);
     }
 
-    pub fn render_mesh<T: ModelTransform>(
-        &mut self,
-        mesh: MeshRef,
-        instance_data: InstanceData<T>,
-    ) {
-        if self.current_batch.instance_count() == RenderBatch::MAX_INSTANCES
-            || self.current_mesh.map_or(false, |m| m != mesh)
-        {
+    pub fn render_mesh(&mut self, mesh: Rc<Cell<MeshOffsets>>, instance_data: impl Into<B::Item>) {
+        if self.current_batch.full() || self.current_mesh.clone().map_or(false, |m| m != mesh) {
             self.flush();
         }
         self.current_mesh = Some(mesh);
         self.current_batch.add(instance_data.into());
     }
 
-    pub fn draw_quad<T: ModelTransform>(&mut self, quad: InstanceData<T>) {
-        self.render_mesh(self.quad_mesh, quad);
+    pub fn draw_quad(&mut self, quad: impl Into<B::Item>) {
+        self.render_mesh(self.quad_mesh.clone(), quad);
     }
+}
 
-    pub fn draw_cube<T: ModelTransform>(&mut self, cube: InstanceData<T>) {
-        self.render_mesh(self.cube_mesh, cube);
-    }
-
-    pub fn draw_sprite_frame(&mut self, pos: Point, s: &Sprite, i: usize) {
+impl<'a, B> RenderPass<'a, B>
+where
+    B: Batcher,
+    B::Item: From<ModelInstanceData<Transform2D>>,
+{
+    pub fn draw_sprite_frame(&mut self, pos: Vec2, s: &Sprite, i: usize) {
         let frame = &s.frames[i];
-        let origin = pos - s.pivot.unwrap_or_default();
-        let pos = vec2(origin.x as f32, origin.y as f32);
+        let origin = pos - s.pivot.unwrap_or_default().as_vec2();
+        let pos = origin;
         let scale = vec2(s.size.x as f32, s.size.y as f32);
-        self.draw_quad(InstanceData {
+        self.draw_quad(ModelInstanceData {
             tint: Color::WHITE,
             subtexture: frame.region,
             transform: Transform2D {
@@ -700,4 +626,24 @@ impl<'a> RenderPass<'a> {
             },
         });
     }
+
+    pub fn draw_text(&mut self, pos: Vec2, s: &str, font: &FontAtlas, opts: TextDisplayOptions) {
+        for glyph_data in font.layout_text(&s, opts.layout) {
+            self.draw_quad(ModelInstanceData::<Transform2D> {
+                transform: Transform2D {
+                    pos: glyph_data.bounds.pos + pos,
+                    scale: glyph_data.bounds.dim,
+                    angle: 0.,
+                },
+                subtexture: glyph_data.subtexture,
+                tint: opts.color,
+            });
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, Debug)]
+pub struct TextDisplayOptions {
+    pub color: Color,
+    pub layout: LayoutOptions,
 }
