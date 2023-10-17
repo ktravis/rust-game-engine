@@ -6,11 +6,7 @@ use std::path::Path;
 use std::rc::Rc;
 use ttf_parser::Face;
 
-use rust_game_engine::{
-    assets::{Assets, SpriteRef},
-    color::Color,
-    default_shader, model_shader, resources, text_shader, transform,
-};
+use rust_game_engine::{color::Color, resources, sprite_manager, transform};
 
 use rust_game_engine::geom::{cube, quad, ModelVertexData, Point};
 use rust_game_engine::input::{self, AnalogInput::*, Axis, Button, InputManager, KeyCode as Key};
@@ -20,7 +16,10 @@ use rust_game_engine::renderer::{
 };
 
 use glam::{vec3, Mat4, Quat, Vec2};
-use rust_game_engine::mesh_manager::{MeshManager, MeshOffsets};
+use rust_game_engine::assets::AssetManager;
+use rust_game_engine::mesh_manager::{GeometryBuffers, MeshManager, MeshOffsets};
+use rust_game_engine::shader::Shader;
+use rust_game_engine::sprite_manager::SpriteManager;
 
 const WINDOW_DIM: Point = Point { x: 960, y: 720 };
 const TARGET_FRAMERATE: u64 = 60;
@@ -48,16 +47,35 @@ struct RenderPipelines {
     text: InstancedRenderPipeline<ModelVertexData, RawInstanceData>,
 }
 
+#[derive(Debug, Default, Clone)]
+struct ShaderSource {
+    dirty: bool,
+
+    default_vert: String,
+    default_frag: String,
+
+    model_vert: String,
+    model_frag: String,
+
+    text_vert: String,
+    text_frag: String,
+}
+
+#[derive(Debug, Default)]
+struct GameAssets {
+    shader_sources: ShaderSource,
+    game_font_face: Vec<u8>,
+    sprite_manager: SpriteManager,
+}
+
 struct Stage {
     camera_offset: Vec2,
-    // renderer: Renderer,
     font_atlas: FontAtlas,
     input: InputManager<Controls>,
     xy: Vec2,
     sprite_atlas_texture: Texture,
-    assets: Assets,
     frame_index: usize,
-    s: SpriteRef,
+    s: sprite_manager::SpriteRef,
     sprite_pos: Vec<Point>,
     /// Last frame start time in seconds
     frame_start: f64,
@@ -73,11 +91,47 @@ struct Stage {
     render_scale: f32,
     backbuffer_target: OffscreenFramebuffer,
     render_pipelines: RenderPipelines,
-    // text_render_pipeline: InstancedRenderPipeline<ModelVertexData, RawInstanceData>,
     mesh_manager: MeshManager<ModelVertexData>,
     font_texture: Texture,
     quad_mesh: Rc<Cell<MeshOffsets>>,
     cube_mesh: Rc<Cell<MeshOffsets>>,
+    geometry_buffers: GeometryBuffers<ModelVertexData>,
+
+    asset_manager: AssetManager<GameAssets>,
+}
+
+const SCALE: u32 = 1;
+
+fn build_render_pipelines(
+    ctx: &mut GraphicsContext,
+    shader_sources: &ShaderSource,
+) -> RenderPipelines {
+    let basic_shader = Shader::new(
+        ctx,
+        &shader_sources.default_vert,
+        &shader_sources.default_frag,
+        vec!["tex".into()],
+    )
+    .expect("default shader creation failed");
+    let model_shader = Shader::new(
+        ctx,
+        &shader_sources.model_vert,
+        &shader_sources.model_frag,
+        vec!["tex".into()],
+    )
+    .expect("model shader creation failed");
+    let text_shader = Shader::new(
+        ctx,
+        &shader_sources.text_vert,
+        &shader_sources.text_frag,
+        vec!["tex".into()],
+    )
+    .expect("text shader creation failed");
+    RenderPipelines {
+        basic: BasicRenderPipeline::new(ctx, basic_shader),
+        model: InstancedRenderPipeline::new(ctx, model_shader),
+        text: InstancedRenderPipeline::new(ctx, text_shader),
+    }
 }
 
 impl Stage {
@@ -87,47 +141,11 @@ impl Stage {
             assert!(ctx.features().instancing, "instancing is not supported");
         }
 
-        const SCALE: u32 = 1;
-
-        let render_target_size_px: Point<u32> = (240 * SCALE, 180 * SCALE).into();
-        let render_target_texture = Texture::new_render_texture(
-            ctx,
-            TextureParams {
-                width: render_target_size_px.x,
-                height: render_target_size_px.y,
-                format: TextureFormat::RGBA8,
-                filter: FilterMode::Nearest,
-                ..Default::default()
-            },
-        );
-
-        let assets = Assets::new(Path::new("./res"));
-
-        let sprite_atlas_texture = resources::texture_from_image(ctx, assets.atlas.image());
-
         let crate_texture = resources::texture_from_image(
             ctx,
             &image::open(Path::new("res/images/crate.png"))
                 .unwrap()
                 .into_rgba8(),
-        );
-
-        let model_shader = Shader::new(
-            ctx,
-            model_shader::VERTEX,
-            model_shader::FRAGMENT,
-            model_shader::meta(),
-        )
-        .expect("model shader creation failed");
-
-        let depth_texture = Texture::new_render_texture(
-            ctx,
-            TextureParams {
-                width: render_target_size_px.x as _,
-                height: render_target_size_px.y as _,
-                format: TextureFormat::Depth,
-                ..Default::default()
-            },
         );
 
         let b = std::fs::read("./res/fonts/Ubuntu-M.ttf").unwrap();
@@ -145,29 +163,67 @@ impl Stage {
             },
         );
 
-        // let renderer = Renderer::new(ctx, font_texture, model_shader);
-        let basic_shader = Shader::new(
-            ctx,
-            default_shader::VERTEX,
-            default_shader::FRAGMENT,
-            default_shader::meta(),
-        )
-        .expect("default shader creation failed");
-        let text_shader = Shader::new(
-            ctx,
-            text_shader::VERTEX,
-            text_shader::FRAGMENT,
-            text_shader::meta(),
-        )
-        .expect("text shader creation failed");
-        let render_pipelines = RenderPipelines {
-            basic: BasicRenderPipeline::new(ctx, basic_shader),
-            model: InstancedRenderPipeline::new(ctx, model_shader),
-            text: InstancedRenderPipeline::new(ctx, text_shader),
+        let mut asset_manager = AssetManager::new(GameAssets::default(), "./res/");
+
+        asset_manager.track_glob("./res/sprites/*.aseprite", |state, path, f| {
+            state.sprite_manager.add_sprite_file(path.to_path_buf(), f);
+        });
+        // TODO: should have a way to not need this
+        let sprite_atlas_texture = {
+            asset_manager.sprite_manager.maybe_rebuild();
+            resources::texture_from_image(ctx, asset_manager.sprite_manager.atlas.image())
         };
 
+        asset_manager
+            .track_file("./res/shaders/default.vert", |state, _, f| {
+                state.shader_sources.dirty = true;
+                state.shader_sources.default_vert = std::io::read_to_string(&f).unwrap();
+            })
+            .track_file("./res/shaders/default.frag", |state, _, f| {
+                state.shader_sources.dirty = true;
+                state.shader_sources.default_frag = std::io::read_to_string(&f).unwrap();
+            })
+            .track_file("./res/shaders/model.vert", |state, _, f| {
+                state.shader_sources.dirty = true;
+                state.shader_sources.model_vert = std::io::read_to_string(&f).unwrap();
+            })
+            .track_file("./res/shaders/model.frag", |state, _, f| {
+                state.shader_sources.dirty = true;
+                state.shader_sources.model_frag = std::io::read_to_string(&f).unwrap();
+            })
+            .track_file("./res/shaders/text.vert", |state, _, f| {
+                state.shader_sources.dirty = true;
+                state.shader_sources.text_vert = std::io::read_to_string(&f).unwrap();
+            })
+            .track_file("./res/shaders/text.frag", |state, _, f| {
+                state.shader_sources.dirty = true;
+                state.shader_sources.text_frag = std::io::read_to_string(&f).unwrap();
+            });
+
+        let render_pipelines = build_render_pipelines(ctx, &asset_manager.shader_sources);
+
+        let render_target_size_px: Point<u32> = (240 * SCALE, 180 * SCALE).into();
+        let depth_texture = Texture::new_render_texture(
+            ctx,
+            TextureParams {
+                width: render_target_size_px.x as _,
+                height: render_target_size_px.y as _,
+                format: TextureFormat::Depth,
+                ..Default::default()
+            },
+        );
+        let backbuffer_color_texture = Texture::new_render_texture(
+            ctx,
+            TextureParams {
+                width: render_target_size_px.x,
+                height: render_target_size_px.y,
+                format: TextureFormat::RGBA8,
+                filter: FilterMode::Nearest,
+                ..Default::default()
+            },
+        );
         let backbuffer_target =
-            OffscreenFramebuffer::new(ctx, render_target_texture, depth_texture);
+            OffscreenFramebuffer::new(ctx, backbuffer_color_texture, depth_texture);
 
         let sprite_pos = (0..10)
             .map(|_| {
@@ -177,19 +233,18 @@ impl Stage {
                 )
             })
             .collect();
-        let s = assets.get_sprite_ref("guy").unwrap();
+        let s = asset_manager.sprite_manager.get_sprite_ref("guy").unwrap();
         let mut mesh_manager = MeshManager::default();
         let quad_mesh = mesh_manager.add("quad", quad::mesh());
         let cube_mesh = mesh_manager.add("cube", cube::mesh());
+        let geometry_buffers = mesh_manager.buffers(ctx);
         Stage {
             sprite_pos,
-            // renderer,
             font_atlas,
             input: Default::default(),
             camera_offset: Default::default(),
             xy: Vec2::default(),
             sprite_atlas_texture,
-            assets,
             frame_index: 0,
             s,
             frame_start: -1.0,
@@ -208,17 +263,30 @@ impl Stage {
             quad_mesh,
             cube_mesh,
             render_pipelines,
+            geometry_buffers,
+            asset_manager,
         }
     }
 
-    fn init(&mut self) {
-        // self.assets.watch(Asset::Sprite("guy".into()));
-    }
+    fn init(&mut self) {}
 
     fn update(&mut self, ctx: &mut GraphicsContext) -> bool {
-        if self.assets.check_for_updates() {
-            self.sprite_atlas_texture =
-                resources::texture_from_image(ctx, self.assets.atlas.image());
+        if self.asset_manager.check_for_updates() {
+            if self.asset_manager.shader_sources.dirty {
+                self.asset_manager.shader_sources.dirty = false;
+                self.render_pipelines =
+                    build_render_pipelines(ctx, &self.asset_manager.shader_sources);
+            }
+            if self.asset_manager.sprite_manager.maybe_rebuild() {
+                self.sprite_atlas_texture = resources::texture_from_image(
+                    ctx,
+                    self.asset_manager.sprite_manager.atlas.image(),
+                );
+            }
+        }
+
+        if self.mesh_manager.needs_rebuild {
+            self.geometry_buffers = self.mesh_manager.buffers(ctx);
         }
 
         if self.input.quit.just_pressed {
@@ -236,7 +304,13 @@ impl Stage {
             (self.render_scale + 20. * self.delta * self.input.scale.value()).clamp(0.5, 40.);
 
         if self.input.next.just_pressed() {
-            self.frame_index = (self.frame_index + 1) % self.assets.get_sprite(self.s).frames.len();
+            self.frame_index = (self.frame_index + 1)
+                % self
+                    .asset_manager
+                    .sprite_manager
+                    .get_sprite(self.s)
+                    .frames
+                    .len();
         }
         if self.input.add.is_down() {
             println!("{}", self.sprite_pos.len());
@@ -254,37 +328,28 @@ impl Stage {
     }
 
     fn draw(&mut self, ctx: &mut GraphicsContext) {
-        let geometry_buffers = self.mesh_manager.buffers(ctx);
         {
             let mut r = self.render_pipelines.model.begin_pass(
                 ctx,
                 self.backbuffer_target.into(),
-                &geometry_buffers,
+                &self.geometry_buffers,
                 Some(vec![self.sprite_atlas_texture]),
                 self.quad_mesh.clone(),
                 RenderPassOptions::clear(Color::from(0x3f3f74ffu32)),
             );
             r.push_transform(Mat4::from_translation(self.camera_offset.extend(1.0)));
-            // r.set_texture(self.sprite_atlas_texture);
 
-            let s = self.assets.get_sprite(self.s);
+            let s = self.asset_manager.sprite_manager.get_sprite(self.s);
             for xy in &self.sprite_pos {
                 r.draw_sprite_frame(self.xy + xy.as_vec2(), s, self.frame_index);
             }
         }
 
-        // draw a screen-sized quad using the previously rendered offscreen render-target as texture
-        self.backbuffer_target.draw_to_screen(
-            ctx,
-            &mut self.render_pipelines.basic,
-            DisplayMode::Centered,
-        );
-
         {
             let mut r = self.render_pipelines.model.begin_pass(
                 ctx,
-                RenderTarget::Default,
-                &geometry_buffers,
+                self.backbuffer_target.into(),
+                &self.geometry_buffers,
                 Some(vec![self.crate_texture]),
                 self.quad_mesh.clone(),
                 RenderPassOptions::clear_depth(1.)
@@ -300,7 +365,6 @@ impl Stage {
                         vec3(0., -1., 0.),
                     )),
             );
-            r.set_texture(self.crate_texture);
             r.render_mesh(
                 self.cube_mesh.clone(),
                 ModelInstanceData {
@@ -314,13 +378,20 @@ impl Stage {
             );
         }
 
+        // draw a screen-sized quad using the previously rendered offscreen render-target as texture
+        self.backbuffer_target.draw_to_screen(
+            ctx,
+            &mut self.render_pipelines.basic,
+            DisplayMode::Centered,
+        );
+
         {
             let s = format!("fps: {:.0}", self.sampled_fps);
             let scale = self.render_scale.clamp(1., 20.);
             let mut r = self.render_pipelines.text.begin_pass(
                 ctx,
                 RenderTarget::Default,
-                &geometry_buffers,
+                &self.geometry_buffers,
                 Some(vec![self.font_texture]),
                 self.quad_mesh.clone(),
                 RenderPassOptions::clear_depth(1.0).with_projection(Mat4::orthographic_lh(

@@ -2,7 +2,7 @@ use image::{GenericImage, RgbaImage};
 
 use crate::geom::{Point, Rect};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Atlas {
     image: RgbaImage,
     entries: Vec<AtlasRegion>,

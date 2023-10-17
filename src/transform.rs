@@ -1,6 +1,6 @@
 use glam::{vec2, vec3, Mat4, Quat, Vec2, Vec3};
 
-pub trait ModelTransform: Default + Clone {
+pub trait ModelTransform: Default + Copy + Clone {
     fn model_transform(self) -> Mat4;
 }
 

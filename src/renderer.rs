@@ -1,26 +1,20 @@
-use glam::{vec2, Mat4, Vec2};
+use glam::{vec2, Mat4, Quat, Vec2};
 use miniquad::*;
 use std::cell::Cell;
-use std::marker::PhantomData;
 use std::rc::Rc;
 
+use crate::batcher::{Batcher, NoopBatcher, RenderBatch};
 use crate::mesh_manager::MeshOffsets;
+use crate::shader::BasicUniforms;
 use crate::{
     color::*,
     font::{FontAtlas, LayoutOptions},
     geom::*,
     mesh_manager::GeometryBuffers,
+    shader::Shader,
     sprite::Sprite,
-    text_shader,
     transform::*,
 };
-
-#[derive(Clone)]
-pub struct RenderSet {
-    shader: Shader,
-    pipeline: Pipeline,
-    bindings: Bindings,
-}
 
 pub trait VertexLayout {
     fn vertex_layout() -> Vec<VertexAttribute>;
@@ -95,13 +89,6 @@ impl Default for RawInstanceData {
             model: Default::default(),
         }
     }
-}
-
-#[repr(C)]
-#[derive(Debug, Default, Clone, Copy)]
-pub struct InstancedModelVertexData {
-    geometry_data: ModelVertexData,
-    instance_data: RawInstanceData,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -240,22 +227,18 @@ impl From<OffscreenFramebuffer> for RenderTarget {
 
 #[derive(Clone)]
 pub struct InstancedRenderPipeline<V: VertexData, I: InstanceData, B: Batcher = RenderBatch<I>> {
-    // This will be a shader abstraction that shares the same vertex layout
-    shader: Shader, /*<V, I>*/
+    shader: Shader<V, I>,
     raw_pipeline: Pipeline,
     instance_vertex_buffer: Buffer,
     pipeline_params: PipelineParams,
-    // TODO: remove this? reuse?
     batch: B,
     default_texture: Texture,
-    _marker: PhantomData<V>,
-    _marker2: PhantomData<I>,
 }
 
 pub type BasicRenderPipeline = InstancedRenderPipeline<ModelVertexData, (), NoopBatcher>;
 
 impl<V: VertexData, I: InstanceData, B: Batcher> InstancedRenderPipeline<V, I, B> {
-    pub fn new(ctx: &mut GraphicsContext, shader: Shader) -> Self {
+    pub fn new(ctx: &mut GraphicsContext, shader: Shader<V, I>) -> Self {
         let default_texture = Texture::new(
             ctx,
             TextureAccess::Static,
@@ -309,7 +292,7 @@ impl<V: VertexData, I: InstanceData, B: Batcher> InstancedRenderPipeline<V, I, B
             ctx,
             &buffer_layouts,
             &default_vertex_attributes,
-            shader,
+            shader.program(),
             pipeline_params,
         );
 
@@ -320,8 +303,6 @@ impl<V: VertexData, I: InstanceData, B: Batcher> InstancedRenderPipeline<V, I, B
             pipeline_params,
             batch: Default::default(),
             default_texture,
-            _marker: Default::default(),
-            _marker2: Default::default(),
         }
     }
 
@@ -331,6 +312,7 @@ impl<V: VertexData, I: InstanceData, B: Batcher> InstancedRenderPipeline<V, I, B
         render_target: RenderTarget,
         geometry_buffers: &GeometryBuffers<V>,
         textures: Option<Vec<Texture>>,
+        // TODO: get rid of this in some way
         quad_mesh: Rc<Cell<MeshOffsets>>,
         RenderPassOptions {
             pass_action,
@@ -346,7 +328,7 @@ impl<V: VertexData, I: InstanceData, B: Batcher> InstancedRenderPipeline<V, I, B
         });
         ctx.begin_pass(render_target.render_pass(), pass_action);
         ctx.apply_pipeline(&self.raw_pipeline);
-        ctx.apply_uniforms(&text_shader::Uniforms {
+        ctx.apply_uniforms(&BasicUniforms {
             view: view_transform,
             projection,
         });
@@ -364,7 +346,7 @@ impl<V: VertexData, I: InstanceData, B: Batcher> InstancedRenderPipeline<V, I, B
         ctx.apply_bindings(&bindings);
         RenderPass {
             ctx,
-            current_batch: Default::default(),
+            current_batch: &mut self.batch,
             transform_stack: vec![],
             instance_buffer: self.instance_vertex_buffer,
             bindings,
@@ -372,102 +354,6 @@ impl<V: VertexData, I: InstanceData, B: Batcher> InstancedRenderPipeline<V, I, B
             current_mesh: None,
             quad_mesh,
         }
-    }
-}
-
-pub trait Batcher: Default {
-    type Item: InstanceData;
-    fn add(&mut self, instance_data: Self::Item);
-    fn active_instances(&self) -> &[Self::Item];
-    fn instance_count(&self) -> usize;
-    fn full(&self) -> bool;
-    fn clear(&mut self);
-}
-
-#[derive(Debug, Copy, Clone, Default)]
-pub struct NoopBatcher(bool);
-
-impl Batcher for NoopBatcher {
-    type Item = ();
-
-    fn add(&mut self, _instance_data: Self::Item) {
-        self.0 = true;
-    }
-
-    #[inline]
-    fn active_instances(&self) -> &[Self::Item] {
-        if self.0 {
-            &[()]
-        } else {
-            &[]
-        }
-    }
-
-    #[inline]
-    fn instance_count(&self) -> usize {
-        if self.0 {
-            1
-        } else {
-            0
-        }
-    }
-
-    #[inline]
-    fn full(&self) -> bool {
-        self.0
-    }
-
-    #[inline]
-    fn clear(&mut self) {
-        self.0 = false;
-    }
-}
-
-// TODO add "render params" to compare against
-#[derive(Clone)]
-pub struct RenderBatch<I: InstanceData = RawInstanceData, const MAX_INSTANCES: usize = 128>
-where
-    I: Sized,
-{
-    next_instance: usize,
-    instances: [I; MAX_INSTANCES],
-}
-
-impl<I: InstanceData, const N: usize> Default for RenderBatch<I, N> {
-    fn default() -> Self {
-        Self {
-            next_instance: 0,
-            instances: [Default::default(); N],
-        }
-    }
-}
-
-impl<I: InstanceData, const N: usize> Batcher for RenderBatch<I, N> {
-    type Item = I;
-
-    fn add(&mut self, instance_data: I) {
-        self.instances[self.next_instance] = instance_data;
-        self.next_instance += 1;
-    }
-
-    #[inline]
-    fn active_instances(&self) -> &[I] {
-        &self.instances[..self.next_instance]
-    }
-
-    #[inline]
-    fn instance_count(&self) -> usize {
-        self.next_instance
-    }
-
-    #[inline]
-    fn full(&self) -> bool {
-        self.next_instance == N
-    }
-
-    #[inline]
-    fn clear(&mut self) {
-        self.next_instance = 0;
     }
 }
 
@@ -543,7 +429,7 @@ impl RenderPassOptions {
 pub struct RenderPass<'a, B: Batcher = RenderBatch> {
     ctx: &'a mut GraphicsContext,
     instance_buffer: Buffer,
-    current_batch: B,
+    current_batch: &'a mut B,
     transform_stack: Vec<Mat4>,
     bindings: Bindings,
     current_texture: Option<Texture>,
@@ -608,35 +494,36 @@ impl<'a, B: Batcher> RenderPass<'a, B> {
 
 impl<'a, B> RenderPass<'a, B>
 where
-    B: Batcher,
-    B::Item: From<ModelInstanceData<Transform2D>>,
+    B: Batcher<Item = RawInstanceData>,
 {
     pub fn draw_sprite_frame(&mut self, pos: Vec2, s: &Sprite, i: usize) {
         let frame = &s.frames[i];
         let origin = pos - s.pivot.unwrap_or_default().as_vec2();
         let pos = origin;
         let scale = vec2(s.size.x as f32, s.size.y as f32);
-        self.draw_quad(ModelInstanceData {
-            tint: Color::WHITE,
-            subtexture: frame.region,
-            transform: Transform2D {
-                pos,
-                scale,
-                angle: 0.,
-            },
+        self.draw_quad(RawInstanceData {
+            uv_scale: frame.region.dim,
+            uv_offset: frame.region.pos,
+            tint: [0xff, 0xff, 0xff, 0xff],
+            model: Mat4::from_scale_rotation_translation(
+                scale.extend(1.0),
+                Quat::IDENTITY,
+                pos.extend(0.0),
+            ),
         });
     }
 
     pub fn draw_text(&mut self, pos: Vec2, s: &str, font: &FontAtlas, opts: TextDisplayOptions) {
         for glyph_data in font.layout_text(&s, opts.layout) {
-            self.draw_quad(ModelInstanceData::<Transform2D> {
-                transform: Transform2D {
-                    pos: glyph_data.bounds.pos + pos,
-                    scale: glyph_data.bounds.dim,
-                    angle: 0.,
-                },
-                subtexture: glyph_data.subtexture,
-                tint: opts.color,
+            self.draw_quad(RawInstanceData {
+                uv_scale: glyph_data.subtexture.dim,
+                uv_offset: glyph_data.subtexture.pos,
+                tint: opts.color.as_u8(),
+                model: Mat4::from_scale_rotation_translation(
+                    glyph_data.bounds.dim.extend(1.0),
+                    Quat::IDENTITY,
+                    (glyph_data.bounds.pos + pos).extend(0.0),
+                ),
             });
         }
     }

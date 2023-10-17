@@ -6,13 +6,13 @@ pub mod geom;
 
 #[macro_use]
 pub mod input;
-pub mod default_shader;
+pub mod batcher;
 pub mod mesh;
 pub mod mesh_manager;
 pub mod model;
-pub mod model_shader;
 pub mod renderer;
 pub mod resources;
+pub mod shader;
 pub mod sprite;
-pub mod text_shader;
+pub mod sprite_manager;
 pub mod transform;

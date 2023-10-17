@@ -9,6 +9,7 @@ bitmask-enum = "2.1.0"
 cfg-if = "1"
 bytemuck = { version = "1.12", features = ["derive"] }
 glam = { version = "0.23.0", features = ["scalar-math"] }
+glob = "0.3.1"
 miniquad = "0.3.15"
 pollster = "0.2"
 inflate = "0.4"
