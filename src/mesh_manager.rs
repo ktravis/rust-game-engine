@@ -5,7 +5,6 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 
 use crate::geom::VertexData;
-use miniquad::*;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct MeshRef(usize);
@@ -52,7 +51,7 @@ impl<V: VertexData> MeshManager<V> {
         self.meshes_by_name.get(name).map(Clone::clone)
     }
 
-    pub fn buffers(&mut self, ctx: &mut GraphicsContext) -> GeometryBuffers<V> {
+    pub fn buffers(&mut self, ctx: &mut miniquad::GraphicsContext) -> GeometryBuffers<V> {
         self.needs_rebuild = false;
         GeometryBuffers::from_slices(ctx, &self.vertices, &self.indices)
     }
@@ -60,13 +59,13 @@ impl<V: VertexData> MeshManager<V> {
 
 #[derive(Clone)]
 pub struct GeometryBuffers<V: VertexData> {
-    pub vertices: Buffer,
-    pub indices: Buffer,
+    pub vertices: miniquad::Buffer,
+    pub indices: miniquad::Buffer,
     _marker: PhantomData<V>,
 }
 
 impl<V: VertexData> GeometryBuffers<V> {
-    pub fn from_meshes(ctx: &mut GraphicsContext, meshes: &[Mesh<V>]) -> Self {
+    pub fn from_meshes(ctx: &mut miniquad::GraphicsContext, meshes: &[Mesh<V>]) -> Self {
         let (vertices, indices): (Vec<V>, Vec<u16>) =
             meshes
                 .iter()
@@ -78,7 +77,12 @@ impl<V: VertexData> GeometryBuffers<V> {
         Self::from_slices(ctx, &vertices, &indices)
     }
 
-    pub fn from_slices(ctx: &mut GraphicsContext, vertices: &[V], indices: &[u16]) -> Self {
+    pub fn from_slices(
+        ctx: &mut miniquad::GraphicsContext,
+        vertices: &[V],
+        indices: &[u16],
+    ) -> Self {
+        use miniquad::{Buffer, BufferType};
         GeometryBuffers {
             vertices: Buffer::immutable(ctx, BufferType::VertexBuffer, vertices),
             indices: Buffer::immutable(ctx, BufferType::IndexBuffer, indices),

@@ -1,6 +1,7 @@
 use crate::atlas::{Atlas, AtlasBuilder};
 use crate::geom::Point;
 use crate::sprite::{Animation, Frame, Sprite};
+use image::RgbaImage;
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::PathBuf;
@@ -8,7 +9,7 @@ use std::time::Duration;
 
 #[derive(Default, Debug)]
 pub struct SpriteManager {
-    pub atlas: Atlas,
+    atlas: Atlas,
     last_id: usize,
     sprite_files: HashMap<PathBuf, asefile::AsepriteFile>,
     sprite_indices: HashMap<String, usize>,
@@ -32,7 +33,6 @@ impl SpriteManager {
         if !self.dirty {
             return false;
         }
-        println!("rebuilding");
         self.rebuild_atlas()
             .unwrap_or_else(|e| println!("atlas rebuild failed: {:?}", e));
         self.dirty = false;
@@ -115,6 +115,10 @@ impl SpriteManager {
             );
         }
         s
+    }
+
+    pub fn atlas_image<'a>(&'a self) -> &'a RgbaImage {
+        self.atlas.image()
     }
 }
 

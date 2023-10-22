@@ -5,6 +5,7 @@ in vec2 texCoord;
 in vec4 tintColor;
 
 uniform sampler2D tex;
+uniform float time;
 
 out vec4 fragmentColor;
 

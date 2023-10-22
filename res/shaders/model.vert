@@ -12,6 +12,7 @@ in mat4 model;
 
 uniform mat4 view;
 uniform mat4 projection;
+uniform float time;
 
 out vec2 texCoord;
 out vec2 screenPos;

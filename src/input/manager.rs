@@ -5,7 +5,7 @@ use std::ops::DerefMut;
 use glam::Vec2;
 
 use super::{
-    AnalogInput, AnyInput, Cursor, DigitalInput, InputChange, KeyCodeOrMouseButton, StateChange,
+    AnalogInput, AnyInput, Cursor, DigitalInput, InputChange, KeyOrMouseButton, StateChange,
 };
 
 #[derive(Debug)]
@@ -60,7 +60,7 @@ where
 
     pub fn handle_key_or_button_change(
         &mut self,
-        key: impl Into<KeyCodeOrMouseButton>,
+        key: impl Into<KeyOrMouseButton>,
         state_change: StateChange,
     ) {
         self.handle_input_change(InputChange::Digital {

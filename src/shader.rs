@@ -13,6 +13,7 @@ pub trait Uniforms {
 pub struct BasicUniforms {
     pub view: glam::Mat4,
     pub projection: glam::Mat4,
+    pub time: f32,
 }
 
 impl Uniforms for BasicUniforms {
@@ -21,6 +22,7 @@ impl Uniforms for BasicUniforms {
             uniforms: vec![
                 UniformDesc::new("view", UniformType::Mat4),
                 UniformDesc::new("projection", UniformType::Mat4),
+                UniformDesc::new("time", UniformType::Float1),
             ],
         }
     }

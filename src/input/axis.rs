@@ -1,8 +1,9 @@
 use crate::input::AxisInput;
+use derive_more::Display;
 
 use super::{AnalogInput, AnyInput, DigitalInput, InputChange, StateChange};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Display, Clone, Copy)]
 pub enum OverlapMode {
     /// Keep the first key's direction
     First,
@@ -18,7 +19,7 @@ impl Default for OverlapMode {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Display, Eq, PartialEq)]
 enum AxisDirection {
     Low,
     High,
@@ -162,7 +163,8 @@ impl RawAxisBinding {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Display, Clone)]
+#[display(fmt = "")]
 pub struct Axis {
     overlap_mode: OverlapMode,
     raw: Vec<RawAxisBinding>,
@@ -193,10 +195,13 @@ impl Axis {
         // have input - the first to be registered will take precedence. Could
         // get around this by collecting all values and reducing according to
         // overlap_mode, but this might not make sense for analog axes.
-        self.active_indices
-            .first()
-            .map(|i| self.raw[*i].value(self.overlap_mode))
+        self.active_binding()
+            .map(|b| b.value(self.overlap_mode))
             .unwrap_or_default()
+    }
+
+    fn active_binding(&self) -> Option<&RawAxisBinding> {
+        self.active_indices.first().map(|i| &self.raw[*i])
     }
 
     pub fn update(&mut self, input_change: Option<InputChange>) {

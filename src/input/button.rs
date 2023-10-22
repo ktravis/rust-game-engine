@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 
 use log::error;
 
@@ -124,5 +124,39 @@ impl Button {
         }
         self.inputs.push(input);
         self.dirty = true;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Toggle {
+    button: Button,
+    pub on: bool,
+}
+
+impl Deref for Toggle {
+    type Target = Button;
+
+    fn deref(&self) -> &Self::Target {
+        &self.button
+    }
+}
+
+impl DerefMut for Toggle {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.button
+    }
+}
+
+impl Toggle {
+    pub fn new(inputs: Vec<DigitalInput>) -> Self {
+        Self {
+            button: Button::new(inputs),
+            on: false,
+        }
+    }
+
+    pub fn update(&mut self, input_change: Option<InputChange>) {
+        self.button.update(input_change);
+        self.on = self.on ^ self.button.just_pressed;
     }
 }

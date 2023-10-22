@@ -45,6 +45,7 @@ impl std::ops::DerefMut for GlyphData {
     }
 }
 
+#[derive(Default, Clone)]
 pub struct FontAtlas {
     atlas: Atlas,
     glyph_data: HashMap<char, GlyphData>,

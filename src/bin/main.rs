@@ -1,25 +1,29 @@
+use anyhow::anyhow;
 use controlset_derive::ControlSet;
-use miniquad::*;
 use rust_game_engine::font::{FontAtlas, LayoutOptions};
 use std::cell::Cell;
+use std::io::Read;
 use std::path::Path;
 use std::rc::Rc;
 use ttf_parser::Face;
 
-use rust_game_engine::{color::Color, resources, sprite_manager, transform};
+use rust_game_engine::{color::Color, resources, transform};
 
 use rust_game_engine::geom::{cube, quad, ModelVertexData, Point};
-use rust_game_engine::input::{self, AnalogInput::*, Axis, Button, InputManager, KeyCode as Key};
+use rust_game_engine::input::{
+    self, AnalogInput::*, Axis, Button, ControlSet, InputManager, Key, MouseButton, Toggle,
+};
 use rust_game_engine::renderer::{
     BasicRenderPipeline, DisplayMode, InstancedRenderPipeline, ModelInstanceData,
     OffscreenFramebuffer, RawInstanceData, RenderPassOptions, RenderTarget, TextDisplayOptions,
 };
 
 use glam::{vec3, Mat4, Quat, Vec2};
+use miniquad::{EventHandler, GraphicsContext, Texture};
 use rust_game_engine::assets::AssetManager;
 use rust_game_engine::mesh_manager::{GeometryBuffers, MeshManager, MeshOffsets};
 use rust_game_engine::shader::Shader;
-use rust_game_engine::sprite_manager::SpriteManager;
+use rust_game_engine::sprite_manager::{SpriteManager, SpriteRef};
 
 const WINDOW_DIM: Point = Point { x: 960, y: 720 };
 const TARGET_FRAMERATE: u64 = 60;
@@ -38,7 +42,8 @@ struct Controls {
     next: Button,
     #[bind(Key::O)]
     add: Button,
-    blah: Button,
+    #[bind(Key::Slash)] // aka question mark
+    show_help: Toggle,
 }
 
 struct RenderPipelines {
@@ -61,22 +66,16 @@ struct ShaderSource {
     text_frag: String,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct GameAssets {
     shader_sources: ShaderSource,
-    game_font_face: Vec<u8>,
-    sprite_manager: SpriteManager,
+    font_atlas: FontAtlas,
+    sprites: SpriteManager,
+    meshes: MeshManager<ModelVertexData>,
 }
 
-struct Stage {
-    camera_offset: Vec2,
-    font_atlas: FontAtlas,
-    input: InputManager<Controls>,
-    xy: Vec2,
-    sprite_atlas_texture: Texture,
-    frame_index: usize,
-    s: sprite_manager::SpriteRef,
-    sprite_pos: Vec<Point>,
+#[derive(Debug, Default)]
+struct FrameTiming {
     /// Last frame start time in seconds
     frame_start: f64,
     /// Delta from last frame start in seconds
@@ -84,62 +83,107 @@ struct Stage {
     frame_counter: usize,
     frame_timer: f32,
     sampled_fps: f32,
+}
+
+impl FrameTiming {
+    pub fn update(&mut self, current_time: f64) {
+        self.frame_counter += 1;
+        self.delta = if self.frame_start < 0.0 {
+            1.0 / 60.0
+        } else {
+            (current_time - self.frame_start) as f32
+        };
+        self.frame_timer += self.delta;
+        self.frame_start = current_time;
+        if self.frame_counter >= 50 {
+            self.sampled_fps = self.frame_counter as f32 / self.frame_timer;
+            self.frame_counter = 0;
+            self.frame_timer = 0.0;
+        }
+    }
+}
+
+struct Stage {
+    camera_offset: Vec2,
+    input: InputManager<Controls>,
+    asset_manager: AssetManager<GameAssets>,
+    frame_timing: FrameTiming,
     target_frame_duration: f64,
-    crate_texture: Texture,
-    render_target_size_px: Point<u32>,
-    angle: f32,
-    render_scale: f32,
     backbuffer_target: OffscreenFramebuffer,
     render_pipelines: RenderPipelines,
-    mesh_manager: MeshManager<ModelVertexData>,
+    sprite_atlas_texture: Texture,
+    crate_texture: Texture,
     font_texture: Texture,
     quad_mesh: Rc<Cell<MeshOffsets>>,
     cube_mesh: Rc<Cell<MeshOffsets>>,
     geometry_buffers: GeometryBuffers<ModelVertexData>,
 
-    asset_manager: AssetManager<GameAssets>,
+    s: SpriteRef,
+    frame_index: usize,
+    sprite_pos: Vec<Point>,
+    xy: Vec2,
+    angle: f32,
+    render_scale: f32,
 }
 
 const SCALE: u32 = 1;
 
+fn shader_error_mapper(err: miniquad::ShaderError) -> anyhow::Error {
+    use miniquad::ShaderError::*;
+    match err {
+        CompilationError {
+            shader_type,
+            error_message,
+        } => anyhow!(
+            "{:?} shader compilation failed: {}",
+            shader_type,
+            error_message
+        ),
+        LinkError(msg) => anyhow!("linking failed: {}", msg),
+        FFINulError(_) => anyhow!("shader has a null byte in it!"),
+    }
+}
+
 fn build_render_pipelines(
     ctx: &mut GraphicsContext,
     shader_sources: &ShaderSource,
-) -> RenderPipelines {
+) -> anyhow::Result<RenderPipelines> {
     let basic_shader = Shader::new(
         ctx,
         &shader_sources.default_vert,
         &shader_sources.default_frag,
         vec!["tex".into()],
     )
-    .expect("default shader creation failed");
+    .map_err(shader_error_mapper)?;
     let model_shader = Shader::new(
         ctx,
         &shader_sources.model_vert,
         &shader_sources.model_frag,
         vec!["tex".into()],
     )
-    .expect("model shader creation failed");
+    .map_err(shader_error_mapper)?;
     let text_shader = Shader::new(
         ctx,
         &shader_sources.text_vert,
         &shader_sources.text_frag,
         vec!["tex".into()],
     )
-    .expect("text shader creation failed");
-    RenderPipelines {
+    .map_err(shader_error_mapper)?;
+    Ok(RenderPipelines {
         basic: BasicRenderPipeline::new(ctx, basic_shader),
         model: InstancedRenderPipeline::new(ctx, model_shader),
         text: InstancedRenderPipeline::new(ctx, text_shader),
-    }
+    })
 }
 
 impl Stage {
-    pub fn new(ctx: &mut Context) -> Stage {
+    pub fn new(ctx: &mut GraphicsContext) -> Stage {
         // check features
         {
             assert!(ctx.features().instancing, "instancing is not supported");
         }
+
+        let mut asset_manager = AssetManager::new(GameAssets::default(), "./res/");
 
         let crate_texture = resources::texture_from_image(
             ctx,
@@ -148,30 +192,35 @@ impl Stage {
                 .into_rgba8(),
         );
 
-        let b = std::fs::read("./res/fonts/Ubuntu-M.ttf").unwrap();
-        let face = Face::parse(&b, 0).unwrap();
-        let font_atlas = FontAtlas::new(face, Default::default()).unwrap();
-        let font_texture = resources::texture_from_image_with_params(
-            ctx,
-            font_atlas.image(),
-            TextureParams {
-                format: TextureFormat::RGBA8,
-                wrap: TextureWrap::Clamp,
-                filter: FilterMode::Linear,
-                width: font_atlas.image().width(),
-                height: font_atlas.image().height(),
-            },
-        );
+        asset_manager.track_file("./res/fonts/Ubuntu-M.ttf", |state, _, mut f| {
+            let mut b = vec![];
+            f.read_to_end(&mut b).unwrap();
+            let face = Face::parse(&b, 0).unwrap();
+            state.font_atlas = FontAtlas::new(face, Default::default()).unwrap();
+        });
 
-        let mut asset_manager = AssetManager::new(GameAssets::default(), "./res/");
+        let font_texture = {
+            let font_atlas_image = asset_manager.font_atlas.image();
+            resources::texture_from_image_with_params(
+                ctx,
+                font_atlas_image,
+                miniquad::TextureParams {
+                    format: miniquad::TextureFormat::RGBA8,
+                    wrap: miniquad::TextureWrap::Clamp,
+                    filter: miniquad::FilterMode::Linear,
+                    width: font_atlas_image.width(),
+                    height: font_atlas_image.height(),
+                },
+            )
+        };
 
         asset_manager.track_glob("./res/sprites/*.aseprite", |state, path, f| {
-            state.sprite_manager.add_sprite_file(path.to_path_buf(), f);
+            state.sprites.add_sprite_file(path.to_path_buf(), f);
         });
         // TODO: should have a way to not need this
         let sprite_atlas_texture = {
-            asset_manager.sprite_manager.maybe_rebuild();
-            resources::texture_from_image(ctx, asset_manager.sprite_manager.atlas.image())
+            asset_manager.sprites.maybe_rebuild();
+            resources::texture_from_image(ctx, asset_manager.sprites.atlas_image())
         };
 
         asset_manager
@@ -200,30 +249,10 @@ impl Stage {
                 state.shader_sources.text_frag = std::io::read_to_string(&f).unwrap();
             });
 
-        let render_pipelines = build_render_pipelines(ctx, &asset_manager.shader_sources);
+        let render_pipelines = build_render_pipelines(ctx, &asset_manager.shader_sources).unwrap();
 
         let render_target_size_px: Point<u32> = (240 * SCALE, 180 * SCALE).into();
-        let depth_texture = Texture::new_render_texture(
-            ctx,
-            TextureParams {
-                width: render_target_size_px.x as _,
-                height: render_target_size_px.y as _,
-                format: TextureFormat::Depth,
-                ..Default::default()
-            },
-        );
-        let backbuffer_color_texture = Texture::new_render_texture(
-            ctx,
-            TextureParams {
-                width: render_target_size_px.x,
-                height: render_target_size_px.y,
-                format: TextureFormat::RGBA8,
-                filter: FilterMode::Nearest,
-                ..Default::default()
-            },
-        );
-        let backbuffer_target =
-            OffscreenFramebuffer::new(ctx, backbuffer_color_texture, depth_texture);
+        let backbuffer_target = OffscreenFramebuffer::new(ctx, render_target_size_px);
 
         let sprite_pos = (0..10)
             .map(|_| {
@@ -233,33 +262,25 @@ impl Stage {
                 )
             })
             .collect();
-        let s = asset_manager.sprite_manager.get_sprite_ref("guy").unwrap();
-        let mut mesh_manager = MeshManager::default();
-        let quad_mesh = mesh_manager.add("quad", quad::mesh());
-        let cube_mesh = mesh_manager.add("cube", cube::mesh());
-        let geometry_buffers = mesh_manager.buffers(ctx);
+        let s = asset_manager.sprites.get_sprite_ref("guy").unwrap();
+        let quad_mesh = asset_manager.meshes.add("quad", quad::mesh());
+        let cube_mesh = asset_manager.meshes.add("cube", cube::mesh());
+        let geometry_buffers = asset_manager.meshes.buffers(ctx);
         Stage {
             sprite_pos,
-            font_atlas,
             input: Default::default(),
             camera_offset: Default::default(),
             xy: Vec2::default(),
-            sprite_atlas_texture,
             frame_index: 0,
             s,
-            frame_start: -1.0,
-            delta: 0.,
-            frame_counter: 0,
-            frame_timer: 0.,
-            sampled_fps: 0.,
+            frame_timing: Default::default(),
             target_frame_duration: 1. / TARGET_FRAMERATE as f64,
-            crate_texture,
-            render_target_size_px,
             angle: 0.,
             render_scale: 1.,
             backbuffer_target,
-            mesh_manager,
             font_texture,
+            crate_texture,
+            sprite_atlas_texture,
             quad_mesh,
             cube_mesh,
             render_pipelines,
@@ -271,57 +292,49 @@ impl Stage {
     fn init(&mut self) {}
 
     fn update(&mut self, ctx: &mut GraphicsContext) -> bool {
-        if self.asset_manager.check_for_updates() {
-            if self.asset_manager.shader_sources.dirty {
-                self.asset_manager.shader_sources.dirty = false;
-                self.render_pipelines =
-                    build_render_pipelines(ctx, &self.asset_manager.shader_sources);
-            }
-            if self.asset_manager.sprite_manager.maybe_rebuild() {
-                self.sprite_atlas_texture = resources::texture_from_image(
-                    ctx,
-                    self.asset_manager.sprite_manager.atlas.image(),
-                );
-            }
-        }
-
-        if self.mesh_manager.needs_rebuild {
-            self.geometry_buffers = self.mesh_manager.buffers(ctx);
-        }
-
         if self.input.quit.just_pressed {
             return false;
         }
-        if self.frame_counter >= 50 {
-            self.sampled_fps = self.frame_counter as f32 / self.frame_timer;
-            self.frame_counter = 0;
-            self.frame_timer = 0.0;
+
+        if self.asset_manager.check_for_updates() {
+            if self.asset_manager.shader_sources.dirty {
+                self.asset_manager.shader_sources.dirty = false;
+                match build_render_pipelines(ctx, &self.asset_manager.shader_sources) {
+                    Ok(p) => self.render_pipelines = p,
+                    Err(e) => {
+                        println!("Pipeline recreation failed: {}", e);
+                    }
+                }
+            }
+            if self.asset_manager.sprites.maybe_rebuild() {
+                self.sprite_atlas_texture =
+                    resources::texture_from_image(ctx, self.asset_manager.sprites.atlas_image());
+            }
+            if self.asset_manager.meshes.needs_rebuild {
+                self.geometry_buffers = self.asset_manager.meshes.buffers(ctx);
+            }
         }
 
-        self.xy.x += 100. * self.delta * self.input.x.value();
-        self.xy.y += 100. * self.delta * self.input.y.value();
-        self.render_scale =
-            (self.render_scale + 20. * self.delta * self.input.scale.value()).clamp(0.5, 40.);
+        self.xy.x += 100. * self.frame_timing.delta * self.input.x.value();
+        self.xy.y += 100. * self.frame_timing.delta * self.input.y.value();
+        self.render_scale = (self.render_scale
+            + 20. * self.frame_timing.delta * self.input.scale.value())
+        .clamp(0.5, 40.);
 
         if self.input.next.just_pressed() {
-            self.frame_index = (self.frame_index + 1)
-                % self
-                    .asset_manager
-                    .sprite_manager
-                    .get_sprite(self.s)
-                    .frames
-                    .len();
+            self.frame_index =
+                (self.frame_index + 1) % self.asset_manager.sprites.get_sprite(self.s).frames.len();
         }
         if self.input.add.is_down() {
             println!("{}", self.sprite_pos.len());
             for _ in 0..100 {
                 self.sprite_pos.push(Point::new(
-                    (rand::random::<u32>() % self.render_target_size_px.x) as i32,
-                    (rand::random::<u32>() % self.render_target_size_px.y) as i32,
+                    (rand::random::<u32>() % self.backbuffer_target.color.width) as i32,
+                    (rand::random::<u32>() % self.backbuffer_target.color.height) as i32,
                 ));
             }
         }
-        self.angle += self.delta;
+        self.angle += self.frame_timing.delta;
 
         // keep running
         true
@@ -339,7 +352,7 @@ impl Stage {
             );
             r.push_transform(Mat4::from_translation(self.camera_offset.extend(1.0)));
 
-            let s = self.asset_manager.sprite_manager.get_sprite(self.s);
+            let s = self.asset_manager.sprites.get_sprite(self.s);
             for xy in &self.sprite_pos {
                 r.draw_sprite_frame(self.xy + xy.as_vec2(), s, self.frame_index);
             }
@@ -386,7 +399,7 @@ impl Stage {
         );
 
         {
-            let s = format!("fps: {:.0}", self.sampled_fps);
+            let s = format!("fps: {:.0}", self.frame_timing.sampled_fps);
             let scale = self.render_scale.clamp(1., 20.);
             let mut r = self.render_pipelines.text.begin_pass(
                 ctx,
@@ -406,19 +419,40 @@ impl Stage {
             r.draw_text(
                 (10., 40.).into(),
                 &s,
-                &self.font_atlas,
+                &self.asset_manager.font_atlas,
                 TextDisplayOptions {
                     color: Color::WHITE,
                     layout: LayoutOptions::scale(scale),
                 },
             );
+
+            let mut help_text = String::new();
+
+            Controls::controls().iter().for_each(|c| {
+                help_text += &format!(
+                    "{:?}: {}\n",
+                    c,
+                    self.input
+                        .bound_inputs(c)
+                        .iter()
+                        .map(|input| { format!("{}", input) })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                );
+            });
+
             r.draw_text(
-                self.input.mouse.position(),
-                "test\nokay right? nice.",
-                &self.font_atlas,
+                // self.input.mouse.position(),
+                WINDOW_DIM.as_vec2() / 2.0,
+                if !self.input.show_help.on {
+                    "test\nokay right? nice."
+                } else {
+                    &help_text
+                },
+                &self.asset_manager.font_atlas,
                 TextDisplayOptions {
                     color: Color::WHITE,
-                    layout: LayoutOptions::scale(scale),
+                    layout: LayoutOptions::scale(scale / 2.0),
                 },
             );
         }
@@ -428,16 +462,8 @@ impl Stage {
 }
 
 impl EventHandler for Stage {
-    fn update(&mut self, ctx: &mut Context) {
-        self.frame_counter += 1;
-        let time = date::now();
-        self.delta = if self.frame_start < 0.0 {
-            1.0 / 60.0
-        } else {
-            (time - self.frame_start) as f32
-        };
-        self.frame_timer += self.delta;
-        self.frame_start = time;
+    fn update(&mut self, ctx: &mut GraphicsContext) {
+        self.frame_timing.update(miniquad::date::now());
         if !Stage::update(self, ctx) {
             ctx.request_quit();
         }
@@ -445,7 +471,7 @@ impl EventHandler for Stage {
         self.input.end_frame_update();
     }
 
-    fn draw(&mut self, ctx: &mut Context) {
+    fn draw(&mut self, ctx: &mut GraphicsContext) {
         Stage::draw(self, ctx);
         // let current_frame_time = miniquad::date::now() - self.frame_start + 0.0005;
         // if current_frame_time < self.target_frame_duration {
@@ -455,13 +481,13 @@ impl EventHandler for Stage {
         // }
     }
 
-    fn resize_event(&mut self, _ctx: &mut Context, _width: f32, _height: f32) {}
+    fn resize_event(&mut self, _ctx: &mut GraphicsContext, _width: f32, _height: f32) {}
 
-    fn mouse_motion_event(&mut self, _ctx: &mut Context, x: f32, y: f32) {
+    fn mouse_motion_event(&mut self, _ctx: &mut GraphicsContext, x: f32, y: f32) {
         self.input.handle_mouse_motion(x, y)
     }
 
-    fn mouse_wheel_event(&mut self, _ctx: &mut Context, x: f32, y: f32) {
+    fn mouse_wheel_event(&mut self, _ctx: &mut GraphicsContext, x: f32, y: f32) {
         if x != 0. {
             self.input.handle_analog_axis_change(MouseWheelX, x);
         }
@@ -472,75 +498,230 @@ impl EventHandler for Stage {
 
     fn mouse_button_down_event(
         &mut self,
-        _ctx: &mut Context,
-        button: MouseButton,
+        _ctx: &mut GraphicsContext,
+        button: miniquad::MouseButton,
         _x: f32,
         _y: f32,
     ) {
         self.input
-            .handle_key_or_button_change(button, input::StateChange::Pressed);
+            .handle_key_or_button_change(translate_button(button), input::StateChange::Pressed);
     }
 
-    fn mouse_button_up_event(&mut self, _ctx: &mut Context, button: MouseButton, _x: f32, _y: f32) {
+    fn mouse_button_up_event(
+        &mut self,
+        _ctx: &mut GraphicsContext,
+        button: miniquad::MouseButton,
+        _x: f32,
+        _y: f32,
+    ) {
         self.input
-            .handle_key_or_button_change(button, input::StateChange::Released);
+            .handle_key_or_button_change(translate_button(button), input::StateChange::Released);
     }
 
     fn char_event(
         &mut self,
-        _ctx: &mut Context,
+        _ctx: &mut GraphicsContext,
         _character: char,
-        _keymods: KeyMods,
+        _keymods: miniquad::KeyMods,
         _repeat: bool,
     ) {
     }
 
     fn key_down_event(
         &mut self,
-        _ctx: &mut Context,
-        keycode: KeyCode,
-        _keymods: KeyMods,
+        _ctx: &mut GraphicsContext,
+        keycode: miniquad::KeyCode,
+        _keymods: miniquad::KeyMods,
         _repeat: bool,
     ) {
         self.input
-            .handle_key_or_button_change(keycode, input::StateChange::Pressed);
+            .handle_key_or_button_change(translate_key(keycode), input::StateChange::Pressed);
     }
 
-    fn key_up_event(&mut self, _ctx: &mut Context, keycode: KeyCode, _keymods: KeyMods) {
+    fn key_up_event(
+        &mut self,
+        _ctx: &mut GraphicsContext,
+        keycode: miniquad::KeyCode,
+        _keymods: miniquad::KeyMods,
+    ) {
         self.input
-            .handle_key_or_button_change(keycode, input::StateChange::Released);
+            .handle_key_or_button_change(translate_key(keycode), input::StateChange::Released);
     }
 
-    fn touch_event(&mut self, ctx: &mut Context, phase: TouchPhase, _id: u64, x: f32, y: f32) {
-        if phase == TouchPhase::Started {
-            self.mouse_button_down_event(ctx, MouseButton::Left, x, y);
+    fn touch_event(
+        &mut self,
+        ctx: &mut GraphicsContext,
+        phase: miniquad::TouchPhase,
+        _id: u64,
+        x: f32,
+        y: f32,
+    ) {
+        use miniquad::TouchPhase::*;
+        if phase == Started {
+            self.mouse_button_down_event(ctx, miniquad::MouseButton::Left, x, y);
         }
 
-        if phase == TouchPhase::Ended {
-            self.mouse_button_up_event(ctx, MouseButton::Left, x, y);
+        if phase == Ended {
+            self.mouse_button_up_event(ctx, miniquad::MouseButton::Left, x, y);
         }
 
-        if phase == TouchPhase::Moved {
+        if phase == Moved {
             self.mouse_motion_event(ctx, x, y);
         }
     }
 
-    fn raw_mouse_motion(&mut self, _ctx: &mut Context, _dx: f32, _dy: f32) {}
+    fn raw_mouse_motion(&mut self, _ctx: &mut GraphicsContext, _dx: f32, _dy: f32) {}
 
-    fn window_minimized_event(&mut self, _ctx: &mut Context) {}
+    fn window_minimized_event(&mut self, _ctx: &mut GraphicsContext) {}
 
-    fn window_restored_event(&mut self, _ctx: &mut Context) {}
+    fn window_restored_event(&mut self, _ctx: &mut GraphicsContext) {}
 
-    fn quit_requested_event(&mut self, _ctx: &mut Context) {}
+    fn quit_requested_event(&mut self, _ctx: &mut GraphicsContext) {}
 
-    fn files_dropped_event(&mut self, _ctx: &mut Context) {}
+    fn files_dropped_event(&mut self, _ctx: &mut GraphicsContext) {}
+}
+
+fn translate_key(k: miniquad::KeyCode) -> Key {
+    use miniquad::KeyCode;
+    match k {
+        KeyCode::Space => Key::Space,
+        KeyCode::Apostrophe => Key::Apostrophe,
+        KeyCode::Comma => Key::Comma,
+        KeyCode::Minus => Key::Minus,
+        KeyCode::Period => Key::Period,
+        KeyCode::Slash => Key::Slash,
+        KeyCode::Key0 => Key::Key0,
+        KeyCode::Key1 => Key::Key1,
+        KeyCode::Key2 => Key::Key2,
+        KeyCode::Key3 => Key::Key3,
+        KeyCode::Key4 => Key::Key4,
+        KeyCode::Key5 => Key::Key5,
+        KeyCode::Key6 => Key::Key6,
+        KeyCode::Key7 => Key::Key7,
+        KeyCode::Key8 => Key::Key8,
+        KeyCode::Key9 => Key::Key9,
+        KeyCode::Semicolon => Key::Semicolon,
+        KeyCode::Equal => Key::Equal,
+        KeyCode::A => Key::A,
+        KeyCode::B => Key::B,
+        KeyCode::C => Key::C,
+        KeyCode::D => Key::D,
+        KeyCode::E => Key::E,
+        KeyCode::F => Key::F,
+        KeyCode::G => Key::G,
+        KeyCode::H => Key::H,
+        KeyCode::I => Key::I,
+        KeyCode::J => Key::J,
+        KeyCode::K => Key::K,
+        KeyCode::L => Key::L,
+        KeyCode::M => Key::M,
+        KeyCode::N => Key::N,
+        KeyCode::O => Key::O,
+        KeyCode::P => Key::P,
+        KeyCode::Q => Key::Q,
+        KeyCode::R => Key::R,
+        KeyCode::S => Key::S,
+        KeyCode::T => Key::T,
+        KeyCode::U => Key::U,
+        KeyCode::V => Key::V,
+        KeyCode::W => Key::W,
+        KeyCode::X => Key::X,
+        KeyCode::Y => Key::Y,
+        KeyCode::Z => Key::Z,
+        KeyCode::LeftBracket => Key::LeftBracket,
+        KeyCode::Backslash => Key::Backslash,
+        KeyCode::RightBracket => Key::RightBracket,
+        KeyCode::GraveAccent => Key::GraveAccent,
+        KeyCode::World1 => Key::World1,
+        KeyCode::World2 => Key::World2,
+        KeyCode::Escape => Key::Escape,
+        KeyCode::Enter => Key::Enter,
+        KeyCode::Tab => Key::Tab,
+        KeyCode::Backspace => Key::Backspace,
+        KeyCode::Insert => Key::Insert,
+        KeyCode::Delete => Key::Delete,
+        KeyCode::Right => Key::Right,
+        KeyCode::Left => Key::Left,
+        KeyCode::Down => Key::Down,
+        KeyCode::Up => Key::Up,
+        KeyCode::PageUp => Key::PageUp,
+        KeyCode::PageDown => Key::PageDown,
+        KeyCode::Home => Key::Home,
+        KeyCode::End => Key::End,
+        KeyCode::CapsLock => Key::CapsLock,
+        KeyCode::ScrollLock => Key::ScrollLock,
+        KeyCode::NumLock => Key::NumLock,
+        KeyCode::PrintScreen => Key::PrintScreen,
+        KeyCode::Pause => Key::Pause,
+        KeyCode::F1 => Key::F1,
+        KeyCode::F2 => Key::F2,
+        KeyCode::F3 => Key::F3,
+        KeyCode::F4 => Key::F4,
+        KeyCode::F5 => Key::F5,
+        KeyCode::F6 => Key::F6,
+        KeyCode::F7 => Key::F7,
+        KeyCode::F8 => Key::F8,
+        KeyCode::F9 => Key::F9,
+        KeyCode::F10 => Key::F10,
+        KeyCode::F11 => Key::F11,
+        KeyCode::F12 => Key::F12,
+        KeyCode::F13 => Key::F13,
+        KeyCode::F14 => Key::F14,
+        KeyCode::F15 => Key::F15,
+        KeyCode::F16 => Key::F16,
+        KeyCode::F17 => Key::F17,
+        KeyCode::F18 => Key::F18,
+        KeyCode::F19 => Key::F19,
+        KeyCode::F20 => Key::F20,
+        KeyCode::F21 => Key::F21,
+        KeyCode::F22 => Key::F22,
+        KeyCode::F23 => Key::F23,
+        KeyCode::F24 => Key::F24,
+        KeyCode::F25 => Key::F25,
+        KeyCode::Kp0 => Key::Kp0,
+        KeyCode::Kp1 => Key::Kp1,
+        KeyCode::Kp2 => Key::Kp2,
+        KeyCode::Kp3 => Key::Kp3,
+        KeyCode::Kp4 => Key::Kp4,
+        KeyCode::Kp5 => Key::Kp5,
+        KeyCode::Kp6 => Key::Kp6,
+        KeyCode::Kp7 => Key::Kp7,
+        KeyCode::Kp8 => Key::Kp8,
+        KeyCode::Kp9 => Key::Kp9,
+        KeyCode::KpDecimal => Key::KpDecimal,
+        KeyCode::KpDivide => Key::KpDivide,
+        KeyCode::KpMultiply => Key::KpMultiply,
+        KeyCode::KpSubtract => Key::KpSubtract,
+        KeyCode::KpAdd => Key::KpAdd,
+        KeyCode::KpEnter => Key::KpEnter,
+        KeyCode::KpEqual => Key::KpEqual,
+        KeyCode::LeftShift => Key::LeftShift,
+        KeyCode::LeftControl => Key::LeftControl,
+        KeyCode::LeftAlt => Key::LeftAlt,
+        KeyCode::LeftSuper => Key::LeftSuper,
+        KeyCode::RightShift => Key::RightShift,
+        KeyCode::RightControl => Key::RightControl,
+        KeyCode::RightAlt => Key::RightAlt,
+        KeyCode::RightSuper => Key::RightSuper,
+        KeyCode::Menu => Key::Menu,
+        KeyCode::Unknown => Key::Unknown,
+    }
+}
+
+fn translate_button(b: miniquad::MouseButton) -> MouseButton {
+    match b {
+        miniquad::MouseButton::Right => MouseButton::Right,
+        miniquad::MouseButton::Left => MouseButton::Left,
+        miniquad::MouseButton::Middle => MouseButton::Middle,
+        miniquad::MouseButton::Unknown => MouseButton::Unknown,
+    }
 }
 
 fn main() {
-    let config = conf::Conf {
+    let config = miniquad::conf::Conf {
         window_width: WINDOW_DIM.x,
         window_height: WINDOW_DIM.y,
         ..Default::default()
     };
-    start(config, |ctx| Box::new(Stage::new(ctx)));
+    miniquad::start(config, |ctx| Box::new(Stage::new(ctx)));
 }

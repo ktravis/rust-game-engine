@@ -135,7 +135,30 @@ pub struct OffscreenFramebuffer {
 }
 
 impl OffscreenFramebuffer {
-    pub fn new(
+    pub fn new(ctx: &mut GraphicsContext, dimensions: Point<u32>) -> Self {
+        let color = Texture::new_render_texture(
+            ctx,
+            TextureParams {
+                width: dimensions.x,
+                height: dimensions.y,
+                format: TextureFormat::RGBA8,
+                filter: FilterMode::Nearest,
+                ..Default::default()
+            },
+        );
+        let depth = Texture::new_render_texture(
+            ctx,
+            TextureParams {
+                width: dimensions.x as _,
+                height: dimensions.y as _,
+                format: TextureFormat::Depth,
+                ..Default::default()
+            },
+        );
+        Self::from_buffers(ctx, color, depth)
+    }
+
+    pub fn from_buffers(
         ctx: &mut GraphicsContext,
         color: Texture,
         depth: impl Into<Option<Texture>>,
@@ -328,9 +351,11 @@ impl<V: VertexData, I: InstanceData, B: Batcher> InstancedRenderPipeline<V, I, B
         });
         ctx.begin_pass(render_target.render_pass(), pass_action);
         ctx.apply_pipeline(&self.raw_pipeline);
+        let time = date::now() % 10000.0;
         ctx.apply_uniforms(&BasicUniforms {
             view: view_transform,
             projection,
+            time: time as f32,
         });
         let images = textures.unwrap_or_else(|| vec![self.default_texture]);
         let mut vertex_buffers = vec![geometry_buffers.vertices];
