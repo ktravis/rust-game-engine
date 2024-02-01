@@ -1,24 +1,41 @@
 use crate::mesh::Mesh;
 use crate::renderer::VertexLayout;
-use glam::{vec2, vec4, Vec2, Vec4};
-use miniquad::{VertexAttribute, VertexFormat};
+use glam::{vec2, vec4, Mat4, Vec2, Vec4};
+use wgpu::{vertex_attr_array, VertexAttribute, VertexBufferLayout};
+
+#[rustfmt::skip]
+pub const OPENGL_TO_WGPU_MATRIX: Mat4 = Mat4::from_cols_array(&[
+    1.0, 0.0, 0.0, 0.0,
+    0.0, 1.0, 0.0, 0.0,
+    0.0, 0.0, 0.5, 0.5,
+    0.0, 0.0, 0.0, 1.0,
+]);
 
 pub trait VertexData: VertexLayout + std::fmt::Debug + Default + Clone + Copy {}
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ModelVertexData {
-    pub pos: Vec4,
-    pub uv: Vec2,
+    pub pos: [f32; 4],
+    pub uv: [f32; 2],
 }
 
 impl VertexLayout for ModelVertexData {
-    fn vertex_layout() -> Vec<VertexAttribute> {
-        vec![
-            VertexAttribute::with_buffer("position", VertexFormat::Float4, 0),
-            VertexAttribute::with_buffer("uv", VertexFormat::Float2, 0),
-        ]
+    fn vertex_layout() -> VertexBufferLayout<'static> {
+        use std::mem;
+        VertexBufferLayout {
+            array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBUTES,
+        }
     }
+}
+
+impl ModelVertexData {
+    const ATTRIBUTES: [VertexAttribute; 2] = vertex_attr_array![
+        0 => Float32x4,
+        1 => Float32x2,
+    ];
 }
 
 impl VertexData for ModelVertexData {}
@@ -48,6 +65,12 @@ impl<T> From<Point<T>> for (T, T) {
 }
 
 impl Point {
+    pub fn as_vec2(&self) -> Vec2 {
+        Vec2::new(self.x as f32, self.y as f32)
+    }
+}
+
+impl Point<u32> {
     pub fn as_vec2(&self) -> Vec2 {
         Vec2::new(self.x as f32, self.y as f32)
     }
@@ -146,20 +169,20 @@ pub mod quad {
     ) -> [ModelVertexData; 4] {
         [
             ModelVertexData {
-                pos: glam::vec4(x, y, 0.0, 1.0),
-                uv: glam::vec2(uv1.0, uv1.1),
+                pos: [x, y, 0.0, 1.0],
+                uv: [uv1.0, uv1.1],
             },
             ModelVertexData {
-                pos: glam::vec4(x, y + h, 0.0, 1.0),
-                uv: glam::vec2(uv1.0, uv2.1),
+                pos: [x, y + h, 0.0, 1.0],
+                uv: [uv1.0, uv2.1],
             },
             ModelVertexData {
-                pos: glam::vec4(x + w, y + h, 0.0, 1.0),
-                uv: glam::vec2(uv2.0, uv2.1),
+                pos: [x + w, y + h, 0.0, 1.0],
+                uv: [uv2.0, uv2.1],
             },
             ModelVertexData {
-                pos: glam::vec4(x + w, y, 0.0, 1.0),
-                uv: glam::vec2(uv2.0, uv1.1),
+                pos: [x + w, y, 0.0, 1.0],
+                uv: [uv2.0, uv1.1],
             },
         ]
     }
@@ -179,100 +202,100 @@ pub mod cube {
 
     pub const VERTICES: [ModelVertexData; 24] = [
         ModelVertexData {
-            pos: vec4(-1.0, -1.0, -1.0, 1.),
-            uv: vec2(0.0, 0.0),
+            pos: [-1.0, -1.0, -1.0, 1.],
+            uv: [0.0, 0.0],
         },
         ModelVertexData {
-            pos: vec4(1.0, -1.0, -1.0, 1.),
-            uv: vec2(1.0, 0.0),
+            pos: [1.0, -1.0, -1.0, 1.],
+            uv: [1.0, 0.0],
         },
         ModelVertexData {
-            pos: vec4(1.0, 1.0, -1.0, 1.),
-            uv: vec2(1.0, 1.0),
+            pos: [1.0, 1.0, -1.0, 1.],
+            uv: [1.0, 1.0],
         },
         ModelVertexData {
-            pos: vec4(-1.0, 1.0, -1.0, 1.),
-            uv: vec2(0.0, 1.0),
+            pos: [-1.0, 1.0, -1.0, 1.],
+            uv: [0.0, 1.0],
         },
         ModelVertexData {
-            pos: vec4(-1.0, -1.0, 1.0, 1.),
-            uv: vec2(0.0, 0.0),
+            pos: [-1.0, -1.0, 1.0, 1.],
+            uv: [0.0, 0.0],
         },
         ModelVertexData {
-            pos: vec4(1.0, -1.0, 1.0, 1.),
-            uv: vec2(1.0, 0.0),
+            pos: [1.0, -1.0, 1.0, 1.],
+            uv: [1.0, 0.0],
         },
         ModelVertexData {
-            pos: vec4(1.0, 1.0, 1.0, 1.),
-            uv: vec2(1.0, 1.0),
+            pos: [1.0, 1.0, 1.0, 1.],
+            uv: [1.0, 1.0],
         },
         ModelVertexData {
-            pos: vec4(-1.0, 1.0, 1.0, 1.),
-            uv: vec2(0.0, 1.0),
+            pos: [-1.0, 1.0, 1.0, 1.],
+            uv: [0.0, 1.0],
         },
         ModelVertexData {
-            pos: vec4(-1.0, -1.0, -1.0, 1.),
-            uv: vec2(0.0, 0.0),
+            pos: [-1.0, -1.0, -1.0, 1.],
+            uv: [0.0, 0.0],
         },
         ModelVertexData {
-            pos: vec4(-1.0, 1.0, -1.0, 1.),
-            uv: vec2(1.0, 0.0),
+            pos: [-1.0, 1.0, -1.0, 1.],
+            uv: [1.0, 0.0],
         },
         ModelVertexData {
-            pos: vec4(-1.0, 1.0, 1.0, 1.),
-            uv: vec2(1.0, 1.0),
+            pos: [-1.0, 1.0, 1.0, 1.],
+            uv: [1.0, 1.0],
         },
         ModelVertexData {
-            pos: vec4(-1.0, -1.0, 1.0, 1.),
-            uv: vec2(0.0, 1.0),
+            pos: [-1.0, -1.0, 1.0, 1.],
+            uv: [0.0, 1.0],
         },
         ModelVertexData {
-            pos: vec4(1.0, -1.0, -1.0, 1.),
-            uv: vec2(0.0, 0.0),
+            pos: [1.0, -1.0, -1.0, 1.],
+            uv: [0.0, 0.0],
         },
         ModelVertexData {
-            pos: vec4(1.0, 1.0, -1.0, 1.),
-            uv: vec2(1.0, 0.0),
+            pos: [1.0, 1.0, -1.0, 1.],
+            uv: [1.0, 0.0],
         },
         ModelVertexData {
-            pos: vec4(1.0, 1.0, 1.0, 1.),
-            uv: vec2(1.0, 1.0),
+            pos: [1.0, 1.0, 1.0, 1.],
+            uv: [1.0, 1.0],
         },
         ModelVertexData {
-            pos: vec4(1.0, -1.0, 1.0, 1.),
-            uv: vec2(0.0, 1.0),
+            pos: [1.0, -1.0, 1.0, 1.],
+            uv: [0.0, 1.0],
         },
         ModelVertexData {
-            pos: vec4(-1.0, -1.0, -1.0, 1.),
-            uv: vec2(0.0, 0.0),
+            pos: [-1.0, -1.0, -1.0, 1.],
+            uv: [0.0, 0.0],
         },
         ModelVertexData {
-            pos: vec4(-1.0, -1.0, 1.0, 1.),
-            uv: vec2(1.0, 0.0),
+            pos: [-1.0, -1.0, 1.0, 1.],
+            uv: [1.0, 0.0],
         },
         ModelVertexData {
-            pos: vec4(1.0, -1.0, 1.0, 1.),
-            uv: vec2(1.0, 1.0),
+            pos: [1.0, -1.0, 1.0, 1.],
+            uv: [1.0, 1.0],
         },
         ModelVertexData {
-            pos: vec4(1.0, -1.0, -1.0, 1.),
-            uv: vec2(0.0, 1.0),
+            pos: [1.0, -1.0, -1.0, 1.],
+            uv: [0.0, 1.0],
         },
         ModelVertexData {
-            pos: vec4(-1.0, 1.0, -1.0, 1.),
-            uv: vec2(0.0, 0.0),
+            pos: [-1.0, 1.0, -1.0, 1.],
+            uv: [0.0, 0.0],
         },
         ModelVertexData {
-            pos: vec4(-1.0, 1.0, 1.0, 1.),
-            uv: vec2(1.0, 0.0),
+            pos: [-1.0, 1.0, 1.0, 1.],
+            uv: [1.0, 0.0],
         },
         ModelVertexData {
-            pos: vec4(1.0, 1.0, 1.0, 1.),
-            uv: vec2(1.0, 1.0),
+            pos: [1.0, 1.0, 1.0, 1.],
+            uv: [1.0, 1.0],
         },
         ModelVertexData {
-            pos: vec4(1.0, 1.0, -1.0, 1.),
-            uv: vec2(0.0, 1.0),
+            pos: [1.0, 1.0, -1.0, 1.],
+            uv: [0.0, 1.0],
         },
     ];
 

@@ -2,25 +2,30 @@ use crate::atlas::{Atlas, AtlasBuilder};
 use crate::geom::Point;
 use crate::sprite::{Animation, Frame, Sprite};
 use image::RgbaImage;
+use slotmap::{new_key_type, SlotMap};
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::PathBuf;
 use std::time::Duration;
 
+new_key_type! {
+    pub struct SpriteRef;
+}
+
 #[derive(Default, Debug)]
 pub struct SpriteManager {
     atlas: Atlas,
-    last_id: usize,
+    sprites: SlotMap<SpriteRef, Sprite>,
     sprite_files: HashMap<PathBuf, asefile::AsepriteFile>,
-    sprite_indices: HashMap<String, usize>,
-    sprites: Vec<Sprite>,
+    sprites_by_name: HashMap<String, SpriteRef>,
     dirty: bool,
 }
 
 impl SpriteManager {
-    pub fn add_sprite_file_path(&mut self, path: PathBuf) {
-        let f = File::open(&path).unwrap();
-        self.add_sprite_file(path, f);
+    pub fn add_sprite_file_path(&mut self, path: impl Into<PathBuf>) {
+        let path_buf = path.into();
+        let f = File::open(&path_buf).unwrap();
+        self.add_sprite_file(path_buf, f);
     }
 
     pub fn add_sprite_file(&mut self, path: PathBuf, file: File) {
@@ -47,20 +52,14 @@ impl SpriteManager {
             for f in 0..a.num_frames() {
                 atlas_builder.add(&a.frame(f).image()).unwrap();
             }
-            let sprite_ref = self.get_sprite_ref(&name).unwrap_or_else(|| {
-                let index = self.sprites.len();
-                self.sprites.push(Sprite::default());
-                self.sprite_indices.insert(name.clone(), index);
-                let id = self.last_id;
-                self.last_id += 1;
-                SpriteRef::new(id, index)
-            });
+            let sprite_ref = self.sprites.insert(Sprite::default());
+            self.sprites_by_name.insert(name, sprite_ref);
             raw_sprites.push((sprite_ref, a));
         }
         let mut idx = 0;
         self.atlas = atlas_builder.build();
         for (sprite_ref, a) in raw_sprites {
-            let mut s = &mut self.sprites[sprite_ref.index];
+            let mut s = self.sprites.get_mut(sprite_ref).unwrap();
             s.frames = (0..a.num_frames())
                 .map(|i| {
                     let f = a.frame(i);
@@ -89,47 +88,19 @@ impl SpriteManager {
         Ok(())
     }
 
-    pub fn get_sprite_ref(&self, r: impl AsRef<str>) -> Option<SpriteRef> {
-        let index = *self.sprite_indices.get(r.as_ref())?;
-
-        Some(SpriteRef::new(self.sprites[index].id, index))
+    pub fn get_sprite_ref(&self, key: impl AsRef<str>) -> Option<SpriteRef> {
+        self.sprites_by_name.get(key.as_ref()).copied()
     }
 
     pub fn get_sprite(&self, r: SpriteRef) -> &Sprite {
-        let s = &self.sprites[r.index];
-        if r.id != s.id {
-            panic!(
-                "referenced sprite had the wrong id: {} (expected {})",
-                s.id, r.id
-            );
-        }
-        s
+        self.sprites.get(r).unwrap()
     }
 
     pub fn get_sprite_mut(&mut self, r: SpriteRef) -> &mut Sprite {
-        let s = &mut self.sprites[r.index];
-        if r.id != s.id {
-            panic!(
-                "referenced sprite had the wrong id: {} (expected {})",
-                s.id, r.id
-            );
-        }
-        s
+        self.sprites.get_mut(r).unwrap()
     }
 
     pub fn atlas_image<'a>(&'a self) -> &'a RgbaImage {
         self.atlas.image()
-    }
-}
-
-#[derive(Copy, Clone, Debug)]
-pub struct SpriteRef {
-    index: usize,
-    id: usize,
-}
-
-impl SpriteRef {
-    fn new(id: usize, index: usize) -> Self {
-        Self { id, index }
     }
 }

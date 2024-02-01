@@ -1,7 +1,6 @@
 use image::RgbaImage;
-use miniquad::{
-    FilterMode, GraphicsContext, Texture, TextureAccess, TextureFormat, TextureParams, TextureWrap,
-};
+use miniquad::{FilterMode, GraphicsContext};
+use wgpu::{Device, Queue};
 
 // use cfg_if::cfg_if;
 
@@ -74,25 +73,26 @@ use miniquad::{
 //     Ok(reader.decode()?)
 // }
 
-pub fn texture_from_image_with_params(
-    ctx: &mut GraphicsContext,
-    img: &RgbaImage,
-    params: TextureParams,
-) -> Texture {
-    let img_bytes = img.as_raw();
-    Texture::new(ctx, TextureAccess::Static, Some(img_bytes), params)
-}
-
-pub fn texture_from_image(ctx: &mut GraphicsContext, img: &RgbaImage) -> Texture {
-    let params = TextureParams {
-        format: TextureFormat::RGBA8,
-        wrap: TextureWrap::Repeat,
-        filter: FilterMode::Nearest,
-        width: img.width(),
-        height: img.height(),
-    };
-    texture_from_image_with_params(ctx, img, params)
-}
+// pub fn texture_from_image_with_params(
+//     device: &Device,
+//     queue: &Queue,
+//     img: &RgbaImage,
+//     params: TextureParams,
+// ) -> Texture {
+//     let img_bytes = img.as_raw();
+//     texture::Texture::new(ctx, TextureAccess::Static, Some(img_bytes), params)
+// }
+//
+// pub fn texture_from_image(ctx: &mut GraphicsContext, img: &RgbaImage) -> Texture {
+//     let params = TextureParams {
+//         format: TextureFormat::RGBA8,
+//         wrap: TextureWrap::Repeat,
+//         filter: FilterMode::Nearest,
+//         width: img.width(),
+//         height: img.height(),
+//     };
+//     texture_from_image_with_params(ctx, img, params)
+// }
 
 // pub async fn load_model(
 //     file_name: &str,

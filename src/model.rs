@@ -49,7 +49,10 @@ impl Model {
                         .step_by(2)
                         .map(|(i, _)| glam::vec2(raw_mesh.texcoords[i], raw_mesh.texcoords[i + 1])),
                 )
-                .map(|(pos, uv)| ModelVertexData { pos, uv })
+                .map(|(pos, uv)| ModelVertexData {
+                    pos: pos.into(),
+                    uv: uv.into(),
+                })
                 .collect();
             let indices = raw_mesh.indices.iter().map(|i| *i as u16).collect();
             let mesh = Mesh { vertices, indices };

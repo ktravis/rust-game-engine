@@ -1,63 +1,90 @@
-use glam::{vec2, Mat4, Quat, Vec2};
-use miniquad::*;
-use std::cell::Cell;
-use std::rc::Rc;
-
-use crate::batcher::{Batcher, NoopBatcher, RenderBatch};
-use crate::mesh_manager::MeshOffsets;
-use crate::shader::BasicUniforms;
-use crate::{
-    color::*,
-    font::{FontAtlas, LayoutOptions},
-    geom::*,
-    mesh_manager::GeometryBuffers,
-    shader::Shader,
-    sprite::Sprite,
-    transform::*,
-};
+use crate::texture::{Texture, TextureBuilder};
+use crate::{color::*, geom::*, transform::*};
+use glam::{vec3, Mat4, Quat, Vec2};
+use std::borrow::Borrow;
+use std::fmt::{Debug, Formatter};
+use std::ops::{Deref, DerefMut};
+use wgpu::util::DeviceExt;
+use wgpu::{vertex_attr_array, VertexAttribute, VertexBufferLayout, VertexStepMode};
 
 pub trait VertexLayout {
-    fn vertex_layout() -> Vec<VertexAttribute>;
+    fn vertex_layout() -> VertexBufferLayout<'static>;
 }
 
 pub trait InstanceData: Copy + Default + Sized + VertexLayout {}
 
 impl VertexLayout for () {
-    fn vertex_layout() -> Vec<VertexAttribute> {
-        vec![]
+    fn vertex_layout() -> VertexBufferLayout<'static> {
+        VertexBufferLayout {
+            array_stride: 0,
+            step_mode: VertexStepMode::Instance,
+            attributes: &[],
+        }
     }
 }
 
 impl InstanceData for () {}
 
 #[derive(Debug, Clone, Copy)]
-pub struct ModelInstanceData<T: ModelTransform> {
+pub struct ModelInstanceData {
     pub subtexture: Rect,
     pub tint: Color,
-    pub transform: T,
+    pub transform: Transform,
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct RawInstanceData {
-    uv_scale: Vec2,
-    uv_offset: Vec2,
-    tint: [u8; 4],
-    model: Mat4,
-}
+impl ModelInstanceData {
+    const ATTRIBUTES: [VertexAttribute; 7] = vertex_attr_array![
+        // uv_scale: vec2<f32>
+        2 => Float32x2,
+        // uv_offset: vec2<f32>
+        3 => Float32x2,
+        // tint: vec4<f32>
+        4 => Float32x4,
+        // model_N: vec4<f32> * 4
+        5 => Float32x4,
+        6 => Float32x4,
+        7 => Float32x4,
+        8 => Float32x4,
+    ];
 
-impl<T: ModelTransform> From<ModelInstanceData<T>> for RawInstanceData {
-    fn from(other: ModelInstanceData<T>) -> Self {
+    #[inline]
+    pub fn as_raw(&self) -> RawInstanceData {
+        let model = self.transform.as_matrix().to_cols_array_2d();
         RawInstanceData {
-            uv_scale: other.subtexture.dim,
-            uv_offset: other.subtexture.pos,
-            tint: other.tint.as_u8(),
-            model: other.transform.model_transform(),
+            uv_scale: self.subtexture.dim.into(),
+            uv_offset: self.subtexture.pos.into(),
+            tint: [self.tint.r, self.tint.g, self.tint.b, self.tint.a],
+            model,
         }
     }
 }
 
-impl<T: ModelTransform> Default for ModelInstanceData<T> {
+impl VertexLayout for ModelInstanceData {
+    fn vertex_layout() -> VertexBufferLayout<'static> {
+        VertexBufferLayout {
+            array_stride: std::mem::size_of::<RawInstanceData>() as wgpu::BufferAddress,
+            step_mode: VertexStepMode::Instance,
+            attributes: &Self::ATTRIBUTES,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct RawInstanceData {
+    uv_scale: [f32; 2],
+    uv_offset: [f32; 2],
+    tint: [f32; 4],
+    model: [[f32; 4]; 4],
+}
+
+impl From<ModelInstanceData> for RawInstanceData {
+    fn from(other: ModelInstanceData) -> Self {
+        other.as_raw()
+    }
+}
+
+impl Default for ModelInstanceData {
     fn default() -> Self {
         Self {
             transform: Default::default(),
@@ -67,26 +94,13 @@ impl<T: ModelTransform> Default for ModelInstanceData<T> {
     }
 }
 
-impl InstanceData for RawInstanceData {}
-
-impl VertexLayout for RawInstanceData {
-    fn vertex_layout() -> Vec<VertexAttribute> {
-        vec![
-            VertexAttribute::with_buffer("uv_scale", VertexFormat::Float2, 1),
-            VertexAttribute::with_buffer("uv_offset", VertexFormat::Float2, 1),
-            VertexAttribute::with_buffer("tint", VertexFormat::Byte4, 1),
-            VertexAttribute::with_buffer("model", VertexFormat::Mat4, 1),
-        ]
-    }
-}
-
 impl Default for RawInstanceData {
     fn default() -> Self {
         Self {
             uv_scale: Default::default(),
             uv_offset: Default::default(),
-            tint: Color::WHITE.as_u8(),
-            model: Default::default(),
+            tint: [1.0, 1.0, 1.0, 1.0],
+            model: Mat4::IDENTITY.to_cols_array_2d(),
         }
     }
 }
@@ -105,457 +119,245 @@ impl DisplayMode {
                 let scale = (target.x / actual.x).min(target.y / actual.y);
 
                 let scaled_target_size = scale * actual;
-                let display_region = Transform2D {
-                    pos: vec2(
+                Mat4::from_scale_rotation_translation(
+                    scaled_target_size.extend(1.0),
+                    Quat::IDENTITY,
+                    vec3(
                         (target.x - scaled_target_size.x) / 2.0,
                         (target.y - scaled_target_size.y) / 2.0,
+                        0.0,
                     ),
-                    scale: scaled_target_size,
-                    ..Default::default()
-                };
-                display_region.model_transform()
+                )
             }
         }
     }
 }
 
+pub trait RenderTarget {
+    fn size_pixels(&self) -> Point<u32>;
+
+    fn color_attachment(
+        &self,
+        load_op: wgpu::LoadOp<wgpu::Color>,
+    ) -> wgpu::RenderPassColorAttachment;
+
+    fn depth_stencil_attachment(
+        &self,
+        _depth_load_op: wgpu::LoadOp<f32>,
+        _stencil_ops: impl Into<Option<wgpu::Operations<u32>>>,
+    ) -> Option<wgpu::RenderPassDepthStencilAttachment> {
+        None
+    }
+}
+
 #[rustfmt::skip]
-const DEFAULT_TEXTURE_DATA: [u8; 16] = [
+pub const DEFAULT_TEXTURE_DATA: [u8; 16] = [
     255, 0, 255, 255,
     255, 255, 255, 255,
     255, 255, 255, 255,
     255, 0, 255, 255,
 ];
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug)]
 pub struct OffscreenFramebuffer {
-    pub color: Texture,
+    pub color: BindGroup<Texture>,
     pub depth: Option<Texture>,
-    pass: miniquad::RenderPass,
 }
 
 impl OffscreenFramebuffer {
-    pub fn new(ctx: &mut GraphicsContext, dimensions: Point<u32>) -> Self {
-        let color = Texture::new_render_texture(
-            ctx,
-            TextureParams {
-                width: dimensions.x,
-                height: dimensions.y,
-                format: TextureFormat::RGBA8,
-                filter: FilterMode::Nearest,
-                ..Default::default()
-            },
-        );
-        let depth = Texture::new_render_texture(
-            ctx,
-            TextureParams {
-                width: dimensions.x as _,
-                height: dimensions.y as _,
-                format: TextureFormat::Depth,
-                ..Default::default()
-            },
-        );
-        Self::from_buffers(ctx, color, depth)
-    }
-
-    pub fn from_buffers(
-        ctx: &mut GraphicsContext,
-        color: Texture,
-        depth: impl Into<Option<Texture>>,
+    pub fn new(
+        device: &wgpu::Device,
+        bind_group_layout: &wgpu::BindGroupLayout,
+        size: Point<u32>,
     ) -> Self {
-        let depth = depth.into();
-        let pass = miniquad::RenderPass::new(ctx, color, depth);
-        Self { color, depth, pass }
-    }
-
-    pub fn render_pass(&self) -> miniquad::RenderPass {
-        self.pass
-    }
-
-    pub fn draw_to_screen<I: InstanceData, B: Batcher>(
-        &self,
-        ctx: &mut GraphicsContext,
-        // TODO: types here
-        render_pipeline: &mut InstancedRenderPipeline<ModelVertexData, I, B>,
-        display_mode: DisplayMode,
-    ) {
-        self.draw_to(ctx, render_pipeline, display_mode, RenderTarget::Default)
-    }
-
-    pub fn draw_to<I: InstanceData, B: Batcher>(
-        &self,
-        ctx: &mut GraphicsContext,
-        // TODO: types here
-        render_pipeline: &mut InstancedRenderPipeline<ModelVertexData, I, B>,
-        display_mode: DisplayMode,
-        render_target: RenderTarget,
-    ) {
-        let (w, h) = ctx.screen_size();
-
-        let mut quad_mesh = quad::mesh();
-        // we need a quad with flipped uv's, because the texture is top-down in memory
-        quad_mesh
-            .vertices
-            .iter_mut()
-            .for_each(|v| v.uv.y = 1.0 - v.uv.y);
-        let quad_buffers = GeometryBuffers::from_meshes(ctx, &[quad_mesh]);
-        let mut render_pass = render_pipeline.begin_pass(
-            ctx,
-            render_target,
-            &quad_buffers,
-            Some(vec![self.color]),
-            Rc::new(Cell::new(MeshOffsets {
-                offset: 0,
-                count: quad::INDICES.len() as _,
-            })),
-            RenderPassOptions {
-                pass_action: PassAction::clear_color(0., 0., 0., 0.),
-                view_transform: display_mode.scaling_matrix(
-                    vec2(self.color.width as f32, self.color.height as f32),
-                    vec2(w, h),
-                ),
-                projection: Some(Mat4::orthographic_lh(0.0, w, h, 0.0, 1.0, -1.0)),
-            },
-        );
-        render_pass.draw_quad(B::Item::default());
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub enum RenderTarget {
-    Offscreen(OffscreenFramebuffer),
-    Default,
-}
-
-impl RenderTarget {
-    pub fn render_pass(&self) -> Option<miniquad::RenderPass> {
-        match self {
-            RenderTarget::Offscreen(target) => Some(target.render_pass()),
-            RenderTarget::Default => None,
-        }
-    }
-}
-
-impl Default for RenderTarget {
-    fn default() -> Self {
-        Self::Default
-    }
-}
-
-impl From<OffscreenFramebuffer> for RenderTarget {
-    fn from(fb: OffscreenFramebuffer) -> Self {
-        Self::Offscreen(fb)
-    }
-}
-
-#[derive(Clone)]
-pub struct InstancedRenderPipeline<V: VertexData, I: InstanceData, B: Batcher = RenderBatch<I>> {
-    shader: Shader<V, I>,
-    raw_pipeline: Pipeline,
-    instance_vertex_buffer: Buffer,
-    pipeline_params: PipelineParams,
-    batch: B,
-    default_texture: Texture,
-}
-
-pub type BasicRenderPipeline = InstancedRenderPipeline<ModelVertexData, (), NoopBatcher>;
-
-impl<V: VertexData, I: InstanceData, B: Batcher> InstancedRenderPipeline<V, I, B> {
-    pub fn new(ctx: &mut GraphicsContext, shader: Shader<V, I>) -> Self {
-        let default_texture = Texture::new(
-            ctx,
-            TextureAccess::Static,
-            Some(&DEFAULT_TEXTURE_DATA),
-            TextureParams {
-                format: TextureFormat::RGBA8,
-                wrap: TextureWrap::Repeat,
-                filter: FilterMode::Nearest,
-                width: 2,
-                height: 2,
-            },
-        );
-
-        let instance_vertex_buffer = Buffer::stream(
-            ctx,
-            BufferType::VertexBuffer,
-            128 * std::mem::size_of::<I>(),
-        );
-
-        let mut default_vertex_attributes = V::vertex_layout();
-        default_vertex_attributes.extend(I::vertex_layout());
-
-        // TODO: pass this in
-        let pipeline_params = PipelineParams {
-            depth_test: Comparison::LessOrEqual,
-            depth_write: true,
-            color_blend: Some(BlendState::new(
-                Equation::Add,
-                BlendFactor::Value(BlendValue::SourceAlpha),
-                BlendFactor::OneMinusValue(BlendValue::SourceAlpha),
-            )),
-            alpha_blend: Some(BlendState::new(
-                Equation::Add,
-                BlendFactor::Zero,
-                BlendFactor::One,
-            )),
-            cull_face: CullFace::Back,
-            // primitive_type: miniquad::PrimitiveType::Lines,
-            ..Default::default()
-        };
-
-        let mut buffer_layouts = vec![BufferLayout::default()];
-        if I::vertex_layout().len() > 0 {
-            buffer_layouts.push(BufferLayout {
-                step_func: VertexStep::PerInstance,
-                ..Default::default()
-            });
-        }
-
-        let raw_pipeline = Pipeline::with_params(
-            ctx,
-            &buffer_layouts,
-            &default_vertex_attributes,
-            shader.program(),
-            pipeline_params,
-        );
-
+        let color = TextureBuilder::render_target()
+            .with_label("offscreen_color_target")
+            .build(device, size);
+        let depth = TextureBuilder::depth()
+            .with_label("offscreen_depth_target")
+            .build(device, size);
         Self {
-            shader,
-            raw_pipeline,
-            instance_vertex_buffer,
-            pipeline_params,
-            batch: Default::default(),
-            default_texture,
-        }
-    }
-
-    pub fn begin_pass<'a>(
-        &'a mut self,
-        ctx: &'a mut GraphicsContext,
-        render_target: RenderTarget,
-        geometry_buffers: &GeometryBuffers<V>,
-        textures: Option<Vec<Texture>>,
-        // TODO: get rid of this in some way
-        quad_mesh: Rc<Cell<MeshOffsets>>,
-        RenderPassOptions {
-            pass_action,
-            view_transform,
-            projection,
-        }: RenderPassOptions,
-    ) -> RenderPass<'a, B> {
-        let projection = projection.unwrap_or_else(|| {
-            let RenderTarget::Offscreen(o) = render_target else {
-                panic!("what");
-            };
-            Mat4::orthographic_lh(0.0, o.color.width as _, o.color.height as _, 0.0, 1.0, -1.0)
-        });
-        ctx.begin_pass(render_target.render_pass(), pass_action);
-        ctx.apply_pipeline(&self.raw_pipeline);
-        let time = date::now() % 10000.0;
-        ctx.apply_uniforms(&BasicUniforms {
-            view: view_transform,
-            projection,
-            time: time as f32,
-        });
-        let images = textures.unwrap_or_else(|| vec![self.default_texture]);
-        let mut vertex_buffers = vec![geometry_buffers.vertices];
-        if I::vertex_layout().len() > 0 {
-            vertex_buffers.push(self.instance_vertex_buffer);
-        }
-
-        let bindings = Bindings {
-            vertex_buffers,
-            index_buffer: geometry_buffers.indices,
-            images,
-        };
-        ctx.apply_bindings(&bindings);
-        RenderPass {
-            ctx,
-            current_batch: &mut self.batch,
-            transform_stack: vec![],
-            instance_buffer: self.instance_vertex_buffer,
-            bindings,
-            current_texture: None,
-            current_mesh: None,
-            quad_mesh,
+            color: BindGroup::new(device, bind_group_layout, color),
+            depth: Some(depth),
         }
     }
 }
 
-pub struct RenderPassOptions {
-    pass_action: PassAction,
-    view_transform: Mat4,
-    /// Defaults to orthographic projection with bounds the same as the render target size
-    projection: Option<Mat4>,
-}
-
-impl Default for RenderPassOptions {
-    fn default() -> Self {
-        Self {
-            pass_action: PassAction::Nothing,
-            view_transform: Mat4::IDENTITY,
-            projection: None,
-        }
-    }
-}
-
-impl RenderPassOptions {
-    pub fn clear(c: Color) -> Self {
-        Self::default().with_clear_color(c)
-    }
-
-    pub fn clear_depth(d: f32) -> Self {
-        Self {
-            pass_action: PassAction::Clear {
-                color: None,
-                depth: Some(d),
-                stencil: None,
-            },
-            ..Default::default()
-        }
-    }
-
-    pub fn with_clear_color(self, c: Color) -> Self {
-        Self {
-            pass_action: PassAction::clear_color(c.r, c.g, c.b, c.a),
-            ..self
-        }
-    }
-
-    pub fn with_pass_action(self, pass_action: PassAction) -> Self {
-        Self {
-            pass_action,
-            ..self
-        }
-    }
-
-    pub fn with_view_transform(self, view_transform: Mat4) -> Self {
-        Self {
-            view_transform,
-            ..self
-        }
-    }
-
-    pub fn orthographic(w: f32, h: f32) -> Self {
-        Self {
-            projection: Some(Mat4::orthographic_lh(0.0, w, 0.0, h, 1.0, -1.0)),
-            ..Default::default()
-        }
-    }
-
-    pub fn with_projection(self, projection: Mat4) -> Self {
-        Self {
-            projection: Some(projection),
-            ..self
-        }
-    }
-}
-
-pub struct RenderPass<'a, B: Batcher = RenderBatch> {
-    ctx: &'a mut GraphicsContext,
-    instance_buffer: Buffer,
-    current_batch: &'a mut B,
-    transform_stack: Vec<Mat4>,
-    bindings: Bindings,
-    current_texture: Option<Texture>,
-    current_mesh: Option<Rc<Cell<MeshOffsets>>>,
-    // TODO put this in some abstraction layer?
-    quad_mesh: Rc<Cell<MeshOffsets>>,
-}
-
-impl<'a, B: Batcher> Drop for RenderPass<'a, B> {
-    fn drop(&mut self) {
-        self.flush();
-        self.ctx.end_render_pass();
-    }
-}
-
-impl<'a, B: Batcher> RenderPass<'a, B> {
-    #[inline]
-    pub fn flush(&mut self) {
-        let mesh = self.current_mesh.clone().unwrap().get();
-        let active_instances = self.current_batch.active_instances();
-        self.instance_buffer.update(self.ctx, active_instances);
-        self.ctx.draw(
-            mesh.offset as _,
-            mesh.count as _,
-            self.current_batch.instance_count() as _,
-        );
-        self.current_batch.clear();
-    }
-
-    pub fn push_transform(&mut self, m: Mat4) {
-        self.transform_stack.push(m);
-    }
-
-    pub fn pop_transform(&mut self) {
-        debug_assert!(self.transform_stack.pop().is_some());
-    }
-
-    pub fn set_texture(&mut self, t: Texture) {
-        if self.current_texture.is_some_and(|x| x != t) {
-            self.flush();
-        }
-        self.current_texture = Some(t);
-        let bindings = Bindings {
-            images: vec![t],
-            ..self.bindings.clone()
-        };
-        self.ctx.apply_bindings(&bindings);
-    }
-
-    pub fn render_mesh(&mut self, mesh: Rc<Cell<MeshOffsets>>, instance_data: impl Into<B::Item>) {
-        if self.current_batch.full() || self.current_mesh.clone().map_or(false, |m| m != mesh) {
-            self.flush();
-        }
-        self.current_mesh = Some(mesh);
-        self.current_batch.add(instance_data.into());
-    }
-
-    pub fn draw_quad(&mut self, quad: impl Into<B::Item>) {
-        self.render_mesh(self.quad_mesh.clone(), quad);
-    }
-}
-
-impl<'a, B> RenderPass<'a, B>
+impl<T> RenderTarget for T
 where
-    B: Batcher<Item = RawInstanceData>,
+    T: Borrow<OffscreenFramebuffer>,
 {
-    pub fn draw_sprite_frame(&mut self, pos: Vec2, s: &Sprite, i: usize) {
-        let frame = &s.frames[i];
-        let origin = pos - s.pivot.unwrap_or_default().as_vec2();
-        let pos = origin;
-        let scale = vec2(s.size.x as f32, s.size.y as f32);
-        self.draw_quad(RawInstanceData {
-            uv_scale: frame.region.dim,
-            uv_offset: frame.region.pos,
-            tint: [0xff, 0xff, 0xff, 0xff],
-            model: Mat4::from_scale_rotation_translation(
-                scale.extend(1.0),
-                Quat::IDENTITY,
-                pos.extend(0.0),
-            ),
-        });
+    fn size_pixels(&self) -> Point<u32> {
+        self.borrow().color.size_pixels()
     }
 
-    pub fn draw_text(&mut self, pos: Vec2, s: &str, font: &FontAtlas, opts: TextDisplayOptions) {
-        for glyph_data in font.layout_text(&s, opts.layout) {
-            self.draw_quad(RawInstanceData {
-                uv_scale: glyph_data.subtexture.dim,
-                uv_offset: glyph_data.subtexture.pos,
-                tint: opts.color.as_u8(),
-                model: Mat4::from_scale_rotation_translation(
-                    glyph_data.bounds.dim.extend(1.0),
-                    Quat::IDENTITY,
-                    (glyph_data.bounds.pos + pos).extend(0.0),
-                ),
-            });
+    fn color_attachment(
+        &self,
+        load_op: wgpu::LoadOp<wgpu::Color>,
+    ) -> wgpu::RenderPassColorAttachment {
+        wgpu::RenderPassColorAttachment {
+            view: &self.borrow().color.view,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: load_op,
+                store: wgpu::StoreOp::Store,
+            },
         }
+    }
+
+    fn depth_stencil_attachment(
+        &self,
+        depth_load_op: wgpu::LoadOp<f32>,
+        stencil_ops: impl Into<Option<wgpu::Operations<u32>>>,
+    ) -> Option<wgpu::RenderPassDepthStencilAttachment> {
+        self.borrow()
+            .depth
+            .as_ref()
+            .map(|tex| wgpu::RenderPassDepthStencilAttachment {
+                view: &tex.view,
+                depth_ops: Some(wgpu::Operations {
+                    load: depth_load_op,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: stencil_ops.into(),
+            })
     }
 }
 
-#[derive(Clone, Copy, Default, Debug)]
-pub struct TextDisplayOptions {
-    pub color: Color,
-    pub layout: LayoutOptions,
+pub trait VertexLayouts {
+    fn vertex_layouts() -> Vec<VertexBufferLayout<'static>>;
+}
+
+impl<V: VertexLayout> VertexLayouts for V {
+    fn vertex_layouts() -> Vec<VertexBufferLayout<'static>> {
+        vec![V::vertex_layout()]
+    }
+}
+
+macro_rules! impl_vertex_layouts_tuple {
+    ($($V:ident),*) => {
+        impl<$($V: VertexLayout),*> VertexLayouts for ($($V),*) {
+            fn vertex_layouts() -> Vec<VertexBufferLayout<'static>> {
+                vec![$($V::vertex_layout()),*]
+            }
+        }
+    };
+}
+
+impl_vertex_layouts_tuple!(V1, V2);
+impl_vertex_layouts_tuple!(V1, V2, V3);
+impl_vertex_layouts_tuple!(V1, V2, V3, V4);
+impl_vertex_layouts_tuple!(V1, V2, V3, V4, V5);
+impl_vertex_layouts_tuple!(V1, V2, V3, V4, V5, V6);
+
+pub trait Bindable {
+    fn bind_group(&self, device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> wgpu::BindGroup;
+}
+
+pub struct BindGroup<T: Bindable> {
+    resource: T,
+    bind_group: wgpu::BindGroup,
+}
+
+impl<T: Bindable + Debug> Debug for BindGroup<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BindGroup")
+            .field("resource", &self.resource)
+            .field("bind_group", &self.bind_group)
+            .finish()
+    }
+}
+
+impl<T: Bindable> BindGroup<T> {
+    pub fn new(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, resource: T) -> Self {
+        let bind_group = resource.bind_group(device, layout);
+        Self {
+            resource,
+            bind_group,
+        }
+    }
+
+    pub fn bind_group(&self) -> &wgpu::BindGroup {
+        &self.bind_group
+    }
+}
+
+impl<T: Bindable> Deref for BindGroup<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.resource
+    }
+}
+
+impl<T: Bindable> DerefMut for BindGroup<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.resource
+    }
+}
+
+pub struct UniformBuffer<U: bytemuck::Zeroable + bytemuck::Pod> {
+    uniform: U,
+    buffer: wgpu::Buffer,
+}
+
+impl<U: bytemuck::Zeroable + bytemuck::Pod> UniformBuffer<U> {
+    pub fn new(device: &wgpu::Device, uniform: U) -> Self {
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Uniform Buffer"),
+            contents: bytemuck::cast_slice(&[uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        Self { uniform, buffer }
+    }
+
+    pub fn uniform(&self) -> &U {
+        &self.uniform
+    }
+
+    pub fn buffer(&self) -> &wgpu::Buffer {
+        &self.buffer
+    }
+
+    pub fn update_with(&mut self, queue: &wgpu::Queue, modifier: impl FnOnce(&mut U)) {
+        modifier(&mut self.uniform);
+        queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&self.uniform));
+    }
+
+    pub fn update(&mut self, queue: &wgpu::Queue, uniform: U) {
+        self.update_with(queue, |u| *u = uniform);
+    }
+
+    pub fn bind_group_layout(
+        device: &wgpu::Device,
+        name: impl AsRef<str>,
+        visibility: wgpu::ShaderStages,
+    ) -> wgpu::BindGroupLayout {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+            label: Some(name.as_ref()),
+        })
+    }
+}
+
+impl<U: bytemuck::Zeroable + bytemuck::Pod> Bindable for UniformBuffer<U> {
+    fn bind_group(&self, device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("uniform_bind_group"),
+            layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: self.buffer.as_entire_binding(),
+            }],
+        })
+    }
 }
