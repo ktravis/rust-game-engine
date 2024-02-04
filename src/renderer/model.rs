@@ -1,27 +1,29 @@
-use crate::geom::VertexData;
-use crate::{geom::ModelVertexData, mesh::Mesh};
+use crate::geom::ModelVertexData;
+use crate::renderer::mesh::Mesh;
 
-#[derive(Clone, Default, Debug)]
-pub struct ModelMesh<V = ModelVertexData, I = u16>
-where
-    V: VertexData,
-{
-    mesh: Mesh<V, I>,
+use super::mesh::LoadMesh;
+
+#[derive(Debug)]
+pub struct ModelMesh {
+    mesh: Mesh<ModelVertexData>,
     material: Option<tobj::Material>,
 }
 
-#[derive(Clone, Default, Debug)]
-pub struct Model<V = ModelVertexData, I = u16>
-where
-    V: VertexData,
-{
-    meshes: Vec<ModelMesh<V, I>>,
+#[derive(Debug)]
+pub struct Model {
+    meshes: Vec<ModelMesh>,
 }
 
-// TODO
-// impl<T> Model<T> {
-impl Model {
-    pub fn load(path: impl AsRef<str>) -> anyhow::Result<Model> {
+pub trait LoadModel {
+    type Error: std::fmt::Debug;
+
+    fn load_model(&self, path: impl AsRef<str>) -> Result<Model, Self::Error>;
+}
+
+impl LoadModel for wgpu::Device {
+    type Error = tobj::LoadError;
+
+    fn load_model(&self, path: impl AsRef<str>) -> Result<Model, Self::Error> {
         let (models, mtls) = tobj::load_obj(path.as_ref(), &tobj::GPU_LOAD_OPTIONS)?;
         let mtls = mtls?;
         let mut meshes = vec![];
@@ -53,20 +55,16 @@ impl Model {
                     pos: pos.into(),
                     uv: uv.into(),
                 })
-                .collect();
-            let indices = raw_mesh.indices.iter().map(|i| *i as u16).collect();
-            let mesh = Mesh { vertices, indices };
+                .collect::<Vec<_>>();
+            let indices = raw_mesh
+                .indices
+                .iter()
+                .map(|i| *i as u16)
+                .collect::<Vec<_>>();
+            let mesh = self.load_mesh(&vertices, &indices).unwrap();
             meshes.push(ModelMesh { mesh, material })
         }
 
         Ok(Model { meshes })
-    }
-
-    pub fn to_single_mesh(self) -> Mesh {
-        self.meshes
-            .into_iter()
-            .map(|ModelMesh { mesh, .. }| mesh)
-            .reduce(|mut m, n| m.merge(n))
-            .unwrap_or_default()
     }
 }

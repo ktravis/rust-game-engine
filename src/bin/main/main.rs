@@ -1,30 +1,28 @@
-// mod stage;
-use glam::{vec2, vec3, Mat4, Quat, Vec2, Vec3};
-use rust_game_engine::color::Color;
-use rust_game_engine::display::Display;
-use rust_game_engine::font::{FontAtlas, LayoutOptions};
-use rust_game_engine::input::{Key, MouseButton};
-use rust_game_engine::sprite::Sprite;
-use rust_game_engine::sprite_manager::SpriteManager;
-use std::borrow::BorrowMut;
-use std::fs::File;
-use std::ops::{Deref, DerefMut, Range};
-use std::{io, iter};
+use glam::{vec2, vec3, Mat4, Quat, Vec3};
+use rust_game_engine::renderer::instance::{DrawInstance, InstanceRenderData};
+use rust_game_engine::renderer::mesh::LoadMesh;
+use rust_game_engine::renderer::state::DefaultUniforms;
+use rust_game_engine::renderer::text::{DrawText, FontFaceRenderer, TextDisplayOptions};
+use std::iter;
 use ttf_parser::Face;
-use wgpu::util::{DeviceExt, StagingBelt};
-use wgpu::{include_wgsl, BufferAddress, BufferDescriptor, BufferSize, BufferUsages};
+use wgpu::include_wgsl;
 use winit::dpi::{PhysicalPosition, PhysicalSize, Size};
 use winit::event::WindowEvent::KeyboardInput;
 use winit::event::{ElementState, Event, KeyEvent, WindowEvent};
 use winit::event_loop::EventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::WindowBuilder;
+use winit::window::{Window, WindowBuilder};
 
+use rust_game_engine::color::Color;
+use rust_game_engine::font::FontAtlas;
+use rust_game_engine::geom::{ModelVertexData, Point, Rect};
+use rust_game_engine::renderer::{Display, PipelineRef, RenderState};
 use rust_game_engine::renderer::{
-    BindGroup, DisplayMode, ModelInstanceData, OffscreenFramebuffer, RenderTarget, UniformBuffer,
-    VertexLayout, DEFAULT_TEXTURE_DATA,
+    DisplayMode, ModelInstanceData, OffscreenFramebuffer, RenderTarget, VertexLayout,
 };
-use slotmap::{new_key_type, SlotMap};
+use rust_game_engine::renderer::{MeshRef, TextureBuilder, TextureRef};
+use rust_game_engine::sprite_manager::SpriteManager;
+use rust_game_engine::transform::Transform;
 
 // impl EventHandler for Stage {
 //     fn update(&mut self, ctx: &mut GraphicsContext) {
@@ -146,205 +144,7 @@ use slotmap::{new_key_type, SlotMap};
 //     fn files_dropped_event(&mut self, _ctx: &mut GraphicsContext) {}
 // }
 
-fn translate_key(k: KeyCode) -> Key {
-    match k {
-        KeyCode::Space => Key::Space,
-        KeyCode::Quote => Key::Apostrophe,
-        KeyCode::Comma => Key::Comma,
-        KeyCode::Minus => Key::Minus,
-        KeyCode::Period => Key::Period,
-        KeyCode::Slash => Key::Slash,
-        KeyCode::Digit0 => Key::Key0,
-        KeyCode::Digit1 => Key::Key1,
-        KeyCode::Digit2 => Key::Key2,
-        KeyCode::Digit3 => Key::Key3,
-        KeyCode::Digit4 => Key::Key4,
-        KeyCode::Digit5 => Key::Key5,
-        KeyCode::Digit6 => Key::Key6,
-        KeyCode::Digit7 => Key::Key7,
-        KeyCode::Digit8 => Key::Key8,
-        KeyCode::Digit9 => Key::Key9,
-        KeyCode::Semicolon => Key::Semicolon,
-        KeyCode::Equal => Key::Equal,
-        KeyCode::KeyA => Key::A,
-        KeyCode::KeyB => Key::B,
-        KeyCode::KeyC => Key::C,
-        KeyCode::KeyD => Key::D,
-        KeyCode::KeyE => Key::E,
-        KeyCode::KeyF => Key::F,
-        KeyCode::KeyG => Key::G,
-        KeyCode::KeyH => Key::H,
-        KeyCode::KeyI => Key::I,
-        KeyCode::KeyJ => Key::J,
-        KeyCode::KeyK => Key::K,
-        KeyCode::KeyL => Key::L,
-        KeyCode::KeyM => Key::M,
-        KeyCode::KeyN => Key::N,
-        KeyCode::KeyO => Key::O,
-        KeyCode::KeyP => Key::P,
-        KeyCode::KeyQ => Key::Q,
-        KeyCode::KeyR => Key::R,
-        KeyCode::KeyS => Key::S,
-        KeyCode::KeyT => Key::T,
-        KeyCode::KeyU => Key::U,
-        KeyCode::KeyV => Key::V,
-        KeyCode::KeyW => Key::W,
-        KeyCode::KeyX => Key::X,
-        KeyCode::KeyY => Key::Y,
-        KeyCode::KeyZ => Key::Z,
-        KeyCode::BracketLeft => Key::LeftBracket,
-        KeyCode::Backslash => Key::Backslash,
-        KeyCode::BracketRight => Key::RightBracket,
-        KeyCode::Backquote => Key::GraveAccent,
-        KeyCode::Escape => Key::Escape,
-        KeyCode::Enter => Key::Enter,
-        KeyCode::Tab => Key::Tab,
-        KeyCode::Backspace => Key::Backspace,
-        KeyCode::Insert => Key::Insert,
-        KeyCode::Delete => Key::Delete,
-        KeyCode::ArrowRight => Key::Right,
-        KeyCode::ArrowLeft => Key::Left,
-        KeyCode::ArrowDown => Key::Down,
-        KeyCode::ArrowUp => Key::Up,
-        KeyCode::PageUp => Key::PageUp,
-        KeyCode::PageDown => Key::PageDown,
-        KeyCode::Home => Key::Home,
-        KeyCode::End => Key::End,
-        KeyCode::CapsLock => Key::CapsLock,
-        KeyCode::ScrollLock => Key::ScrollLock,
-        KeyCode::NumLock => Key::NumLock,
-        KeyCode::PrintScreen => Key::PrintScreen,
-        KeyCode::Pause => Key::Pause,
-        KeyCode::F1 => Key::F1,
-        KeyCode::F2 => Key::F2,
-        KeyCode::F3 => Key::F3,
-        KeyCode::F4 => Key::F4,
-        KeyCode::F5 => Key::F5,
-        KeyCode::F6 => Key::F6,
-        KeyCode::F7 => Key::F7,
-        KeyCode::F8 => Key::F8,
-        KeyCode::F9 => Key::F9,
-        KeyCode::F10 => Key::F10,
-        KeyCode::F11 => Key::F11,
-        KeyCode::F12 => Key::F12,
-        KeyCode::F13 => Key::F13,
-        KeyCode::F14 => Key::F14,
-        KeyCode::F15 => Key::F15,
-        KeyCode::F16 => Key::F16,
-        KeyCode::F17 => Key::F17,
-        KeyCode::F18 => Key::F18,
-        KeyCode::F19 => Key::F19,
-        KeyCode::F20 => Key::F20,
-        KeyCode::F21 => Key::F21,
-        KeyCode::F22 => Key::F22,
-        KeyCode::F23 => Key::F23,
-        KeyCode::F24 => Key::F24,
-        KeyCode::F25 => Key::F25,
-        KeyCode::Numpad0 => Key::Numpad0,
-        KeyCode::Numpad1 => Key::Numpad1,
-        KeyCode::Numpad2 => Key::Numpad2,
-        KeyCode::Numpad3 => Key::Numpad3,
-        KeyCode::Numpad4 => Key::Numpad4,
-        KeyCode::Numpad5 => Key::Numpad5,
-        KeyCode::Numpad6 => Key::Numpad6,
-        KeyCode::Numpad7 => Key::Numpad7,
-        KeyCode::Numpad8 => Key::Numpad8,
-        KeyCode::Numpad9 => Key::Numpad9,
-        KeyCode::NumpadDecimal => Key::NumpadDecimal,
-        KeyCode::NumpadDivide => Key::NumpadDivide,
-        KeyCode::NumpadMultiply => Key::NumpadMultiply,
-        KeyCode::NumpadSubtract => Key::NumpadSubtract,
-        KeyCode::NumpadAdd => Key::NumpadAdd,
-        KeyCode::NumpadEnter => Key::NumpadEnter,
-        KeyCode::NumpadEqual => Key::NumpadEqual,
-        KeyCode::ShiftLeft => Key::LeftShift,
-        KeyCode::ControlLeft => Key::LeftControl,
-        KeyCode::AltLeft => Key::LeftAlt,
-        KeyCode::SuperLeft => Key::LeftSuper,
-        KeyCode::ShiftRight => Key::RightShift,
-        KeyCode::ControlRight => Key::RightControl,
-        KeyCode::AltRight => Key::RightAlt,
-        KeyCode::SuperRight => Key::RightSuper,
-        KeyCode::ContextMenu => Key::Menu,
-        _ => Key::Unknown,
-    }
-}
-
-fn translate_button(b: winit::event::MouseButton) -> MouseButton {
-    match b {
-        winit::event::MouseButton::Right => MouseButton::Right,
-        winit::event::MouseButton::Left => MouseButton::Left,
-        winit::event::MouseButton::Middle => MouseButton::Middle,
-        winit::event::MouseButton::Back => MouseButton::Back,
-        winit::event::MouseButton::Forward => MouseButton::Forward,
-        winit::event::MouseButton::Other(id) => MouseButton::Other(id),
-    }
-}
-
-use rust_game_engine::geom::{cube, quad, ModelVertexData, Point, Rect};
-use rust_game_engine::texture::{Texture, TextureBuilder};
-use rust_game_engine::transform::Transform;
-use winit::window::Window;
-
-#[repr(C)]
-#[derive(Default, Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct DefaultUniforms {
-    view: [[f32; 4]; 4],
-    projection: [[f32; 4]; 4],
-    time: f32,
-    _pad: [u8; 12],
-}
-
-pub struct Mesh {
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    num_indices: u32,
-}
-
-pub trait LoadMesh {
-    type Error: std::fmt::Debug;
-
-    fn load_mesh(&self, verts: &[ModelVertexData], indices: &[u16]) -> Result<Mesh, Self::Error>;
-
-    fn load_quad_mesh(&self) -> Mesh {
-        self.load_mesh(
-            &quad::verts(0., 0., 1., 1., (0., 0.), (1., 1.)),
-            &quad::INDICES,
-        )
-        .unwrap()
-    }
-
-    fn load_cube_mesh(&self) -> Mesh {
-        self.load_mesh(&cube::VERTICES, &cube::INDICES).unwrap()
-    }
-}
-
 // SpriteManager will be more complicated because it needs to rebuild lazily after loading
-
-new_key_type! {
-    pub struct MeshRef;
-    pub struct TextureRef;
-    pub struct PipelineRef;
-}
-
-impl LoadMesh for wgpu::Device {
-    type Error = ();
-    fn load_mesh(&self, verts: &[ModelVertexData], indices: &[u16]) -> Result<Mesh, Self::Error> {
-        Ok(Mesh {
-            vertex_buffer: self.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Vertex Buffer"),
-                contents: bytemuck::cast_slice(verts),
-                usage: BufferUsages::VERTEX,
-            }),
-            index_buffer: self.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Index Buffer"),
-                contents: bytemuck::cast_slice(indices),
-                usage: BufferUsages::INDEX,
-            }),
-            num_indices: indices.len() as _,
-        })
-    }
-}
 
 #[derive(Debug, Copy, Clone)]
 struct Camera {
@@ -373,484 +173,6 @@ impl Default for Camera {
             yaw: 4.7, // TODO: debug value
             fov_radians: Self::DEFAULT_FOV_RADIANS,
             look_dir: Vec3::Z,
-        }
-    }
-}
-
-pub type BoundTexture = BindGroup<Texture>;
-
-#[derive(Debug)]
-pub struct InstanceRenderData {
-    texture: Option<TextureRef>,
-    pipeline: PipelineRef,
-    mesh: MeshRef,
-    model: ModelInstanceData,
-}
-
-impl Deref for InstanceRenderData {
-    type Target = ModelInstanceData;
-
-    fn deref(&self) -> &Self::Target {
-        &self.model
-    }
-}
-
-pub trait DrawInstance {
-    fn draw_instance(&mut self, instance: &InstanceRenderData);
-}
-
-// 'enc: lifetime of the encoder itself (and the mutable reference it holds to a RenderPass)
-// 'pass: the lifetime of the RenderPass this encoder operates on, as well as vertex buffers and
-//   other render state. This must be at least as long as 'enc.
-pub struct InstanceEncoder<'enc, 'pass: 'enc> {
-    buffer_view: wgpu::QueueWriteBufferView<'pass>,
-    render_pass: &'enc mut RenderPass<'pass>,
-
-    start_index: u32,
-    count: u32,
-    active_texture: Option<TextureRef>,
-    active_mesh: Option<MeshRef>,
-    active_pipeline: Option<PipelineRef>,
-}
-
-impl<'pass> Deref for InstanceEncoder<'_, 'pass> {
-    type Target = RenderPass<'pass>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.render_pass
-    }
-}
-
-impl<'pass> DerefMut for InstanceEncoder<'_, 'pass> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.render_pass
-    }
-}
-
-impl<'enc, 'pass: 'enc> InstanceEncoder<'enc, 'pass> {
-    pub fn new(
-        display: &'pass Display,
-        render_pass: &'enc mut RenderPass<'pass>,
-        instance_buffer: &'pass wgpu::Buffer,
-    ) -> Self {
-        render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
-
-        let buffer_view = display
-            .queue()
-            .write_buffer_with(
-                instance_buffer,
-                0,
-                wgpu::BufferSize::new(instance_buffer.size()).unwrap(),
-            )
-            .unwrap(); // this should never fail, since we use the instance_buffer size and
-                       // offset zero
-        Self {
-            buffer_view,
-            render_pass,
-            start_index: 0,
-            count: 0,
-            active_texture: None,
-            active_mesh: None,
-            active_pipeline: None,
-        }
-    }
-}
-
-impl<'enc, 'pass: 'enc> DrawInstance for InstanceEncoder<'enc, 'pass> {
-    fn draw_instance(&mut self, instance: &InstanceRenderData) {
-        // TODO: handling out of buffer space
-        let dst = &mut bytemuck::cast_slice_mut(&mut self.buffer_view)
-            [(self.start_index + self.count) as usize];
-        if Some(instance.pipeline) != self.active_pipeline {
-            if self.count > 0 {
-                self.render_pass
-                    .draw_active_mesh(self.start_index..self.start_index + self.count);
-                self.start_index += self.count;
-                self.count = 0;
-            }
-            self.render_pass.set_active_pipeline(instance.pipeline);
-            self.active_pipeline = Some(instance.pipeline);
-        }
-        if Some(instance.mesh) != self.active_mesh {
-            if self.count > 0 {
-                self.render_pass
-                    .draw_active_mesh(self.start_index..self.start_index + self.count);
-                self.start_index += self.count;
-                self.count = 0;
-            }
-            self.render_pass.set_active_mesh(instance.mesh);
-            self.active_mesh = Some(instance.mesh);
-        }
-        if instance.texture != self.active_texture {
-            if self.count > 0 {
-                self.render_pass
-                    .draw_active_mesh(self.start_index..self.start_index + self.count);
-                self.start_index += self.count;
-                self.count = 0;
-            }
-            self.render_pass.bind_texture(instance.texture);
-            self.active_texture = instance.texture;
-        }
-        self.count += 1;
-        *dst = instance.as_raw();
-    }
-}
-
-impl Drop for InstanceEncoder<'_, '_> {
-    fn drop(&mut self) {
-        if self.count > 0 {
-            self.render_pass
-                .draw_active_mesh(self.start_index..self.start_index + self.count);
-        }
-    }
-}
-
-pub struct RenderPass<'a> {
-    pub render_state: &'a RenderState,
-    raw_pass: wgpu::RenderPass<'a>,
-    active_mesh: Option<MeshRef>,
-    active_pipeline: Option<PipelineRef>,
-}
-
-impl<'a> Deref for RenderPass<'a> {
-    type Target = wgpu::RenderPass<'a>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.raw_pass
-    }
-}
-
-impl<'a> DerefMut for RenderPass<'a> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.raw_pass
-    }
-}
-
-impl<'a> RenderPass<'a> {
-    const TEXTURE_BIND_GROUP_INDEX: u32 = 0;
-    const DEFAULT_UNIFORMS_BIND_GROUP_INDEX: u32 = 1;
-
-    pub fn set_active_pipeline(&mut self, pipeline: PipelineRef) {
-        if Some(pipeline) == self.active_pipeline {
-            return;
-        }
-        let p = self.render_state.pipelines.get(pipeline).unwrap();
-        self.set_pipeline(p);
-        self.active_pipeline = Some(pipeline);
-    }
-
-    pub fn set_active_mesh(&mut self, mesh: MeshRef) {
-        self.active_mesh = Some(mesh);
-    }
-
-    pub fn draw_active_mesh(&mut self, instances: Range<u32>) {
-        let mesh = self
-            .render_state
-            .mesh_manager
-            .get(self.active_mesh.expect("no active mesh"))
-            .unwrap();
-        self.raw_pass
-            .set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-        self.raw_pass
-            .set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-        self.raw_pass
-            .draw_indexed(0..mesh.num_indices, 0, instances);
-    }
-
-    pub fn bind_texture_data(&mut self, texture_data: &'a BoundTexture) {
-        self.raw_pass.set_bind_group(
-            Self::TEXTURE_BIND_GROUP_INDEX,
-            texture_data.bind_group(),
-            &[],
-        );
-    }
-
-    pub fn bind_texture(&mut self, texture: impl Into<Option<TextureRef>>) {
-        self.bind_texture_data(self.render_state.get_texture(texture.into()))
-    }
-
-    pub fn instance_encoder<'enc>(
-        &'enc mut self,
-        display: &'a Display,
-        buffer: &'a wgpu::Buffer,
-    ) -> InstanceEncoder<'enc, 'a> {
-        InstanceEncoder::new(display, self, buffer)
-    }
-}
-
-pub struct RenderState {
-    default_uniforms: BindGroup<UniformBuffer<DefaultUniforms>>,
-
-    uniform_bind_group_layout: wgpu::BindGroupLayout,
-    texture_bind_group_layout: wgpu::BindGroupLayout,
-
-    texture_manager: SlotMap<TextureRef, BoundTexture>,
-    default_texture: BoundTexture,
-
-    mesh_manager: SlotMap<MeshRef, Mesh>,
-    pipelines: SlotMap<PipelineRef, wgpu::RenderPipeline>,
-}
-
-impl RenderState {
-    pub fn new(display: &Display) -> Self {
-        let device = display.device();
-        let texture_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-                label: Some("texture_bind_group_layout"),
-            });
-        let uniform_bind_group_layout = UniformBuffer::<DefaultUniforms>::bind_group_layout(
-            device,
-            "uniform_bind_group_layout",
-            wgpu::ShaderStages::VERTEX_FRAGMENT,
-        );
-        let default_uniforms = BindGroup::new(
-            device,
-            &uniform_bind_group_layout,
-            UniformBuffer::new(
-                device,
-                DefaultUniforms {
-                    view: Mat4::look_at_lh(vec3(0.0, 1.0, 6.0), Vec3::ZERO, Vec3::Y)
-                        .to_cols_array_2d(),
-                    projection: Mat4::perspective_lh(
-                        45.0_f32.to_radians(),
-                        960.0 / 720.0,
-                        0.01,
-                        100.0,
-                    )
-                    .to_cols_array_2d(),
-                    time: 0.0,
-                    _pad: Default::default(),
-                },
-            ),
-        );
-
-        let texture_manager = SlotMap::with_key();
-        let default_texture = BoundTexture::new(
-            display.device(),
-            &texture_bind_group_layout,
-            TextureBuilder::render_target()
-                .with_label("default_texture")
-                .from_raw_bytes(
-                    display.device(),
-                    display.queue(),
-                    &DEFAULT_TEXTURE_DATA,
-                    Point::new(2, 2),
-                ),
-        );
-        let mesh_manager = SlotMap::with_key();
-        let pipelines = SlotMap::with_key();
-        Self {
-            default_uniforms,
-            texture_bind_group_layout,
-            uniform_bind_group_layout,
-            texture_manager,
-            default_texture,
-            mesh_manager,
-            pipelines,
-        }
-    }
-
-    pub fn create_pipeline<'a>(
-        &mut self,
-        name: &str,
-        display: &Display,
-        shader: &wgpu::ShaderModule,
-        vertex_layouts: &[wgpu::VertexBufferLayout<'a>],
-    ) -> PipelineRef {
-        // TODO: do we need/want to dedupe or cache this?
-        let layout = display
-            .device()
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some(&format!("{} Layout", name)),
-                bind_group_layouts: &[
-                    &self.texture_bind_group_layout,
-                    &self.uniform_bind_group_layout,
-                ],
-                push_constant_ranges: &[],
-            });
-        let pipeline = display
-            .device()
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(name),
-                layout: Some(&layout),
-                vertex: wgpu::VertexState {
-                    module: shader,
-                    entry_point: "vs_main",
-                    buffers: vertex_layouts,
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: shader,
-                    entry_point: "fs_main",
-                    // TODO: technically I think this should be some `for_render_targets` slice
-                    // maybe `PipelineBuilder` eventually
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: display.format(),
-                        blend: Some(wgpu::BlendState {
-                            color: wgpu::BlendComponent {
-                                src_factor: wgpu::BlendFactor::SrcAlpha,
-                                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                                operation: wgpu::BlendOperation::Add,
-                            },
-                            alpha: wgpu::BlendComponent::OVER,
-                        }),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    strip_index_format: None,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: Some(wgpu::Face::Back),
-                    polygon_mode: wgpu::PolygonMode::Fill,
-                    // Requires Features::DEPTH_CLIP_CONTROL
-                    unclipped_depth: false,
-                    // Requires Features::CONSERVATIVE_RASTERIZATION
-                    conservative: false,
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: TextureBuilder::DEFAULT_DEPTH_FORMAT,
-                    depth_write_enabled: true,
-                    depth_compare: wgpu::CompareFunction::Less,
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: wgpu::MultisampleState {
-                    count: 1,
-                    mask: !0,
-                    alpha_to_coverage_enabled: false,
-                },
-                // If the pipeline will be used with a multiview render pass, this
-                // indicates how many array layers the attachments will have.
-                multiview: None,
-            });
-        self.pipelines.insert(pipeline)
-    }
-
-    pub fn create_vertex_buffers<'a, const N: usize>(
-        &mut self,
-        device: &wgpu::Device,
-        vertex_layouts: [wgpu::VertexBufferLayout<'a>; N],
-    ) -> [wgpu::Buffer; N] {
-        std::array::from_fn(|i| {
-            let layout = &vertex_layouts[i];
-            device.create_buffer(&BufferDescriptor {
-                label: None,                      // TODO: pass a name through
-                size: 1024 * layout.array_stride, // TODO: pass the count through as well
-                usage: BufferUsages::COPY_DST | BufferUsages::VERTEX,
-                mapped_at_creation: false,
-            })
-        })
-    }
-
-    pub fn begin_render_pass<'pass>(
-        &'pass self,
-        encoder: &'pass mut wgpu::CommandEncoder,
-        desc: &wgpu::RenderPassDescriptor<'pass, '_>,
-    ) -> RenderPass<'pass> {
-        let mut raw_pass = encoder.begin_render_pass(desc);
-        raw_pass.set_bind_group(
-            RenderPass::DEFAULT_UNIFORMS_BIND_GROUP_INDEX,
-            self.default_uniforms.bind_group(),
-            &[],
-        );
-        RenderPass {
-            raw_pass,
-            render_state: self,
-            active_mesh: None,
-            active_pipeline: None,
-        }
-    }
-
-    pub fn load_texture(&mut self, display: &Display, t: Texture) -> TextureRef {
-        self.texture_manager.insert(BoundTexture::new(
-            display.device(),
-            &self.texture_bind_group_layout,
-            t,
-        ))
-    }
-
-    pub fn get_texture(&self, texture: impl Into<Option<TextureRef>>) -> &BoundTexture {
-        texture
-            .into()
-            .map(|t| self.texture_manager.get(t).unwrap())
-            .unwrap_or(&self.default_texture)
-    }
-
-    pub fn replace_texture(&mut self, display: &Display, texture_ref: TextureRef, value: Texture) {
-        *self.texture_manager.get_mut(texture_ref).unwrap() =
-            BoundTexture::new(display.device(), &self.texture_bind_group_layout, value);
-    }
-
-    pub fn prepare_mesh(&mut self, mesh: Mesh) -> MeshRef {
-        self.mesh_manager.insert(mesh)
-    }
-}
-
-#[derive(Clone, Copy, Default, Debug)]
-pub struct TextDisplayOptions {
-    pub color: Color,
-    pub layout: LayoutOptions,
-}
-
-pub trait DrawText {
-    fn draw_text(&mut self, s: impl AsRef<str>, transform: Transform, opts: TextDisplayOptions);
-    fn draw_text_2d(&mut self, s: impl AsRef<str>, position: Vec2, opts: TextDisplayOptions) {
-        self.draw_text(
-            s,
-            Transform {
-                position: position.extend(0.0),
-                ..Default::default()
-            },
-            opts,
-        )
-    }
-}
-
-pub struct FontFaceRenderer<'a, T: DrawInstance> {
-    raw: &'a mut T,
-    font_atlas: &'a FontAtlas,
-    pipeline: PipelineRef,
-    texture: TextureRef,
-    quad_mesh: MeshRef,
-}
-
-impl<'a, T: DrawInstance> DrawText for FontFaceRenderer<'a, T> {
-    fn draw_text(&mut self, s: impl AsRef<str>, transform: Transform, opts: TextDisplayOptions) {
-        for glyph_data in self.font_atlas.layout_text(s.as_ref(), opts.layout) {
-            self.raw.draw_instance(&InstanceRenderData {
-                texture: Some(self.texture),
-                pipeline: self.pipeline,
-                mesh: self.quad_mesh,
-                model: ModelInstanceData {
-                    subtexture: glyph_data.subtexture,
-                    tint: opts.color,
-                    transform: Transform {
-                        position: glyph_data.bounds.pos.extend(0.0) * transform.scale
-                            + transform.position,
-                        scale: glyph_data.bounds.dim.extend(1.0) * transform.scale,
-                        ..transform
-                    },
-                    ..Default::default()
-                },
-            });
         }
     }
 }
@@ -1005,7 +327,7 @@ impl State {
             display.device(),
             // TODO: want this to be effectively private, should have a better way to
             // do this
-            &render_state.texture_bind_group_layout,
+            render_state.texture_bind_group_layout(),
             Point::new(960, 720),
         );
 
@@ -1119,14 +441,13 @@ impl State {
         self.render_state.default_uniforms.update(
             queue,
             DefaultUniforms {
-                view: self.camera.view_matrix().to_cols_array_2d(),
+                view: self.camera.view_matrix(),
                 projection: Mat4::perspective_lh(
                     self.camera.fov_radians,
                     960.0 / 720.0,
                     0.01,
                     100.0,
-                ) // TODO add near/far/aspect to camera
-                .to_cols_array_2d(),
+                ), // TODO add near/far/aspect to camera
                 ..Default::default()
             },
         );
@@ -1185,12 +506,10 @@ impl State {
         self.render_state.default_uniforms.update(
             queue,
             DefaultUniforms {
-                view: DisplayMode::Centered
-                    .scaling_matrix(
-                        self.offscreen_framebuffer.size_pixels().as_vec2(),
-                        target_size,
-                    )
-                    .to_cols_array_2d(),
+                view: DisplayMode::Centered.scaling_matrix(
+                    self.offscreen_framebuffer.size_pixels().as_vec2(),
+                    target_size,
+                ),
                 projection: Mat4::orthographic_lh(
                     0.0,
                     target_size.x,
@@ -1198,8 +517,7 @@ impl State {
                     0.0,
                     1.0,
                     -1.0,
-                )
-                .to_cols_array_2d(),
+                ),
                 ..Default::default()
             },
         );
@@ -1225,13 +543,13 @@ impl State {
             render_pass.draw_active_mesh(0..1);
         }
         queue.submit(iter::once(encoder.finish()));
+
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
         });
         self.render_state.default_uniforms.update(
             queue,
             DefaultUniforms {
-                view: Mat4::IDENTITY.to_cols_array_2d(),
                 projection: Mat4::orthographic_lh(
                     0.0,
                     target_size.x,
@@ -1239,8 +557,7 @@ impl State {
                     0.0,
                     1.0,
                     -1.0,
-                )
-                .to_cols_array_2d(),
+                ),
                 ..Default::default()
             },
         );
@@ -1299,6 +616,7 @@ impl State {
             );
         }
         queue.submit(iter::once(encoder.finish()));
+
         display_view.present();
 
         Ok(())

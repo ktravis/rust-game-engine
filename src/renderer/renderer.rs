@@ -1,6 +1,6 @@
-use crate::texture::{Texture, TextureBuilder};
+use super::texture::{Texture, TextureBuilder};
 use crate::{color::*, geom::*, transform::*};
-use glam::{vec3, Mat4, Quat, Vec2};
+use glam::Mat4;
 use std::borrow::Borrow;
 use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, DerefMut};
@@ -101,34 +101,6 @@ impl Default for RawInstanceData {
             uv_offset: Default::default(),
             tint: [1.0, 1.0, 1.0, 1.0],
             model: Mat4::IDENTITY.to_cols_array_2d(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum DisplayMode {
-    Stretch,
-    Centered,
-}
-
-impl DisplayMode {
-    pub fn scaling_matrix(self, actual: Vec2, target: Vec2) -> Mat4 {
-        match self {
-            DisplayMode::Stretch => Mat4::from_scale(target.extend(1.0)),
-            DisplayMode::Centered => {
-                let scale = (target.x / actual.x).min(target.y / actual.y);
-
-                let scaled_target_size = scale * actual;
-                Mat4::from_scale_rotation_translation(
-                    scaled_target_size.extend(1.0),
-                    Quat::IDENTITY,
-                    vec3(
-                        (target.x - scaled_target_size.x) / 2.0,
-                        (target.y - scaled_target_size.y) / 2.0,
-                        0.0,
-                    ),
-                )
-            }
         }
     }
 }
@@ -296,16 +268,21 @@ impl<T: Bindable> DerefMut for BindGroup<T> {
     }
 }
 
-pub struct UniformBuffer<U: bytemuck::Zeroable + bytemuck::Pod> {
+pub trait UniformData {
+    type Raw: bytemuck::Pod + bytemuck::Zeroable;
+    fn as_raw(&self) -> Self::Raw;
+}
+
+pub struct UniformBuffer<U: UniformData> {
     uniform: U,
     buffer: wgpu::Buffer,
 }
 
-impl<U: bytemuck::Zeroable + bytemuck::Pod> UniformBuffer<U> {
+impl<U: UniformData> UniformBuffer<U> {
     pub fn new(device: &wgpu::Device, uniform: U) -> Self {
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Uniform Buffer"),
-            contents: bytemuck::cast_slice(&[uniform]),
+            contents: bytemuck::cast_slice(&[uniform.as_raw()]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         Self { uniform, buffer }
@@ -321,7 +298,7 @@ impl<U: bytemuck::Zeroable + bytemuck::Pod> UniformBuffer<U> {
 
     pub fn update_with(&mut self, queue: &wgpu::Queue, modifier: impl FnOnce(&mut U)) {
         modifier(&mut self.uniform);
-        queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&self.uniform));
+        queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&self.uniform.as_raw()));
     }
 
     pub fn update(&mut self, queue: &wgpu::Queue, uniform: U) {
@@ -349,7 +326,7 @@ impl<U: bytemuck::Zeroable + bytemuck::Pod> UniformBuffer<U> {
     }
 }
 
-impl<U: bytemuck::Zeroable + bytemuck::Pod> Bindable for UniformBuffer<U> {
+impl<U: UniformData> Bindable for UniformBuffer<U> {
     fn bind_group(&self, device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("uniform_bind_group"),

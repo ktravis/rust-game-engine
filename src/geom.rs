@@ -1,6 +1,5 @@
-use crate::mesh::Mesh;
 use crate::renderer::VertexLayout;
-use glam::{vec2, vec4, Mat4, Vec2, Vec4};
+use glam::{vec2, Mat4, Vec2};
 use wgpu::{vertex_attr_array, VertexAttribute, VertexBufferLayout};
 
 #[rustfmt::skip]
@@ -11,7 +10,10 @@ pub const OPENGL_TO_WGPU_MATRIX: Mat4 = Mat4::from_cols_array(&[
     0.0, 0.0, 0.0, 1.0,
 ]);
 
-pub trait VertexData: VertexLayout + std::fmt::Debug + Default + Clone + Copy {}
+pub trait VertexData:
+    VertexLayout + std::fmt::Debug + Default + Clone + Copy + bytemuck::Pod + bytemuck::Zeroable
+{
+}
 
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -188,13 +190,6 @@ pub mod quad {
     }
 
     pub const INDICES: &[u16] = &[0, 1, 2, 0, 2, 3];
-
-    pub fn mesh() -> Mesh<ModelVertexData> {
-        Mesh {
-            vertices: verts(0., 0., 1., 1., (0., 0.), (1., 1.)).to_vec(),
-            indices: INDICES.to_vec(),
-        }
-    }
 }
 
 pub mod cube {
@@ -303,11 +298,4 @@ pub mod cube {
         0, 1, 2, 0, 2, 3, 6, 5, 4, 7, 6, 4, 8, 9, 10, 8, 10, 11, 14, 13, 12, 15, 14, 12, 16, 17,
         18, 16, 18, 19, 22, 21, 20, 23, 22, 20,
     ];
-
-    pub fn mesh() -> Mesh {
-        Mesh {
-            vertices: VERTICES.to_vec(),
-            indices: INDICES.to_vec(),
-        }
-    }
 }

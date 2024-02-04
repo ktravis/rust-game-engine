@@ -1,10 +1,36 @@
-use crate::{
-    geom::Point,
-    renderer::RenderTarget,
-    texture::{Texture, TextureBuilder},
-};
+use super::texture::{Texture, TextureBuilder};
+use crate::{geom::Point, renderer::RenderTarget};
 
+use glam::{vec3, Mat4, Quat, Vec2};
 use winit::{dpi::PhysicalSize, window::Window};
+
+#[derive(Debug, Clone, Copy)]
+pub enum DisplayMode {
+    Stretch,
+    Centered,
+}
+
+impl DisplayMode {
+    pub fn scaling_matrix(self, actual: Vec2, target: Vec2) -> Mat4 {
+        match self {
+            DisplayMode::Stretch => Mat4::from_scale(target.extend(1.0)),
+            DisplayMode::Centered => {
+                let scale = (target.x / actual.x).min(target.y / actual.y);
+
+                let scaled_target_size = scale * actual;
+                Mat4::from_scale_rotation_translation(
+                    scaled_target_size.extend(1.0),
+                    Quat::IDENTITY,
+                    vec3(
+                        (target.x - scaled_target_size.x) / 2.0,
+                        (target.y - scaled_target_size.y) / 2.0,
+                        0.0,
+                    ),
+                )
+            }
+        }
+    }
+}
 
 pub struct Display {
     config: wgpu::SurfaceConfiguration,

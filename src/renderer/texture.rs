@@ -2,6 +2,10 @@ use crate::geom::Point;
 use crate::renderer::Bindable;
 use image::{EncodableLayout, RgbaImage};
 
+slotmap::new_key_type! {
+    pub struct TextureRef;
+}
+
 #[derive(Clone, Default)]
 pub struct TextureBuilder<'a> {
     label: Option<&'a str>,
