@@ -8,7 +8,7 @@ use crate::{
 
 use super::{
     instance::{DrawInstance, InstanceRenderData},
-    MeshRef, ModelInstanceData, PipelineRef, TextureRef,
+    MeshRef, ModelInstanceData, PipelineRef, RenderData, TextureRef,
 };
 
 #[derive(Clone, Copy, Default, Debug)]
@@ -31,34 +31,53 @@ pub trait DrawText {
     }
 }
 
-// TODO: find a better plan for this so the fields don't need to all be pub?
+pub trait MakeFontFaceRenderer: Sized + DrawInstance {
+    fn font_face_renderer<'a>(
+        &'a mut self,
+        font_atlas: &'a FontAtlas,
+        render_data: RenderData,
+    ) -> FontFaceRenderer<'a, Self>;
+}
+
+impl<T: Sized + DrawInstance> MakeFontFaceRenderer for T {
+    fn font_face_renderer<'a>(
+        &'a mut self,
+        font_atlas: &'a FontAtlas,
+        render_data: RenderData,
+    ) -> FontFaceRenderer<'a, Self> {
+        FontFaceRenderer {
+            raw: self,
+            font_atlas,
+            render_data,
+        }
+    }
+}
+
 pub struct FontFaceRenderer<'a, T: DrawInstance> {
-    pub raw: &'a mut T,
-    pub font_atlas: &'a FontAtlas,
-    pub pipeline: PipelineRef,
-    pub texture: TextureRef,
-    pub quad_mesh: MeshRef,
+    raw: &'a mut T,
+    font_atlas: &'a FontAtlas,
+    render_data: RenderData,
 }
 
 impl<'a, T: DrawInstance> DrawText for FontFaceRenderer<'a, T> {
     fn draw_text(&mut self, s: impl AsRef<str>, transform: Transform, opts: TextDisplayOptions) {
+        let m = transform.as_matrix();
         for glyph_data in self.font_atlas.layout_text(s.as_ref(), opts.layout) {
-            self.raw.draw_instance(&InstanceRenderData {
-                texture: Some(self.texture),
-                pipeline: self.pipeline,
-                mesh: self.quad_mesh,
-                model: ModelInstanceData {
+            let transform = Transform::from_matrix(
+                m * Transform {
+                    position: glyph_data.bounds.pos.extend(0.0),
+                    scale: glyph_data.bounds.dim.extend(1.0),
+                    ..Default::default()
+                }
+                .as_matrix(),
+            );
+            self.raw
+                .draw_instance(&self.render_data.for_model_instance(ModelInstanceData {
                     subtexture: glyph_data.subtexture,
                     tint: opts.color,
-                    transform: Transform {
-                        position: glyph_data.bounds.pos.extend(0.0) * transform.scale
-                            + transform.position,
-                        scale: glyph_data.bounds.dim.extend(1.0) * transform.scale,
-                        ..transform
-                    },
+                    transform,
                     ..Default::default()
-                },
-            });
+                }));
         }
     }
 }

@@ -150,6 +150,15 @@ impl Rect {
     }
 }
 
+impl Default for Rect {
+    fn default() -> Self {
+        Self {
+            pos: Vec2::default(),
+            dim: vec2(1., 1.),
+        }
+    }
+}
+
 pub mod quad {
     use super::*;
 

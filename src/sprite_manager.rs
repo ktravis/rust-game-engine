@@ -59,7 +59,7 @@ impl SpriteManager {
         let mut idx = 0;
         self.atlas = atlas_builder.build();
         for (sprite_ref, a) in raw_sprites {
-            let mut s = self.sprites.get_mut(sprite_ref).unwrap();
+            let s = self.sprites.get_mut(sprite_ref).unwrap();
             s.frames = (0..a.num_frames())
                 .map(|i| {
                     let f = a.frame(i);

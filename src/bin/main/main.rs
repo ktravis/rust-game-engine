@@ -1,9 +1,7 @@
-use glam::{vec2, vec3, Mat4, Quat, Vec3};
-use rust_game_engine::renderer::instance::{DrawInstance, InstanceRenderData};
-use rust_game_engine::renderer::mesh::LoadMesh;
-use rust_game_engine::renderer::state::DefaultUniforms;
-use rust_game_engine::renderer::text::{DrawText, FontFaceRenderer, TextDisplayOptions};
 use std::iter;
+
+use glam::{vec2, vec3, Mat4, Quat, Vec3};
+use rust_game_engine::renderer::sprite_renderer::MakeSpriteRenderer;
 use ttf_parser::Face;
 use wgpu::include_wgsl;
 use winit::dpi::{PhysicalPosition, PhysicalSize, Size};
@@ -16,7 +14,11 @@ use winit::window::{Window, WindowBuilder};
 use rust_game_engine::color::Color;
 use rust_game_engine::font::FontAtlas;
 use rust_game_engine::geom::{ModelVertexData, Point, Rect};
-use rust_game_engine::renderer::{Display, PipelineRef, RenderState};
+use rust_game_engine::renderer::instance::{DrawInstance, InstanceRenderData};
+use rust_game_engine::renderer::mesh::LoadMesh;
+use rust_game_engine::renderer::state::DefaultUniforms;
+use rust_game_engine::renderer::text::{DrawText, MakeFontFaceRenderer, TextDisplayOptions};
+use rust_game_engine::renderer::{Display, PipelineRef, RenderData, RenderState};
 use rust_game_engine::renderer::{
     DisplayMode, ModelInstanceData, OffscreenFramebuffer, RenderTarget, VertexLayout,
 };
@@ -43,8 +45,6 @@ use rust_game_engine::transform::Transform;
 //         //     ))
 //         // }
 //     }
-//
-//     fn resize_event(&mut self, _ctx: &mut GraphicsContext, _width: f32, _height: f32) {}
 //
 //     fn mouse_motion_event(&mut self, _ctx: &mut GraphicsContext, x: f32, y: f32) {
 //         self.input.handle_mouse_motion(x, y)
@@ -81,15 +81,6 @@ use rust_game_engine::transform::Transform;
 //             .handle_key_or_button_change(translate_button(button), input::StateChange::Released);
 //     }
 //
-//     fn char_event(
-//         &mut self,
-//         _ctx: &mut GraphicsContext,
-//         _character: char,
-//         _keymods: miniquad::KeyMods,
-//         _repeat: bool,
-//     ) {
-//     }
-//
 //     fn key_down_event(
 //         &mut self,
 //         _ctx: &mut GraphicsContext,
@@ -110,38 +101,6 @@ use rust_game_engine::transform::Transform;
 //         self.input
 //             .handle_key_or_button_change(translate_key(keycode), input::StateChange::Released);
 //     }
-//
-//     fn touch_event(
-//         &mut self,
-//         ctx: &mut GraphicsContext,
-//         phase: miniquad::TouchPhase,
-//         _id: u64,
-//         x: f32,
-//         y: f32,
-//     ) {
-//         use miniquad::TouchPhase::*;
-//         if phase == Started {
-//             self.mouse_button_down_event(ctx, miniquad::MouseButton::Left, x, y);
-//         }
-//
-//         if phase == Ended {
-//             self.mouse_button_up_event(ctx, miniquad::MouseButton::Left, x, y);
-//         }
-//
-//         if phase == Moved {
-//             self.mouse_motion_event(ctx, x, y);
-//         }
-//     }
-//
-//     fn raw_mouse_motion(&mut self, _ctx: &mut GraphicsContext, _dx: f32, _dy: f32) {}
-//
-//     fn window_minimized_event(&mut self, _ctx: &mut GraphicsContext) {}
-//
-//     fn window_restored_event(&mut self, _ctx: &mut GraphicsContext) {}
-//
-//     fn quit_requested_event(&mut self, _ctx: &mut GraphicsContext) {}
-//
-//     fn files_dropped_event(&mut self, _ctx: &mut GraphicsContext) {}
 // }
 
 // SpriteManager will be more complicated because it needs to rebuild lazily after loading
@@ -192,14 +151,13 @@ struct State {
     // TODO: maybe TextRenderer trait that works on something with a DrawInstance trait (raw render
     // pass or instance encoder), can be implemented by FontFaceRenderer and a BitmapFontRenderer
     // text render state
-    text_render_pipeline: PipelineRef,
     font_atlas: FontAtlas,
-    font_atlas_texture: TextureRef,
+    font_render_data: RenderData,
 
     quad_mesh: MeshRef,
     cube_mesh: MeshRef,
     sprite_manager: SpriteManager,
-    sprite_atlas_texture: TextureRef,
+    sprite_render_data: RenderData,
 
     // "game" state
     diffuse_texture: TextureRef,
@@ -338,7 +296,16 @@ impl State {
             cube_mesh,
             diffuse_texture,
             diffuse_texture2,
-            font_atlas_texture,
+            font_render_data: RenderData {
+                texture: font_atlas_texture,
+                pipeline: text_render_pipeline,
+                mesh: quad_mesh,
+            },
+            sprite_render_data: RenderData {
+                pipeline: instanced_render_pipeline,
+                texture: sprite_atlas,
+                mesh: quad_mesh,
+            },
             cursor_position: Default::default(),
             camera: Camera {
                 position: vec3(0.0, 2.3, 6.0),
@@ -348,10 +315,8 @@ impl State {
             instances,
             instance_buffer,
             instanced_render_pipeline,
-            text_render_pipeline,
             to_screen_pipeline,
             sprite_manager,
-            sprite_atlas_texture: sprite_atlas,
             font_atlas,
         })
     }
@@ -410,7 +375,7 @@ impl State {
                             },
                             ..Default::default()
                         },
-                        texture: Some(self.sprite_atlas_texture),
+                        texture: Some(self.sprite_render_data.texture),
                         pipeline: self.instanced_render_pipeline,
                         mesh: self.cube_mesh,
                     });
@@ -423,7 +388,7 @@ impl State {
 
     fn update(&mut self) {
         if self.sprite_manager.maybe_rebuild() {
-            self.sprite_atlas_texture = self.render_state.load_texture(
+            self.sprite_render_data.texture = self.render_state.load_texture(
                 &self.display,
                 TextureBuilder::labeled("sprite_atlas").from_image(
                     self.display.device(),
@@ -478,19 +443,15 @@ impl State {
             for instance in &self.instances {
                 instance_encoder.draw_instance(instance);
             }
-            let mut text_renderer = FontFaceRenderer {
-                raw: &mut instance_encoder,
-                font_atlas: &self.font_atlas,
-                texture: self.font_atlas_texture,
-                pipeline: self.text_render_pipeline,
-                quad_mesh: self.quad_mesh,
-            };
+            let mut text_renderer =
+                instance_encoder.font_face_renderer(&self.font_atlas, self.font_render_data);
             text_renderer.draw_text(
                 "howdy there",
                 Transform {
-                    position: vec3(1.0, 2.0, 3.0),
-                    scale: vec3(0.1, -0.1, -1.0),
-                    rotation: Quat::IDENTITY,
+                    position: vec3(1.5, 2.0, 1.0),
+                    scale: vec3(0.05, -0.05, 1.0),
+                    rotation: Quat::from_rotation_z(-15.0f32.to_radians())
+                        * Quat::from_rotation_y(180.0f32.to_radians()),
                 },
                 TextDisplayOptions {
                     color: Color::RED,
@@ -575,45 +536,31 @@ impl State {
             let mut instance_encoder =
                 render_pass.instance_encoder(&self.display, &self.instance_buffer);
             {
-                // draw_sprite
-                let s = self
-                    .sprite_manager
-                    .get_sprite(self.sprite_manager.get_sprite_ref("guy").unwrap());
-                let frame = &s.frames[0];
-                // let origin = pos - s.pivot.unwrap_or_default().as_vec2();
-                // let pos = origin;
-                let scale = 4. * vec3(s.size.x as f32, s.size.y as f32, 1.0);
-                instance_encoder.draw_instance(&InstanceRenderData {
-                    texture: Some(self.sprite_atlas_texture),
-                    pipeline: self.instanced_render_pipeline,
-                    mesh: self.quad_mesh,
-                    model: ModelInstanceData {
-                        subtexture: frame.region,
-                        transform: Transform {
-                            position: vec3(
-                                self.cursor_position.unwrap_or_default().x as _,
-                                self.cursor_position.unwrap_or_default().y as _,
-                                0.,
-                            ),
-                            scale,
-                            rotation: Quat::IDENTITY,
-                        },
-                        ..Default::default()
+                let mut sprite_renderer =
+                    instance_encoder.sprite_renderer(&self.sprite_manager, self.sprite_render_data);
+                sprite_renderer.draw_sprite(
+                    self.sprite_manager.get_sprite_ref("guy").unwrap(),
+                    0,
+                    Transform {
+                        position: vec3(
+                            self.cursor_position.unwrap_or_default().x as _,
+                            self.cursor_position.unwrap_or_default().y as _,
+                            0.0,
+                        ),
+                        scale: vec3(4.0, 4.0, 1.0),
+                        rotation: Quat::from_rotation_z(45.0f32.to_radians()),
                     },
-                });
+                )
             }
-            let mut text_renderer = FontFaceRenderer {
-                raw: &mut instance_encoder,
-                font_atlas: &self.font_atlas,
-                texture: self.font_atlas_texture,
-                pipeline: self.text_render_pipeline,
-                quad_mesh: self.quad_mesh,
-            };
-            text_renderer.draw_text_2d(
-                format!("{}", self.camera.position),
-                vec2(10.0, 32.0),
-                TextDisplayOptions::default(),
-            );
+            {
+                let mut text_renderer =
+                    instance_encoder.font_face_renderer(&self.font_atlas, self.font_render_data);
+                text_renderer.draw_text_2d(
+                    format!("{}", self.camera.position),
+                    vec2(12.0, 36.0),
+                    TextDisplayOptions::default(),
+                );
+            }
         }
         queue.submit(iter::once(encoder.finish()));
 

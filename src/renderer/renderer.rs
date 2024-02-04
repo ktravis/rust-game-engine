@@ -1,4 +1,6 @@
+use super::instance::InstanceRenderData;
 use super::texture::{Texture, TextureBuilder};
+use super::{MeshRef, PipelineRef, TextureRef};
 use crate::{color::*, geom::*, transform::*};
 use glam::Mat4;
 use std::borrow::Borrow;
@@ -6,6 +8,24 @@ use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, DerefMut};
 use wgpu::util::DeviceExt;
 use wgpu::{vertex_attr_array, VertexAttribute, VertexBufferLayout, VertexStepMode};
+
+#[derive(Copy, Clone)]
+pub struct RenderData {
+    pub pipeline: PipelineRef,
+    pub texture: TextureRef,
+    pub mesh: MeshRef,
+}
+
+impl RenderData {
+    pub fn for_model_instance(self, model: ModelInstanceData) -> InstanceRenderData {
+        InstanceRenderData {
+            texture: Some(self.texture),
+            pipeline: self.pipeline,
+            mesh: self.mesh,
+            model,
+        }
+    }
+}
 
 pub trait VertexLayout {
     fn vertex_layout() -> VertexBufferLayout<'static>;

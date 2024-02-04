@@ -2,6 +2,7 @@ pub mod display;
 pub mod instance;
 pub mod mesh;
 pub mod model;
+pub mod sprite_renderer;
 pub mod state;
 pub mod text;
 pub mod texture;

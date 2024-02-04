@@ -25,4 +25,14 @@ impl Transform {
     pub fn as_matrix(&self) -> Mat4 {
         Mat4::from_scale_rotation_translation(self.scale, self.rotation, self.position)
     }
+
+    #[inline]
+    pub fn from_matrix(m: Mat4) -> Self {
+        let (scale, rotation, position) = m.to_scale_rotation_translation();
+        Self {
+            position,
+            rotation,
+            scale,
+        }
+    }
 }
