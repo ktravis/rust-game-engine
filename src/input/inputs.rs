@@ -76,6 +76,15 @@ pub enum StateChange {
     Released,
 }
 
+impl From<winit::event::ElementState> for StateChange {
+    fn from(value: winit::event::ElementState) -> Self {
+        match value {
+            winit::event::ElementState::Pressed => Self::Pressed,
+            winit::event::ElementState::Released => Self::Released,
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum InputChange {
     Digital {

@@ -6,6 +6,7 @@ pub mod geom;
 pub mod renderer;
 pub mod sprite;
 pub mod sprite_manager;
+pub mod time;
 pub mod transform;
 
 #[macro_use]

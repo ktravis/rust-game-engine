@@ -1,21 +1,25 @@
 use std::iter;
 
-use glam::{vec2, vec3, Mat4, Quat, Vec3};
-use rust_game_engine::renderer::sprite_renderer::MakeSpriteRenderer;
+use glam::{vec2, vec3, Mat4, Quat, Vec2, Vec3};
 use ttf_parser::Face;
 use wgpu::include_wgsl;
 use winit::dpi::{PhysicalPosition, PhysicalSize, Size};
 use winit::event::WindowEvent::KeyboardInput;
-use winit::event::{ElementState, Event, KeyEvent, WindowEvent};
+use winit::event::{Event, KeyEvent, WindowEvent};
 use winit::event_loop::EventLoop;
-use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowBuilder};
 
+use controlset_derive::ControlSet;
 use rust_game_engine::color::Color;
 use rust_game_engine::font::FontAtlas;
 use rust_game_engine::geom::{ModelVertexData, Point, Rect};
+use rust_game_engine::input::{
+    AnalogInput, Axis, Button, ControlSet, InputManager, Key, MouseButton, Toggle,
+};
 use rust_game_engine::renderer::instance::{DrawInstance, InstanceRenderData};
 use rust_game_engine::renderer::mesh::LoadMesh;
+use rust_game_engine::renderer::sprite_renderer::MakeSpriteRenderer;
 use rust_game_engine::renderer::state::DefaultUniforms;
 use rust_game_engine::renderer::text::{DrawText, MakeFontFaceRenderer, TextDisplayOptions};
 use rust_game_engine::renderer::{Display, PipelineRef, RenderData, RenderState};
@@ -24,86 +28,8 @@ use rust_game_engine::renderer::{
 };
 use rust_game_engine::renderer::{MeshRef, TextureBuilder, TextureRef};
 use rust_game_engine::sprite_manager::SpriteManager;
+use rust_game_engine::time::FrameTiming;
 use rust_game_engine::transform::Transform;
-
-// impl EventHandler for Stage {
-//     fn update(&mut self, ctx: &mut GraphicsContext) {
-//         self.frame_timing.update(miniquad::date::now());
-//         if !Stage::update(self, ctx) {
-//             ctx.request_quit();
-//         }
-//         // Do this after the frame is done updating, so we can clear state and update controls for the next frame.
-//         self.input.end_frame_update();
-//     }
-//
-//     fn draw(&mut self, ctx: &mut GraphicsContext) {
-//         Stage::draw(self, ctx);
-//         // let current_frame_time = miniquad::date::now() - self.frame_start + 0.0005;
-//         // if current_frame_time < self.target_frame_duration {
-//         //     std::thread::sleep(Duration::from_secs_f64(
-//         //         self.target_frame_duration - current_frame_time,
-//         //     ))
-//         // }
-//     }
-//
-//     fn mouse_motion_event(&mut self, _ctx: &mut GraphicsContext, x: f32, y: f32) {
-//         self.input.handle_mouse_motion(x, y)
-//     }
-//
-//     fn mouse_wheel_event(&mut self, _ctx: &mut GraphicsContext, x: f32, y: f32) {
-//         if x != 0. {
-//             self.input.handle_analog_axis_change(MouseWheelX, x);
-//         }
-//         if y != 0. {
-//             self.input.handle_analog_axis_change(MouseWheelY, y);
-//         }
-//     }
-//
-//     fn mouse_button_down_event(
-//         &mut self,
-//         _ctx: &mut GraphicsContext,
-//         button: miniquad::MouseButton,
-//         _x: f32,
-//         _y: f32,
-//     ) {
-//         self.input
-//             .handle_key_or_button_change(translate_button(button), input::StateChange::Pressed);
-//     }
-//
-//     fn mouse_button_up_event(
-//         &mut self,
-//         _ctx: &mut GraphicsContext,
-//         button: miniquad::MouseButton,
-//         _x: f32,
-//         _y: f32,
-//     ) {
-//         self.input
-//             .handle_key_or_button_change(translate_button(button), input::StateChange::Released);
-//     }
-//
-//     fn key_down_event(
-//         &mut self,
-//         _ctx: &mut GraphicsContext,
-//         keycode: miniquad::KeyCode,
-//         _keymods: miniquad::KeyMods,
-//         _repeat: bool,
-//     ) {
-//         self.input
-//             .handle_key_or_button_change(translate_key(keycode), input::StateChange::Pressed);
-//     }
-//
-//     fn key_up_event(
-//         &mut self,
-//         _ctx: &mut GraphicsContext,
-//         keycode: miniquad::KeyCode,
-//         _keymods: miniquad::KeyMods,
-//     ) {
-//         self.input
-//             .handle_key_or_button_change(translate_key(keycode), input::StateChange::Released);
-//     }
-// }
-
-// SpriteManager will be more complicated because it needs to rebuild lazily after loading
 
 #[derive(Debug, Copy, Clone)]
 struct Camera {
@@ -118,8 +44,6 @@ impl Camera {
     const DEFAULT_FOV_RADIANS: f32 = 60.0 * (std::f32::consts::PI / 180.0);
 
     pub fn view_matrix(&self) -> Mat4 {
-        let (pitch_sin, pitch_cos) = self.pitch.sin_cos();
-        let (yaw_sin, yaw_cos) = self.yaw.sin_cos();
         Mat4::look_to_lh(self.position, self.look_dir, Vec3::Y)
     }
 }
@@ -136,8 +60,27 @@ impl Default for Camera {
     }
 }
 
+#[derive(ControlSet)]
+struct Controls {
+    #[bind((Key::A, Key::D))]
+    x: Axis,
+    #[bind((Key::W, Key::S))]
+    y: Axis,
+    #[bind((Key::F, Key::R))]
+    scale: Axis,
+    #[bind(Key::Escape)]
+    quit: Button,
+    #[bind(Key::P)]
+    next: Button,
+    #[bind(Key::O)]
+    add: Button,
+    #[bind(Key::Slash)] // aka question mark
+    show_help: Toggle,
+}
+
 struct State {
-    // application configuration
+    frame_timing: FrameTiming,
+    input: InputManager<Controls>,
     display: Display,
 
     // renderer state
@@ -148,9 +91,7 @@ struct State {
     instance_buffer: wgpu::Buffer,
     instanced_render_pipeline: PipelineRef,
 
-    // TODO: maybe TextRenderer trait that works on something with a DrawInstance trait (raw render
-    // pass or instance encoder), can be implemented by FontFaceRenderer and a BitmapFontRenderer
-    // text render state
+    // TODO: BitmapFontRenderer
     font_atlas: FontAtlas,
     font_render_data: RenderData,
 
@@ -162,7 +103,7 @@ struct State {
     // "game" state
     diffuse_texture: TextureRef,
     diffuse_texture2: TextureRef,
-    cursor_position: Option<PhysicalPosition<f64>>,
+    cursor_position: Option<Vec2>,
     camera: Camera,
 }
 
@@ -290,17 +231,26 @@ impl State {
         );
 
         Ok(Self {
+            frame_timing: Default::default(),
+            input: Default::default(),
             display,
             render_state,
             quad_mesh,
             cube_mesh,
             diffuse_texture,
             diffuse_texture2,
+            offscreen_framebuffer,
+            to_screen_pipeline,
+            instances,
+            instance_buffer,
+            instanced_render_pipeline,
+            font_atlas,
             font_render_data: RenderData {
                 texture: font_atlas_texture,
                 pipeline: text_render_pipeline,
                 mesh: quad_mesh,
             },
+            sprite_manager,
             sprite_render_data: RenderData {
                 pipeline: instanced_render_pipeline,
                 texture: sprite_atlas,
@@ -311,13 +261,6 @@ impl State {
                 position: vec3(0.0, 2.3, 6.0),
                 ..Default::default()
             },
-            offscreen_framebuffer,
-            instances,
-            instance_buffer,
-            instanced_render_pipeline,
-            to_screen_pipeline,
-            sprite_manager,
-            font_atlas,
         })
     }
 
@@ -328,65 +271,60 @@ impl State {
     fn input(&mut self, event: &WindowEvent) -> bool {
         match *event {
             WindowEvent::CursorMoved { position, .. } => {
+                self.input
+                    .handle_mouse_motion(position.x as f32, position.y as f32);
                 if let Some(old_position) = self.cursor_position {
-                    let delta_x = position.x - old_position.x;
-                    let delta_y = position.y - old_position.y;
-                    self.camera.yaw -= delta_x as f32 / 100.0;
-                    self.camera.pitch -= delta_y as f32 / 100.0;
+                    let pos = self.input.mouse.position();
+                    let delta = pos - old_position;
+                    self.camera.yaw -= delta.x / 100.0;
+                    self.camera.pitch -= delta.y / 100.0;
                     let (pitch_sin, pitch_cos) = self.camera.pitch.sin_cos();
                     let (yaw_sin, yaw_cos) = self.camera.yaw.sin_cos();
                     self.camera.look_dir =
                         vec3(pitch_cos * yaw_cos, pitch_sin, pitch_cos * yaw_sin).normalize();
                 }
-                self.cursor_position = Some(position);
+                self.cursor_position = Some(self.input.mouse.position());
             }
             KeyboardInput {
                 event:
                     KeyEvent {
                         physical_key: PhysicalKey::Code(code),
+                        state,
                         ..
                     },
                 ..
             } => {
-                let flat = vec3(self.camera.look_dir.x, 0.0, self.camera.look_dir.z);
-                let dir = match code {
-                    KeyCode::KeyA => flat.cross(Vec3::Y),
-                    KeyCode::KeyW => flat,
-                    KeyCode::KeyS => -flat,
-                    KeyCode::KeyD => flat.cross(-Vec3::Y),
-                    _ => {
-                        return false;
+                self.input
+                    .handle_key_or_button_change(Key::from(code), state.into());
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                match delta {
+                    winit::event::MouseScrollDelta::PixelDelta(PhysicalPosition { x, y }) => {
+                        if x != 0. {
+                            self.input
+                                .handle_analog_axis_change(AnalogInput::MouseWheelX, x as f32);
+                        }
+                        if y != 0. {
+                            self.input
+                                .handle_analog_axis_change(AnalogInput::MouseWheelY, y as f32);
+                        }
                     }
+                    // winit::event::MouseScrollDelta::LineDelta(_, _) => todo!(),
+                    _ => {}
                 };
-                self.camera.position += dir;
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if state.is_pressed() && button == winit::event::MouseButton::Left {
-                    let i = self.instances.len() - 2;
-                    self.instances.push(InstanceRenderData {
-                        model: ModelInstanceData {
-                            transform: Transform {
-                                position: vec3(
-                                    -12.0 + 4. * (i % 10) as f32,
-                                    -12.0 + 4. * (i / 10) as f32,
-                                    16.0,
-                                ),
-                                ..Default::default()
-                            },
-                            ..Default::default()
-                        },
-                        texture: Some(self.sprite_render_data.texture),
-                        pipeline: self.instanced_render_pipeline,
-                        mesh: self.cube_mesh,
-                    });
-                }
+                self.input
+                    .handle_key_or_button_change(MouseButton::from(button), state.into());
             }
             _ => {}
         }
         false
     }
 
-    fn update(&mut self) {
+    fn update(&mut self) -> bool {
+        self.frame_timing.update();
+
         if self.sprite_manager.maybe_rebuild() {
             self.sprite_render_data.texture = self.render_state.load_texture(
                 &self.display,
@@ -397,6 +335,17 @@ impl State {
                 ),
             );
         }
+        let flat = 0.05 * vec3(self.camera.look_dir.x, 0.0, self.camera.look_dir.z);
+        self.camera.position +=
+            -self.input.x.value() * flat.cross(Vec3::Y) - self.input.y.value() * flat;
+        self.camera.position.y += 0.05 * self.input.scale.value();
+        if self.input.quit.is_down() {
+            return false;
+        }
+
+        // Do this after the frame is done updating, so we can clear state and update controls for the next frame.
+        self.input.end_frame_update();
+        true
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -542,11 +491,7 @@ impl State {
                     self.sprite_manager.get_sprite_ref("guy").unwrap(),
                     0,
                     Transform {
-                        position: vec3(
-                            self.cursor_position.unwrap_or_default().x as _,
-                            self.cursor_position.unwrap_or_default().y as _,
-                            0.0,
-                        ),
+                        position: self.input.mouse.position().extend(0.0),
                         scale: vec3(4.0, 4.0, 1.0),
                         rotation: Quat::from_rotation_z(45.0f32.to_radians()),
                     },
@@ -555,11 +500,26 @@ impl State {
             {
                 let mut text_renderer =
                     instance_encoder.font_face_renderer(&self.font_atlas, self.font_render_data);
-                text_renderer.draw_text_2d(
-                    format!("{}", self.camera.position),
-                    vec2(12.0, 36.0),
-                    TextDisplayOptions::default(),
-                );
+                let text = if self.input.show_help.on {
+                    Controls::controls()
+                        .iter()
+                        .map(|c| {
+                            format!(
+                                "{:?}: {}\n",
+                                c,
+                                self.input
+                                    .bound_inputs(c)
+                                    .iter()
+                                    .map(|input| { format!("{}", input) })
+                                    .collect::<Vec<String>>()
+                                    .join(", ")
+                            )
+                        })
+                        .collect()
+                } else {
+                    format!("{:.1}", self.frame_timing.fps())
+                };
+                text_renderer.draw_text_2d(text, vec2(12.0, 36.0), TextDisplayOptions::default());
             }
         }
         queue.submit(iter::once(encoder.finish()));
@@ -587,23 +547,17 @@ pub async fn run() {
             } if window_id == state.window().id() => {
                 if !state.input(event) {
                     match event {
-                        WindowEvent::CloseRequested
-                        | KeyboardInput {
-                            event:
-                                KeyEvent {
-                                    physical_key: PhysicalKey::Code(KeyCode::Escape),
-                                    state: ElementState::Pressed,
-                                    ..
-                                },
-                            ..
-                        } => elwt.exit(),
+                        WindowEvent::CloseRequested => elwt.exit(),
                         WindowEvent::Resized(physical_size) => {
                             state.display.resize(*physical_size);
                             state.window().request_redraw();
                         }
                         // WindowEvent::ScaleFactorChanged { scale_factor, .. } => {}
                         WindowEvent::RedrawRequested => {
-                            state.update();
+                            if !state.update() {
+                                elwt.exit();
+                                return;
+                            }
                             match state.render() {
                                 Ok(_) => {}
                                 // Reconfigure the surface if it's lost or outdated
@@ -612,6 +566,7 @@ pub async fn run() {
                                 }
                                 // The system is out of memory, we should probably quit
                                 Err(wgpu::SurfaceError::OutOfMemory) => {
+                                    log::error!("Out of memory?!");
                                     elwt.exit();
                                 }
                                 Err(wgpu::SurfaceError::Timeout) => log::warn!("Surface timeout"),
