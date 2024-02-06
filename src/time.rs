@@ -52,4 +52,8 @@ impl FrameTiming {
     pub fn fps(&self) -> f32 {
         self.sampled_fps
     }
+
+    pub fn time(&self) -> f32 {
+        self.tick_timer.total_elapsed().as_secs_f32()
+    }
 }

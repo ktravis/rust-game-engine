@@ -140,6 +140,28 @@ impl RenderState {
         shader: &wgpu::ShaderModule,
         vertex_layouts: &[wgpu::VertexBufferLayout<'a>],
     ) -> PipelineRef {
+        self.create_pipeline_with_key(name, display, shader, vertex_layouts, None)
+    }
+
+    pub fn replace_pipeline<'a>(
+        &mut self,
+        name: &str,
+        display: &Display,
+        shader: &wgpu::ShaderModule,
+        vertex_layouts: &[wgpu::VertexBufferLayout<'a>],
+        key: PipelineRef,
+    ) -> PipelineRef {
+        self.create_pipeline_with_key(name, display, shader, vertex_layouts, Some(key))
+    }
+
+    fn create_pipeline_with_key<'a>(
+        &mut self,
+        name: &str,
+        display: &Display,
+        shader: &wgpu::ShaderModule,
+        vertex_layouts: &[wgpu::VertexBufferLayout<'a>],
+        key: Option<PipelineRef>,
+    ) -> PipelineRef {
         // TODO: do we need/want to dedupe or cache this?
         let layout = display
             .device()
@@ -206,7 +228,13 @@ impl RenderState {
                 // indicates how many array layers the attachments will have.
                 multiview: None,
             });
-        self.pipelines.insert(pipeline)
+        match key {
+            Some(key) => {
+                *self.pipelines.get_mut(key).unwrap() = pipeline;
+                key
+            }
+            None => self.pipelines.insert(pipeline),
+        }
     }
 
     pub fn create_vertex_buffers<'a, const N: usize>(

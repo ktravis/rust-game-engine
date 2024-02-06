@@ -1,8 +1,11 @@
+use std::borrow::Cow;
+use std::io::Read;
 use std::iter;
 
 use glam::{vec2, vec3, Mat4, Quat, Vec2, Vec3};
+use pollster::FutureExt;
+use rust_game_engine::assets::AssetManager;
 use ttf_parser::Face;
-use wgpu::include_wgsl;
 use winit::dpi::{PhysicalPosition, PhysicalSize, Size};
 use winit::event::WindowEvent::KeyboardInput;
 use winit::event::{Event, KeyEvent, WindowEvent};
@@ -78,32 +81,150 @@ struct Controls {
     show_help: Toggle,
 }
 
+#[derive(Debug, Default, Clone)]
+struct ShaderSource {
+    dirty: bool,
+
+    default: String,
+    model: String,
+    text: String,
+}
+
+struct RenderPipelines {
+    instanced: PipelineRef,
+    to_screen: PipelineRef,
+    text: PipelineRef,
+}
+
+impl RenderPipelines {
+    // TODO: consolidate this with create_render_pipelines, use on_unchecked_error to set up an error handler
+    fn update(&mut self, render_state: &mut RenderState, display: &Display, src: &ShaderSource) {
+        render_state.replace_pipeline(
+            "Render to Screen Pipeline",
+            &display,
+            &display
+                .device()
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("to_screen"),
+                    source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&src.default)),
+                }),
+            &[ModelVertexData::vertex_layout()],
+            self.to_screen,
+        );
+        render_state.replace_pipeline(
+            "Instanced Render Pipeline",
+            &display,
+            &display
+                .device()
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("instanced"),
+                    source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&src.model)),
+                }),
+            &[
+                ModelVertexData::vertex_layout(),
+                ModelInstanceData::vertex_layout(),
+            ],
+            self.instanced,
+        );
+        render_state.replace_pipeline(
+            "Text Render Pipeline",
+            &display,
+            &display
+                .device()
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("text"),
+                    source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&src.text)),
+                }),
+            &[
+                ModelVertexData::vertex_layout(),
+                ModelInstanceData::vertex_layout(),
+            ],
+            self.text,
+        );
+    }
+}
+
+fn create_render_pipelines(
+    render_state: &mut RenderState,
+    display: &Display,
+    src: &ShaderSource,
+) -> RenderPipelines {
+    let to_screen = render_state.create_pipeline(
+        "Render to Screen Pipeline",
+        &display,
+        &display
+            .device()
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("to_screen"),
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&src.default)),
+            }),
+        &[ModelVertexData::vertex_layout()],
+    );
+    let instanced = render_state.create_pipeline(
+        "Instanced Render Pipeline",
+        &display,
+        &display
+            .device()
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("instanced"),
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&src.model)),
+            }),
+        &[
+            ModelVertexData::vertex_layout(),
+            ModelInstanceData::vertex_layout(),
+        ],
+    );
+    let text = render_state.create_pipeline(
+        "Text Render Pipeline",
+        &display,
+        &display
+            .device()
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("text"),
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&src.text)),
+            }),
+        &[
+            ModelVertexData::vertex_layout(),
+            ModelInstanceData::vertex_layout(),
+        ],
+    );
+    RenderPipelines {
+        instanced,
+        to_screen,
+        text,
+    }
+}
+
+#[derive(Default)]
+struct GameAssets {
+    shader_sources: ShaderSource,
+    font_atlas: FontAtlas,
+    sprites: SpriteManager,
+}
+
 struct State {
     frame_timing: FrameTiming,
     input: InputManager<Controls>,
     display: Display,
+    asset_manager: AssetManager<GameAssets>,
 
     // renderer state
     render_state: RenderState,
+    pipelines: RenderPipelines,
     offscreen_framebuffer: OffscreenFramebuffer,
-    to_screen_pipeline: PipelineRef,
     instances: Vec<InstanceRenderData>,
     instance_buffer: wgpu::Buffer,
-    instanced_render_pipeline: PipelineRef,
 
     // TODO: BitmapFontRenderer
-    font_atlas: FontAtlas,
     font_render_data: RenderData,
 
     quad_mesh: MeshRef,
     cube_mesh: MeshRef,
-    sprite_manager: SpriteManager,
     sprite_render_data: RenderData,
 
     // "game" state
     diffuse_texture: TextureRef,
     diffuse_texture2: TextureRef,
-    cursor_position: Option<Vec2>,
     camera: Camera,
 }
 
@@ -111,6 +232,8 @@ impl State {
     // Creating some of the wgpu types requires async code
     async fn new(window: Window) -> anyhow::Result<Self> {
         let display = Display::from_window(window).await;
+
+        let mut asset_manager = AssetManager::new(GameAssets::default(), "./res/");
 
         // TODO: should the render state just hold onto the main vertex layout? Is there ever
         // going to be more than one we're using at a time? It would simplify creating pipelines
@@ -142,69 +265,64 @@ impl State {
             ),
         );
 
-        let mut sprite_manager = SpriteManager::default();
-        sprite_manager.add_sprite_file_path("res/sprites/guy.aseprite");
-        sprite_manager.rebuild_atlas()?;
+        asset_manager.track_glob("./res/sprites/*.aseprite", |state, path, f| {
+            state.sprites.add_sprite_file(path.to_path_buf(), f);
+        });
+        // TODO: should have a way to not need this
+        let sprite_atlas = {
+            asset_manager.sprites.maybe_rebuild();
+            render_state.load_texture(
+                &display,
+                TextureBuilder::labeled("sprite_atlas").from_image(
+                    display.device(),
+                    display.queue(),
+                    asset_manager.sprites.atlas_image(),
+                ),
+            )
+        };
 
-        let sprite_atlas = render_state.load_texture(
-            &display,
-            TextureBuilder::labeled("sprite_atlas").from_image(
-                display.device(),
-                display.queue(),
-                sprite_manager.atlas_image(),
-            ),
-        );
-
-        let font_data = std::fs::read("./res/fonts/Ubuntu-M.ttf")?;
-        let face = Face::parse(&font_data, 0)?;
-        let font_atlas = FontAtlas::new(face, Default::default())?;
+        // TODO: these callbacks should be able to return an error, optionally
+        asset_manager.track_file("./res/fonts/Ubuntu-M.ttf", |state, _, mut f| {
+            let mut b = vec![];
+            f.read_to_end(&mut b).unwrap();
+            let face = Face::parse(&b, 0).unwrap();
+            state.font_atlas = FontAtlas::new(face, Default::default()).unwrap();
+        });
         let font_atlas_texture = render_state.load_texture(
             &display,
             TextureBuilder::labeled("font_atlas")
                 .with_filter_mode(wgpu::FilterMode::Linear)
-                .from_image(display.device(), display.queue(), font_atlas.image()),
+                .from_image(
+                    display.device(),
+                    display.queue(),
+                    asset_manager.font_atlas.image(),
+                ),
         );
 
-        let default_shader = display
-            .device()
-            .create_shader_module(include_wgsl!("../../../res/shaders/default.wgsl"));
-        let to_screen_pipeline = render_state.create_pipeline(
-            "Render to Screen Pipeline",
-            &display,
-            &default_shader,
-            &[ModelVertexData::vertex_layout()],
-        );
+        asset_manager
+            .track_file("./res/shaders/default.wgsl", |state, _, f| {
+                state.shader_sources.dirty = true;
+                state.shader_sources.default = std::io::read_to_string(f).unwrap();
+            })
+            .track_file("./res/shaders/model.wgsl", |state, _, f| {
+                state.shader_sources.dirty = true;
+                state.shader_sources.model = std::io::read_to_string(f).unwrap();
+            })
+            .track_file("./res/shaders/text.wgsl", |state, _, f| {
+                state.shader_sources.dirty = true;
+                state.shader_sources.text = std::io::read_to_string(f).unwrap();
+            });
 
+        let pipelines =
+            create_render_pipelines(&mut render_state, &display, &asset_manager.shader_sources);
         let [instance_buffer] = render_state
             .create_vertex_buffers(display.device(), [ModelInstanceData::vertex_layout()]);
-        let instanced_render_pipeline = render_state.create_pipeline(
-            "Instanced Render Pipeline",
-            &display,
-            &display
-                .device()
-                .create_shader_module(include_wgsl!("../../../res/shaders/model.wgsl")),
-            &[
-                ModelVertexData::vertex_layout(),
-                ModelInstanceData::vertex_layout(),
-            ],
-        );
-        let text_render_pipeline = render_state.create_pipeline(
-            "Text Render Pipeline",
-            &display,
-            &display
-                .device()
-                .create_shader_module(include_wgsl!("../../../res/shaders/text.wgsl")),
-            &[
-                ModelVertexData::vertex_layout(),
-                ModelInstanceData::vertex_layout(),
-            ],
-        );
         let instances = vec![
             InstanceRenderData {
                 texture: Some(diffuse_texture),
                 mesh: cube_mesh,
                 model: ModelInstanceData::default(),
-                pipeline: instanced_render_pipeline,
+                pipeline: pipelines.instanced,
             },
             InstanceRenderData {
                 texture: Some(diffuse_texture2),
@@ -218,7 +336,7 @@ impl State {
                     subtexture: Rect::new(0.0, 0.0, 0.25, 0.25),
                     ..Default::default()
                 },
-                pipeline: instanced_render_pipeline,
+                pipeline: pipelines.instanced,
             },
         ];
 
@@ -230,33 +348,33 @@ impl State {
             Point::new(960, 720),
         );
 
+        let font_render_data = RenderData {
+            texture: font_atlas_texture,
+            pipeline: pipelines.text,
+            mesh: quad_mesh,
+        };
+        let sprite_render_data = RenderData {
+            pipeline: pipelines.instanced,
+            texture: sprite_atlas,
+            mesh: quad_mesh,
+        };
+
         Ok(Self {
+            asset_manager,
             frame_timing: Default::default(),
             input: Default::default(),
             display,
             render_state,
+            pipelines,
             quad_mesh,
             cube_mesh,
             diffuse_texture,
             diffuse_texture2,
             offscreen_framebuffer,
-            to_screen_pipeline,
             instances,
             instance_buffer,
-            instanced_render_pipeline,
-            font_atlas,
-            font_render_data: RenderData {
-                texture: font_atlas_texture,
-                pipeline: text_render_pipeline,
-                mesh: quad_mesh,
-            },
-            sprite_manager,
-            sprite_render_data: RenderData {
-                pipeline: instanced_render_pipeline,
-                texture: sprite_atlas,
-                mesh: quad_mesh,
-            },
-            cursor_position: Default::default(),
+            font_render_data,
+            sprite_render_data,
             camera: Camera {
                 position: vec3(0.0, 2.3, 6.0),
                 ..Default::default()
@@ -273,17 +391,15 @@ impl State {
             WindowEvent::CursorMoved { position, .. } => {
                 self.input
                     .handle_mouse_motion(position.x as f32, position.y as f32);
-                if let Some(old_position) = self.cursor_position {
-                    let pos = self.input.mouse.position();
-                    let delta = pos - old_position;
+                if let Some(delta) = self.input.mouse.delta() {
                     self.camera.yaw -= delta.x / 100.0;
-                    self.camera.pitch -= delta.y / 100.0;
+                    self.camera.pitch = (self.camera.pitch - delta.y / 100.0)
+                        .clamp(-80.0f32.to_radians(), 80.0f32.to_radians());
                     let (pitch_sin, pitch_cos) = self.camera.pitch.sin_cos();
                     let (yaw_sin, yaw_cos) = self.camera.yaw.sin_cos();
                     self.camera.look_dir =
                         vec3(pitch_cos * yaw_cos, pitch_sin, pitch_cos * yaw_sin).normalize();
                 }
-                self.cursor_position = Some(self.input.mouse.position());
             }
             KeyboardInput {
                 event:
@@ -325,15 +441,25 @@ impl State {
     fn update(&mut self) -> bool {
         self.frame_timing.update();
 
-        if self.sprite_manager.maybe_rebuild() {
-            self.sprite_render_data.texture = self.render_state.load_texture(
-                &self.display,
-                TextureBuilder::labeled("sprite_atlas").from_image(
-                    self.display.device(),
-                    self.display.queue(),
-                    self.sprite_manager.atlas_image(),
-                ),
-            );
+        if self.asset_manager.check_for_updates() {
+            if self.asset_manager.shader_sources.dirty {
+                self.asset_manager.shader_sources.dirty = false;
+                self.pipelines.update(
+                    &mut self.render_state,
+                    &self.display,
+                    &self.asset_manager.shader_sources,
+                );
+            }
+            if self.asset_manager.sprites.maybe_rebuild() {
+                self.sprite_render_data.texture = self.render_state.load_texture(
+                    &self.display,
+                    TextureBuilder::labeled("sprite_atlas").from_image(
+                        self.display.device(),
+                        self.display.queue(),
+                        self.asset_manager.sprites.atlas_image(),
+                    ),
+                );
+            }
         }
         let flat = 0.05 * vec3(self.camera.look_dir.x, 0.0, self.camera.look_dir.z);
         self.camera.position +=
@@ -362,7 +488,7 @@ impl State {
                     0.01,
                     100.0,
                 ), // TODO add near/far/aspect to camera
-                ..Default::default()
+                time: self.frame_timing.time(),
             },
         );
         let mut encoder =
@@ -392,8 +518,8 @@ impl State {
             for instance in &self.instances {
                 instance_encoder.draw_instance(instance);
             }
-            let mut text_renderer =
-                instance_encoder.font_face_renderer(&self.font_atlas, self.font_render_data);
+            let mut text_renderer = instance_encoder
+                .font_face_renderer(&self.asset_manager.font_atlas, self.font_render_data);
             text_renderer.draw_text(
                 "howdy there",
                 Transform {
@@ -428,7 +554,7 @@ impl State {
                     1.0,
                     -1.0,
                 ),
-                ..Default::default()
+                time: self.frame_timing.time(),
             },
         );
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -447,7 +573,7 @@ impl State {
                     ..Default::default()
                 },
             );
-            render_pass.set_active_pipeline(self.to_screen_pipeline);
+            render_pass.set_active_pipeline(self.pipelines.to_screen);
             render_pass.bind_texture_data(&self.offscreen_framebuffer.color);
             render_pass.set_active_mesh(self.quad_mesh);
             render_pass.draw_active_mesh(0..1);
@@ -468,6 +594,7 @@ impl State {
                     1.0,
                     -1.0,
                 ),
+                time: self.frame_timing.time(),
                 ..Default::default()
             },
         );
@@ -485,10 +612,10 @@ impl State {
             let mut instance_encoder =
                 render_pass.instance_encoder(&self.display, &self.instance_buffer);
             {
-                let mut sprite_renderer =
-                    instance_encoder.sprite_renderer(&self.sprite_manager, self.sprite_render_data);
+                let mut sprite_renderer = instance_encoder
+                    .sprite_renderer(&self.asset_manager.sprites, self.sprite_render_data);
                 sprite_renderer.draw_sprite(
-                    self.sprite_manager.get_sprite_ref("guy").unwrap(),
+                    self.asset_manager.sprites.get_sprite_ref("guy").unwrap(),
                     0,
                     Transform {
                         position: self.input.mouse.position().extend(0.0),
@@ -498,8 +625,8 @@ impl State {
                 )
             }
             {
-                let mut text_renderer =
-                    instance_encoder.font_face_renderer(&self.font_atlas, self.font_render_data);
+                let mut text_renderer = instance_encoder
+                    .font_face_renderer(&self.asset_manager.font_atlas, self.font_render_data);
                 let text = if self.input.show_help.on {
                     Controls::controls()
                         .iter()

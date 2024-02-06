@@ -19,4 +19,8 @@ impl Cursor {
         self.position = new_position;
         self.last_change
     }
+
+    pub fn delta(&self) -> Option<Vec2> {
+        self.last_change
+    }
 }
