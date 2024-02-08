@@ -111,6 +111,7 @@ where
     }
 
     pub fn end_frame_update(&mut self) {
+        self.mouse.end_frame_update();
         for control in Controls::controls() {
             if self.control_changed(control) {
                 self.update_mappings();

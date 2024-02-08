@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use super::texture::{Texture, TextureBuilder};
 use crate::{geom::Point, renderer::RenderTarget};
 
@@ -190,6 +192,13 @@ impl Display {
             view,
         })
     }
+
+    pub fn command_encoder(&self) -> wgpu::CommandEncoder {
+        self.device()
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            })
+    }
 }
 
 pub struct DisplayView<'a> {
@@ -201,6 +210,14 @@ pub struct DisplayView<'a> {
 impl DisplayView<'_> {
     pub fn present(self) {
         self.output_texture.present()
+    }
+}
+
+impl<'a> Deref for DisplayView<'a> {
+    type Target = Display;
+
+    fn deref(&self) -> &Self::Target {
+        self.display
     }
 }
 

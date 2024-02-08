@@ -1,19 +1,18 @@
 use std::borrow::Cow;
 use std::io::Read;
-use std::iter;
 
-use glam::{vec2, vec3, Mat4, Quat, Vec2, Vec3};
-use pollster::FutureExt;
-use rust_game_engine::assets::AssetManager;
+use glam::{vec2, vec3, Mat4, Quat, Vec3};
+use slotmap::Key as SlotmapKey;
 use ttf_parser::Face;
 use winit::dpi::{PhysicalPosition, PhysicalSize, Size};
-use winit::event::WindowEvent::KeyboardInput;
 use winit::event::{Event, KeyEvent, WindowEvent};
 use winit::event_loop::EventLoop;
 use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowBuilder};
 
 use controlset_derive::ControlSet;
+use rust_game_engine::assets::AssetManager;
+use rust_game_engine::camera::Camera;
 use rust_game_engine::color::Color;
 use rust_game_engine::font::FontAtlas;
 use rust_game_engine::geom::{ModelVertexData, Point, Rect};
@@ -22,46 +21,16 @@ use rust_game_engine::input::{
 };
 use rust_game_engine::renderer::instance::{DrawInstance, InstanceRenderData};
 use rust_game_engine::renderer::mesh::LoadMesh;
-use rust_game_engine::renderer::sprite_renderer::MakeSpriteRenderer;
 use rust_game_engine::renderer::state::DefaultUniforms;
 use rust_game_engine::renderer::text::{DrawText, MakeFontFaceRenderer, TextDisplayOptions};
 use rust_game_engine::renderer::{Display, PipelineRef, RenderData, RenderState};
 use rust_game_engine::renderer::{
-    DisplayMode, ModelInstanceData, OffscreenFramebuffer, RenderTarget, VertexLayout,
+    ModelInstanceData, OffscreenFramebuffer, RenderTarget, VertexLayout,
 };
-use rust_game_engine::renderer::{MeshRef, TextureBuilder, TextureRef};
+use rust_game_engine::renderer::{TextureBuilder, TextureRef};
 use rust_game_engine::sprite_manager::SpriteManager;
 use rust_game_engine::time::FrameTiming;
-use rust_game_engine::transform::Transform;
-
-#[derive(Debug, Copy, Clone)]
-struct Camera {
-    position: Vec3,
-    pitch: f32,
-    yaw: f32,
-    look_dir: Vec3,
-    fov_radians: f32,
-}
-
-impl Camera {
-    const DEFAULT_FOV_RADIANS: f32 = 60.0 * (std::f32::consts::PI / 180.0);
-
-    pub fn view_matrix(&self) -> Mat4 {
-        Mat4::look_to_lh(self.position, self.look_dir, Vec3::Y)
-    }
-}
-
-impl Default for Camera {
-    fn default() -> Self {
-        Camera {
-            position: Vec3::ZERO,
-            pitch: -0.40,
-            yaw: 4.7, // TODO: debug value
-            fov_radians: Self::DEFAULT_FOV_RADIANS,
-            look_dir: Vec3::Z,
-        }
-    }
-}
+use rust_game_engine::transform::Transform3D;
 
 #[derive(ControlSet)]
 struct Controls {
@@ -85,33 +54,26 @@ struct Controls {
 struct ShaderSource {
     dirty: bool,
 
-    default: String,
     model: String,
     text: String,
 }
 
+#[derive(Default)]
 struct RenderPipelines {
     instanced: PipelineRef,
-    to_screen: PipelineRef,
     text: PipelineRef,
 }
 
 impl RenderPipelines {
-    // TODO: consolidate this with create_render_pipelines, use on_unchecked_error to set up an error handler
-    fn update(&mut self, render_state: &mut RenderState, display: &Display, src: &ShaderSource) {
-        render_state.replace_pipeline(
-            "Render to Screen Pipeline",
-            &display,
-            &display
-                .device()
-                .create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("to_screen"),
-                    source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&src.default)),
-                }),
-            &[ModelVertexData::vertex_layout()],
-            self.to_screen,
-        );
-        render_state.replace_pipeline(
+    // TODO: use device error scopes to handle errors properly (need to make most things async
+    // by default
+    fn create_or_update(
+        &mut self,
+        render_state: &mut RenderState,
+        display: &Display,
+        src: &ShaderSource,
+    ) {
+        self.instanced = render_state.create_pipeline_with_key(
             "Instanced Render Pipeline",
             &display,
             &display
@@ -124,9 +86,13 @@ impl RenderPipelines {
                 ModelVertexData::vertex_layout(),
                 ModelInstanceData::vertex_layout(),
             ],
-            self.instanced,
+            if self.instanced.is_null() {
+                None
+            } else {
+                Some(self.instanced)
+            },
         );
-        render_state.replace_pipeline(
+        self.text = render_state.create_pipeline_with_key(
             "Text Render Pipeline",
             &display,
             &display
@@ -139,59 +105,12 @@ impl RenderPipelines {
                 ModelVertexData::vertex_layout(),
                 ModelInstanceData::vertex_layout(),
             ],
-            self.text,
+            if self.text.is_null() {
+                None
+            } else {
+                Some(self.text)
+            },
         );
-    }
-}
-
-fn create_render_pipelines(
-    render_state: &mut RenderState,
-    display: &Display,
-    src: &ShaderSource,
-) -> RenderPipelines {
-    let to_screen = render_state.create_pipeline(
-        "Render to Screen Pipeline",
-        &display,
-        &display
-            .device()
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("to_screen"),
-                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&src.default)),
-            }),
-        &[ModelVertexData::vertex_layout()],
-    );
-    let instanced = render_state.create_pipeline(
-        "Instanced Render Pipeline",
-        &display,
-        &display
-            .device()
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("instanced"),
-                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&src.model)),
-            }),
-        &[
-            ModelVertexData::vertex_layout(),
-            ModelInstanceData::vertex_layout(),
-        ],
-    );
-    let text = render_state.create_pipeline(
-        "Text Render Pipeline",
-        &display,
-        &display
-            .device()
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("text"),
-                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&src.text)),
-            }),
-        &[
-            ModelVertexData::vertex_layout(),
-            ModelInstanceData::vertex_layout(),
-        ],
-    );
-    RenderPipelines {
-        instanced,
-        to_screen,
-        text,
     }
 }
 
@@ -212,14 +131,12 @@ struct State {
     render_state: RenderState,
     pipelines: RenderPipelines,
     offscreen_framebuffer: OffscreenFramebuffer,
-    instances: Vec<InstanceRenderData>,
+    instances: Vec<InstanceRenderData<Transform3D>>,
     instance_buffer: wgpu::Buffer,
 
     // TODO: BitmapFontRenderer
     font_render_data: RenderData,
 
-    quad_mesh: MeshRef,
-    cube_mesh: MeshRef,
     sprite_render_data: RenderData,
 
     // "game" state
@@ -240,7 +157,6 @@ impl State {
         // - I think yes, since pipelines are now swappable for a given mesh/model.
         let mut render_state = RenderState::new(&display);
 
-        let quad_mesh = render_state.prepare_mesh(display.device().load_quad_mesh());
         let cube_mesh = render_state.prepare_mesh(display.device().load_cube_mesh());
 
         let diffuse_texture = render_state.load_texture(
@@ -300,10 +216,6 @@ impl State {
         );
 
         asset_manager
-            .track_file("./res/shaders/default.wgsl", |state, _, f| {
-                state.shader_sources.dirty = true;
-                state.shader_sources.default = std::io::read_to_string(f).unwrap();
-            })
             .track_file("./res/shaders/model.wgsl", |state, _, f| {
                 state.shader_sources.dirty = true;
                 state.shader_sources.model = std::io::read_to_string(f).unwrap();
@@ -313,8 +225,8 @@ impl State {
                 state.shader_sources.text = std::io::read_to_string(f).unwrap();
             });
 
-        let pipelines =
-            create_render_pipelines(&mut render_state, &display, &asset_manager.shader_sources);
+        let mut pipelines = RenderPipelines::default();
+        pipelines.create_or_update(&mut render_state, &display, &asset_manager.shader_sources);
         let [instance_buffer] = render_state
             .create_vertex_buffers(display.device(), [ModelInstanceData::vertex_layout()]);
         let instances = vec![
@@ -326,9 +238,9 @@ impl State {
             },
             InstanceRenderData {
                 texture: Some(diffuse_texture2),
-                mesh: quad_mesh,
+                mesh: render_state.quad_mesh(),
                 model: ModelInstanceData {
-                    transform: Transform {
+                    transform: Transform3D {
                         position: vec3(-2.2, 1.0, 0.0),
                         scale: Vec3::splat(2.5),
                         rotation: Quat::from_rotation_z(45.),
@@ -349,14 +261,14 @@ impl State {
         );
 
         let font_render_data = RenderData {
-            texture: font_atlas_texture,
             pipeline: pipelines.text,
-            mesh: quad_mesh,
+            texture: font_atlas_texture,
+            mesh: render_state.quad_mesh(),
         };
         let sprite_render_data = RenderData {
             pipeline: pipelines.instanced,
             texture: sprite_atlas,
-            mesh: quad_mesh,
+            mesh: render_state.quad_mesh(),
         };
 
         Ok(Self {
@@ -366,8 +278,6 @@ impl State {
             display,
             render_state,
             pipelines,
-            quad_mesh,
-            cube_mesh,
             diffuse_texture,
             diffuse_texture2,
             offscreen_framebuffer,
@@ -375,10 +285,7 @@ impl State {
             instance_buffer,
             font_render_data,
             sprite_render_data,
-            camera: Camera {
-                position: vec3(0.0, 2.3, 6.0),
-                ..Default::default()
-            },
+            camera: Camera::new(vec3(0.0, 2.3, 6.0), 960.0 / 720.0),
         })
     }
 
@@ -386,22 +293,13 @@ impl State {
         self.display.window()
     }
 
-    fn input(&mut self, event: &WindowEvent) -> bool {
+    fn input(&mut self, event: &WindowEvent) {
         match *event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.input
                     .handle_mouse_motion(position.x as f32, position.y as f32);
-                if let Some(delta) = self.input.mouse.delta() {
-                    self.camera.yaw -= delta.x / 100.0;
-                    self.camera.pitch = (self.camera.pitch - delta.y / 100.0)
-                        .clamp(-80.0f32.to_radians(), 80.0f32.to_radians());
-                    let (pitch_sin, pitch_cos) = self.camera.pitch.sin_cos();
-                    let (yaw_sin, yaw_cos) = self.camera.yaw.sin_cos();
-                    self.camera.look_dir =
-                        vec3(pitch_cos * yaw_cos, pitch_sin, pitch_cos * yaw_sin).normalize();
-                }
             }
-            KeyboardInput {
+            WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
                         physical_key: PhysicalKey::Code(code),
@@ -435,7 +333,6 @@ impl State {
             }
             _ => {}
         }
-        false
     }
 
     fn update(&mut self) -> bool {
@@ -444,15 +341,16 @@ impl State {
         if self.asset_manager.check_for_updates() {
             if self.asset_manager.shader_sources.dirty {
                 self.asset_manager.shader_sources.dirty = false;
-                self.pipelines.update(
+                self.pipelines.create_or_update(
                     &mut self.render_state,
                     &self.display,
                     &self.asset_manager.shader_sources,
                 );
             }
             if self.asset_manager.sprites.maybe_rebuild() {
-                self.sprite_render_data.texture = self.render_state.load_texture(
+                self.render_state.replace_texture(
                     &self.display,
+                    self.sprite_render_data.texture,
                     TextureBuilder::labeled("sprite_atlas").from_image(
                         self.display.device(),
                         self.display.queue(),
@@ -461,10 +359,17 @@ impl State {
                 );
             }
         }
-        let flat = 0.05 * vec3(self.camera.look_dir.x, 0.0, self.camera.look_dir.z);
-        self.camera.position +=
-            -self.input.x.value() * flat.cross(Vec3::Y) - self.input.y.value() * flat;
-        self.camera.position.y += 0.05 * self.input.scale.value();
+        if let Some(delta) = self.input.mouse.delta() {
+            self.camera.update_angle(delta.x / 100.0, delta.y / 100.0);
+        }
+        self.camera.update_position(
+            0.03 * vec3(
+                self.input.x.value(),
+                self.input.scale.value(),
+                self.input.y.value(),
+            )
+            .normalize_or_zero(),
+        );
         if self.input.quit.is_down() {
             return false;
         }
@@ -475,28 +380,15 @@ impl State {
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        let device = self.display.device();
-        let queue = self.display.queue();
-
         self.render_state.default_uniforms.update(
-            queue,
+            self.display.queue(),
             DefaultUniforms {
                 view: self.camera.view_matrix(),
-                projection: Mat4::perspective_lh(
-                    self.camera.fov_radians,
-                    960.0 / 720.0,
-                    0.01,
-                    100.0,
-                ), // TODO add near/far/aspect to camera
+                projection: self.camera.perspective_matrix(),
                 time: self.frame_timing.time(),
             },
         );
-        let mut encoder =
-            self.display
-                .device()
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Render Encoder"),
-                });
+        let mut encoder = self.display.command_encoder();
         {
             let mut render_pass = self.render_state.begin_render_pass(
                 &mut encoder,
@@ -509,12 +401,11 @@ impl State {
                     depth_stencil_attachment: self
                         .offscreen_framebuffer
                         .depth_stencil_attachment(wgpu::LoadOp::Clear(1.0), None),
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
+                    ..Default::default()
                 },
             );
             let mut instance_encoder =
-                render_pass.instance_encoder(&self.display, &self.instance_buffer);
+                render_pass.instance_encoder(self.display.queue(), &self.instance_buffer);
             for instance in &self.instances {
                 instance_encoder.draw_instance(instance);
             }
@@ -522,7 +413,7 @@ impl State {
                 .font_face_renderer(&self.asset_manager.font_atlas, self.font_render_data);
             text_renderer.draw_text(
                 "howdy there",
-                Transform {
+                Transform3D {
                     position: vec3(1.5, 2.0, 1.0),
                     scale: vec3(0.05, -0.05, 1.0),
                     rotation: Quat::from_rotation_z(-15.0f32.to_radians())
@@ -534,70 +425,18 @@ impl State {
                 },
             );
         }
-        queue.submit(iter::once(encoder.finish()));
+        self.display.queue().submit([encoder.finish()]);
 
         let display_view = self.display.view()?;
-        let target_size = display_view.size_pixels().as_vec2();
-        // TODO: this whole thing should be cached based on the source/target size
-        self.render_state.default_uniforms.update(
-            queue,
-            DefaultUniforms {
-                view: DisplayMode::Centered.scaling_matrix(
-                    self.offscreen_framebuffer.size_pixels().as_vec2(),
-                    target_size,
-                ),
-                projection: Mat4::orthographic_lh(
-                    0.0,
-                    target_size.x,
-                    target_size.y,
-                    0.0,
-                    1.0,
-                    -1.0,
-                ),
-                time: self.frame_timing.time(),
-            },
-        );
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Render Encoder"),
-        });
-        {
-            let mut render_pass = self.render_state.begin_render_pass(
-                &mut encoder,
-                &wgpu::RenderPassDescriptor {
-                    label: Some("Offscreen Framebuffer to Screen"),
-                    color_attachments: &[Some(
-                        display_view.color_attachment(wgpu::LoadOp::Clear(wgpu::Color::RED)),
-                    )],
-                    depth_stencil_attachment: display_view
-                        .depth_stencil_attachment(wgpu::LoadOp::Clear(1.0), None),
-                    ..Default::default()
-                },
-            );
-            render_pass.set_active_pipeline(self.pipelines.to_screen);
-            render_pass.bind_texture_data(&self.offscreen_framebuffer.color);
-            render_pass.set_active_mesh(self.quad_mesh);
-            render_pass.draw_active_mesh(0..1);
-        }
-        queue.submit(iter::once(encoder.finish()));
+        self.render_state
+            .render_to_screen(&display_view, &self.offscreen_framebuffer);
 
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Render Encoder"),
-        });
-        self.render_state.default_uniforms.update(
-            queue,
-            DefaultUniforms {
-                projection: Mat4::orthographic_lh(
-                    0.0,
-                    target_size.x,
-                    target_size.y,
-                    0.0,
-                    1.0,
-                    -1.0,
-                ),
-                time: self.frame_timing.time(),
-                ..Default::default()
-            },
-        );
+        // we only need to clear the view matrix here because we are already in an
+        // orthographic projection from rendering to the screen
+        self.render_state
+            .default_uniforms
+            .update_with(self.display.queue(), |u| u.view = Mat4::IDENTITY);
+        let mut encoder = self.display.command_encoder();
         {
             let mut render_pass = self.render_state.begin_render_pass(
                 &mut encoder,
@@ -610,20 +449,7 @@ impl State {
                 },
             );
             let mut instance_encoder =
-                render_pass.instance_encoder(&self.display, &self.instance_buffer);
-            {
-                let mut sprite_renderer = instance_encoder
-                    .sprite_renderer(&self.asset_manager.sprites, self.sprite_render_data);
-                sprite_renderer.draw_sprite(
-                    self.asset_manager.sprites.get_sprite_ref("guy").unwrap(),
-                    0,
-                    Transform {
-                        position: self.input.mouse.position().extend(0.0),
-                        scale: vec3(4.0, 4.0, 1.0),
-                        rotation: Quat::from_rotation_z(45.0f32.to_radians()),
-                    },
-                )
-            }
+                render_pass.instance_encoder(self.display.queue(), &self.instance_buffer);
             {
                 let mut text_renderer = instance_encoder
                     .font_face_renderer(&self.asset_manager.font_atlas, self.font_render_data);
@@ -649,7 +475,7 @@ impl State {
                 text_renderer.draw_text_2d(text, vec2(12.0, 36.0), TextDisplayOptions::default());
             }
         }
-        queue.submit(iter::once(encoder.finish()));
+        self.display.queue().submit([encoder.finish()]);
 
         display_view.present();
 
@@ -672,36 +498,35 @@ pub async fn run() {
                 ref event,
                 window_id,
             } if window_id == state.window().id() => {
-                if !state.input(event) {
-                    match event {
-                        WindowEvent::CloseRequested => elwt.exit(),
-                        WindowEvent::Resized(physical_size) => {
-                            state.display.resize(*physical_size);
-                            state.window().request_redraw();
-                        }
-                        // WindowEvent::ScaleFactorChanged { scale_factor, .. } => {}
-                        WindowEvent::RedrawRequested => {
-                            if !state.update() {
-                                elwt.exit();
-                                return;
-                            }
-                            match state.render() {
-                                Ok(_) => {}
-                                // Reconfigure the surface if it's lost or outdated
-                                Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                                    state.display.reconfigure();
-                                }
-                                // The system is out of memory, we should probably quit
-                                Err(wgpu::SurfaceError::OutOfMemory) => {
-                                    log::error!("Out of memory?!");
-                                    elwt.exit();
-                                }
-                                Err(wgpu::SurfaceError::Timeout) => log::warn!("Surface timeout"),
-                            }
-                            state.window().request_redraw();
-                        }
-                        _ => {}
+                state.input(event);
+                match event {
+                    WindowEvent::CloseRequested => elwt.exit(),
+                    WindowEvent::Resized(physical_size) => {
+                        state.display.resize(*physical_size);
+                        state.window().request_redraw();
                     }
+                    // WindowEvent::ScaleFactorChanged { scale_factor, .. } => {}
+                    WindowEvent::RedrawRequested => {
+                        if !state.update() {
+                            elwt.exit();
+                            return;
+                        }
+                        match state.render() {
+                            Ok(_) => {}
+                            // Reconfigure the surface if it's lost or outdated
+                            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                                state.display.reconfigure();
+                            }
+                            // The system is out of memory, we should probably quit
+                            Err(wgpu::SurfaceError::OutOfMemory) => {
+                                log::error!("Out of memory?!");
+                                elwt.exit();
+                            }
+                            Err(wgpu::SurfaceError::Timeout) => log::warn!("Surface timeout"),
+                        }
+                        state.window().request_redraw();
+                    }
+                    _ => {}
                 }
             }
             _ => {}

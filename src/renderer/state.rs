@@ -2,15 +2,16 @@ use std::ops::{Deref, DerefMut, Range};
 
 use glam::{vec3, Mat4, Vec3};
 use slotmap::SlotMap;
-use wgpu::{BufferDescriptor, BufferUsages};
+use wgpu::{include_wgsl, BufferDescriptor, BufferUsages};
 
 use super::{
     instance::InstanceEncoder,
-    mesh::Mesh,
+    mesh::{LoadMesh, Mesh},
     texture::{Texture, TextureBuilder},
-    UniformData, DEFAULT_TEXTURE_DATA,
+    DisplayMode, DisplayView, OffscreenFramebuffer, RenderTarget, UniformData, VertexLayout,
+    DEFAULT_TEXTURE_DATA,
 };
-use crate::geom::Point;
+use crate::geom::{ModelVertexData, Point};
 
 use super::{display::Display, BindGroup, MeshRef, PipelineRef, TextureRef, UniformBuffer};
 
@@ -54,6 +55,8 @@ pub struct RenderState {
 
     texture_manager: SlotMap<TextureRef, BoundTexture>,
     default_texture: BoundTexture,
+    quad_mesh: MeshRef,
+    default_pipeline_ref: PipelineRef,
 
     mesh_manager: SlotMap<MeshRef, Mesh>,
     pipelines: SlotMap<PipelineRef, wgpu::RenderPipeline>,
@@ -120,9 +123,13 @@ impl RenderState {
                     Point::new(2, 2),
                 ),
         );
-        let mesh_manager = SlotMap::with_key();
+        let mut mesh_manager = SlotMap::with_key();
         let pipelines = SlotMap::with_key();
-        Self {
+
+        let quad_mesh = mesh_manager.insert(display.device().load_quad_mesh());
+        let default_pipeline_ref = PipelineRef::default();
+
+        let mut render_state = Self {
             default_uniforms,
             texture_bind_group_layout,
             uniform_bind_group_layout,
@@ -130,7 +137,19 @@ impl RenderState {
             default_texture,
             mesh_manager,
             pipelines,
-        }
+            quad_mesh,
+            default_pipeline_ref,
+        };
+        render_state.default_pipeline_ref = render_state.create_pipeline(
+            "default",
+            display,
+            &display
+                .device()
+                .create_shader_module(include_wgsl!("../../res/shaders/default.wgsl")),
+            &[ModelVertexData::vertex_layout()],
+        );
+
+        render_state
     }
 
     pub fn create_pipeline<'a>(
@@ -154,7 +173,7 @@ impl RenderState {
         self.create_pipeline_with_key(name, display, shader, vertex_layouts, Some(key))
     }
 
-    fn create_pipeline_with_key<'a>(
+    pub fn create_pipeline_with_key<'a>(
         &mut self,
         name: &str,
         display: &Display,
@@ -272,6 +291,10 @@ impl RenderState {
         }
     }
 
+    pub fn quad_mesh(&self) -> MeshRef {
+        self.quad_mesh
+    }
+
     pub fn load_texture(&mut self, display: &Display, t: Texture) -> TextureRef {
         self.texture_manager.insert(BoundTexture::new(
             display.device(),
@@ -298,6 +321,38 @@ impl RenderState {
 
     pub fn texture_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
         &self.texture_bind_group_layout
+    }
+
+    pub fn render_to_screen(&mut self, display_view: &DisplayView, src: &OffscreenFramebuffer) {
+        let target_size = display_view.size_pixels().as_vec2();
+        // TODO: this whole thing should be cached based on the source/target size
+        let projection = Mat4::orthographic_lh(0.0, target_size.x, target_size.y, 0.0, 1.0, -1.0);
+        self.default_uniforms
+            .update_with(display_view.queue(), |u| {
+                u.view =
+                    DisplayMode::Centered.scaling_matrix(src.size_pixels().as_vec2(), target_size);
+                u.projection = projection;
+            });
+        let mut encoder = display_view.command_encoder();
+        {
+            let mut render_pass = self.begin_render_pass(
+                &mut encoder,
+                &wgpu::RenderPassDescriptor {
+                    label: Some("Offscreen Framebuffer to Screen"),
+                    color_attachments: &[Some(
+                        display_view.color_attachment(wgpu::LoadOp::Clear(wgpu::Color::RED)),
+                    )],
+                    depth_stencil_attachment: display_view
+                        .depth_stencil_attachment(wgpu::LoadOp::Clear(1.0), None),
+                    ..Default::default()
+                },
+            );
+            render_pass.set_active_pipeline(self.default_pipeline_ref);
+            render_pass.bind_texture_data(&src.color);
+            render_pass.set_active_mesh(self.quad_mesh);
+            render_pass.draw_active_mesh(0..1);
+        }
+        display_view.queue().submit([encoder.finish()]);
     }
 }
 
@@ -367,10 +422,10 @@ impl<'a> RenderPass<'a> {
 
     pub fn instance_encoder<'enc>(
         &'enc mut self,
-        display: &'a Display,
+        queue: &'a wgpu::Queue,
         buffer: &'a wgpu::Buffer,
     ) -> InstanceEncoder<'enc, 'a> {
-        InstanceEncoder::new(display, self, buffer)
+        InstanceEncoder::new(queue, self, buffer)
     }
 }
 

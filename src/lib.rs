@@ -1,5 +1,6 @@
 pub mod assets;
 pub mod atlas;
+pub mod camera;
 pub mod color;
 pub mod font;
 pub mod geom;

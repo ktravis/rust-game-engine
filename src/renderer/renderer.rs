@@ -17,7 +17,10 @@ pub struct RenderData {
 }
 
 impl RenderData {
-    pub fn for_model_instance(self, model: ModelInstanceData) -> InstanceRenderData {
+    pub fn for_model_instance<T: Transform>(
+        self,
+        model: ModelInstanceData<T>,
+    ) -> InstanceRenderData<T> {
         InstanceRenderData {
             texture: Some(self.texture),
             pipeline: self.pipeline,
@@ -46,10 +49,10 @@ impl VertexLayout for () {
 impl InstanceData for () {}
 
 #[derive(Debug, Clone, Copy)]
-pub struct ModelInstanceData {
+pub struct ModelInstanceData<T = Transform3D> {
     pub subtexture: Rect,
     pub tint: Color,
-    pub transform: Transform,
+    pub transform: T,
 }
 
 impl ModelInstanceData {
@@ -66,10 +69,12 @@ impl ModelInstanceData {
         7 => Float32x4,
         8 => Float32x4,
     ];
+}
 
+impl<T: Transform> ModelInstanceData<T> {
     #[inline]
     pub fn as_raw(&self) -> RawInstanceData {
-        let model = self.transform.as_matrix().to_cols_array_2d();
+        let model = self.transform.as_mat4().to_cols_array_2d();
         RawInstanceData {
             uv_scale: self.subtexture.dim.into(),
             uv_offset: self.subtexture.pos.into(),
@@ -98,13 +103,13 @@ pub struct RawInstanceData {
     model: [[f32; 4]; 4],
 }
 
-impl From<ModelInstanceData> for RawInstanceData {
-    fn from(other: ModelInstanceData) -> Self {
+impl<T: Transform> From<ModelInstanceData<T>> for RawInstanceData {
+    fn from(other: ModelInstanceData<T>) -> Self {
         other.as_raw()
     }
 }
 
-impl Default for ModelInstanceData {
+impl<T: Default> Default for ModelInstanceData<T> {
     fn default() -> Self {
         Self {
             transform: Default::default(),

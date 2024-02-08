@@ -22,6 +22,7 @@ impl<S> AssetManager<S> {
         notify::event::AccessMode::Write,
     ));
     const CREATE_EVENT: EventKind = EventKind::Create(notify::event::CreateKind::File);
+
     pub fn new(state: S, base_path: impl Into<PathBuf>) -> Self {
         let base_path: PathBuf = base_path.into();
 

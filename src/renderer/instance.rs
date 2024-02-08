@@ -1,21 +1,22 @@
 use std::ops::{Deref, DerefMut};
 
-use super::display::Display;
+use crate::transform::Transform;
+
 use super::state::RenderPass;
 use super::{MeshRef, PipelineRef, TextureRef};
 
 use super::ModelInstanceData;
 
 #[derive(Debug)]
-pub struct InstanceRenderData {
+pub struct InstanceRenderData<T> {
     pub texture: Option<TextureRef>,
     pub pipeline: PipelineRef,
     pub mesh: MeshRef,
-    pub model: ModelInstanceData,
+    pub model: ModelInstanceData<T>,
 }
 
-impl Deref for InstanceRenderData {
-    type Target = ModelInstanceData;
+impl<T> Deref for InstanceRenderData<T> {
+    type Target = ModelInstanceData<T>;
 
     fn deref(&self) -> &Self::Target {
         &self.model
@@ -23,7 +24,7 @@ impl Deref for InstanceRenderData {
 }
 
 pub trait DrawInstance {
-    fn draw_instance(&mut self, instance: &InstanceRenderData);
+    fn draw_instance<T: Transform>(&mut self, instance: &InstanceRenderData<T>);
 }
 
 // 'enc: lifetime of the encoder itself (and the mutable reference it holds to a RenderPass)
@@ -56,14 +57,13 @@ impl<'pass> DerefMut for InstanceEncoder<'_, 'pass> {
 
 impl<'enc, 'pass: 'enc> InstanceEncoder<'enc, 'pass> {
     pub fn new(
-        display: &'pass Display,
+        queue: &'pass wgpu::Queue,
         render_pass: &'enc mut RenderPass<'pass>,
         instance_buffer: &'pass wgpu::Buffer,
     ) -> Self {
         render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
 
-        let buffer_view = display
-            .queue()
+        let buffer_view = queue
             .write_buffer_with(
                 instance_buffer,
                 0,
@@ -84,7 +84,7 @@ impl<'enc, 'pass: 'enc> InstanceEncoder<'enc, 'pass> {
 }
 
 impl<'enc, 'pass: 'enc> DrawInstance for InstanceEncoder<'enc, 'pass> {
-    fn draw_instance(&mut self, instance: &InstanceRenderData) {
+    fn draw_instance<T: Transform>(&mut self, instance: &InstanceRenderData<T>) {
         // TODO: handling out of buffer space
         let dst = &mut bytemuck::cast_slice_mut(&mut self.buffer_view)
             [(self.start_index + self.count) as usize];
