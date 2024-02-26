@@ -1,6 +1,6 @@
 use crate::geom::Point;
 use crate::renderer::Bindable;
-use image::{EncodableLayout, RgbaImage};
+use image::{DynamicImage, EncodableLayout, RgbaImage};
 
 slotmap::new_key_type! {
     pub struct TextureRef;
@@ -127,7 +127,8 @@ impl<'a> TextureBuilder<'a> {
         let usage = self.usage.unwrap_or(
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         );
-        if format.has_depth_aspect() {
+        let is_depth = format.has_depth_aspect();
+        if is_depth {
             if !usage.contains(wgpu::TextureUsages::RENDER_ATTACHMENT) {
                 panic!("Creating a depth texture without render attachment usage, is that really your intention?");
             }
@@ -180,6 +181,7 @@ impl<'a> TextureBuilder<'a> {
             texture,
             view,
             sampler,
+            is_depth,
         }
     }
 }
@@ -189,6 +191,7 @@ pub struct Texture {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
     pub sampler: wgpu::Sampler,
+    is_depth: bool,
 }
 
 impl Texture {
@@ -197,6 +200,10 @@ impl Texture {
     pub fn size_pixels(&self) -> Point<u32> {
         let fb_size = self.texture.size();
         Point::new(fb_size.width as _, fb_size.height as _)
+    }
+
+    pub fn is_depth(&self) -> bool {
+        self.is_depth
     }
 }
 

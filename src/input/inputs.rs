@@ -85,6 +85,13 @@ impl From<winit::event::ElementState> for StateChange {
     }
 }
 
+#[derive(Debug, Display, Copy, Clone, PartialEq)]
+pub enum InputState {
+    Axis(f32),
+    Button(bool),
+    Toggle(bool),
+}
+
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum InputChange {
     Digital {

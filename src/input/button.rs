@@ -2,7 +2,7 @@ use std::ops::{Deref, DerefMut};
 
 use log::error;
 
-use super::{AnyInput, DigitalInput, InputChange, StateChange};
+use super::{AnyInput, DigitalInput, InputChange, InputState, StateChange};
 
 #[derive(Debug, Default, Copy, Clone)]
 pub struct ButtonState {
@@ -61,6 +61,10 @@ impl Button {
         self.state.is_down
     }
 
+    pub fn state(&self) -> InputState {
+        InputState::Button(self.is_down())
+    }
+
     pub fn just_pressed(&self) -> bool {
         self.state.just_pressed
     }
@@ -79,7 +83,11 @@ impl Button {
             self.state.clear();
             return;
         };
-        let InputChange::Digital { input, state_change } = input_change else {
+        let InputChange::Digital {
+            input,
+            state_change,
+        } = input_change
+        else {
             error!("Button discarding non-digital input: {:?}", input_change);
             return;
         };
@@ -158,5 +166,9 @@ impl Toggle {
     pub fn update(&mut self, input_change: Option<InputChange>) {
         self.button.update(input_change);
         self.on = self.on ^ self.button.just_pressed;
+    }
+
+    pub fn state(&self) -> InputState {
+        InputState::Toggle(self.on)
     }
 }

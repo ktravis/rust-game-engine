@@ -162,13 +162,6 @@ impl Default for Rect {
 pub mod quad {
     use super::*;
 
-    // #[rustfmt::skip]
-    // pub const VERTICES: &[VertexData] = &verts(0.0, 0.0, 1.0, 1.0, (0.0, 0.0), (1.0, 1.0));
-    // 0.0, 0.0, 0.0, 1.0,   0.0, 0.0,
-    // 1.0, 0.0, 0.0, 1.0,   1.0, 0.0,
-    // 1.0,  1.0, 0.0, 1.0,   1.0, 1.0,
-    // 0.0,  1.0, 0.0, 1.0,   0.0, 1.0,
-
     #[inline]
     pub fn verts(
         x: f32,

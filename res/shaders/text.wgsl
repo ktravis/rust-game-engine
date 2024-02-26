@@ -1,13 +1,19 @@
 // Vertex shader
 
-struct Uniforms {
-    view: mat4x4<f32>,
-    projection: mat4x4<f32>,
+struct GlobalUniforms {
     time: f32,
 }
 
 @group(1) @binding(0)
-var<uniform> uniforms: Uniforms;
+var<uniform> global_uniforms: GlobalUniforms;
+
+struct ViewProjectionUniforms {
+    view: mat4x4<f32>,
+    projection: mat4x4<f32>,
+}
+
+@group(2) @binding(0)
+var<uniform> view_proj_uniforms: ViewProjectionUniforms;
 
 struct VertexInput {
     @location(0) position: vec4<f32>,
@@ -45,8 +51,8 @@ fn vs_main(
     var out: VertexOutput;
     out.tex_coords = instance.uv_offset + instance.uv_scale * vertex.tex_coords;
     let model = model_transform * vertex.position;
-    let model_view = uniforms.view * model;
-    out.clip_position = uniforms.projection * model_view;
+    let model_view = view_proj_uniforms.view * model;
+    out.clip_position = view_proj_uniforms.projection * model_view;
     out.screen_pos = model_view.xy;
     out.tint_color = instance.tint;
     return out;
@@ -69,5 +75,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let sd = median(msd.r, msd.g, msd.b);
     let w = fwidth(sd) * 0.5;
     let opacity = smoothstep(0.5 - w, 0.5 + w, sd);
+    // if (opacity == 0.0) {
+    //     discard;
+    // }
     return vec4(in.tint_color.x, in.tint_color.y, in.tint_color.z, opacity * in.tint_color.w);
 }

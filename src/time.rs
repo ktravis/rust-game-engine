@@ -42,7 +42,7 @@ impl FrameTiming {
         self.frame_counter += 1;
         self.delta = self.tick_timer.tick();
         self.frame_timer += self.delta;
-        if self.frame_counter >= 50 {
+        if self.frame_timer.as_secs_f32() > 0.5 {
             self.sampled_fps = self.frame_counter as f32 / self.frame_timer.as_secs_f32();
             self.frame_counter = 0;
             self.frame_timer = Duration::ZERO;
@@ -55,5 +55,9 @@ impl FrameTiming {
 
     pub fn time(&self) -> f32 {
         self.tick_timer.total_elapsed().as_secs_f32()
+    }
+
+    pub fn delta(&self) -> Duration {
+        self.delta
     }
 }

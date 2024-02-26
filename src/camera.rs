@@ -26,6 +26,9 @@ impl Camera {
         Self {
             position,
             aspect_ratio,
+            pitch: -12.0f32.to_radians(),
+            yaw: 90.0f32.to_radians(),
+            look_dir: Vec3::Z,
             ..Default::default()
         }
     }

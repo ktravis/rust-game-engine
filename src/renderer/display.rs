@@ -1,22 +1,25 @@
 use std::ops::Deref;
 
-use super::texture::{Texture, TextureBuilder};
+use super::{
+    texture::{Texture, TextureBuilder},
+    RenderState,
+};
 use crate::{geom::Point, renderer::RenderTarget};
 
 use glam::{vec3, Mat4, Quat, Vec2};
 use winit::{dpi::PhysicalSize, window::Window};
 
 #[derive(Debug, Clone, Copy)]
-pub enum DisplayMode {
+pub enum ScalingMode {
     Stretch,
     Centered,
 }
 
-impl DisplayMode {
-    pub fn scaling_matrix(self, actual: Vec2, target: Vec2) -> Mat4 {
+impl ScalingMode {
+    pub fn view_matrix(self, actual: Vec2, target: Vec2) -> Mat4 {
         match self {
-            DisplayMode::Stretch => Mat4::from_scale(target.extend(1.0)),
-            DisplayMode::Centered => {
+            ScalingMode::Stretch => Mat4::from_scale(target.extend(1.0)),
+            ScalingMode::Centered => {
                 let scale = (target.x / actual.x).min(target.y / actual.y);
 
                 let scaled_target_size = scale * actual;
@@ -63,7 +66,7 @@ impl Display {
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::default(),
+                power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
             })
@@ -204,7 +207,7 @@ impl Display {
 pub struct DisplayView<'a> {
     display: &'a Display,
     output_texture: wgpu::SurfaceTexture,
-    view: wgpu::TextureView,
+    pub(super) view: wgpu::TextureView,
 }
 
 impl DisplayView<'_> {
@@ -221,31 +224,36 @@ impl<'a> Deref for DisplayView<'a> {
     }
 }
 
-impl<'a> RenderTarget for DisplayView<'a> {
-    fn size_pixels(&self) -> Point<u32> {
-        self.display.size_pixels()
-    }
-
-    fn color_attachment(
-        &self,
-        load_op: wgpu::LoadOp<wgpu::Color>,
-    ) -> wgpu::RenderPassColorAttachment {
-        wgpu::RenderPassColorAttachment {
-            view: &self.view,
-            resolve_target: None,
-            ops: wgpu::Operations {
-                load: load_op,
-                store: wgpu::StoreOp::Store,
-            },
-        }
-    }
-
-    fn depth_stencil_attachment(
-        &self,
-        depth_load_op: wgpu::LoadOp<f32>,
-        stencil_ops: impl Into<Option<wgpu::Operations<u32>>>,
-    ) -> Option<wgpu::RenderPassDepthStencilAttachment> {
-        self.display
-            .depth_stencil_attachment(depth_load_op, stencil_ops)
-    }
-}
+// impl<'a> RenderTarget for DisplayView<'a> {
+//     fn size_pixels(&self) -> Point<u32> {
+//         self.display.size_pixels()
+//     }
+//
+//     fn color_attachment<'state>(
+//         &'a self,
+//         _state: &'state RenderState,
+//         load_op: wgpu::LoadOp<wgpu::Color>,
+//     ) -> wgpu::RenderPassColorAttachment<'state>
+//     where
+//         'a: 'state,
+//     {
+//         wgpu::RenderPassColorAttachment {
+//             view: &self.view,
+//             resolve_target: None,
+//             ops: wgpu::Operations {
+//                 load: load_op,
+//                 store: wgpu::StoreOp::Store,
+//             },
+//         }
+//     }
+//
+//     fn depth_stencil_attachment<'state>(
+//         &self,
+//         _state: &'state RenderState,
+//         depth_load_op: wgpu::LoadOp<f32>,
+//         stencil_ops: impl Into<Option<wgpu::Operations<u32>>>,
+//     ) -> Option<wgpu::RenderPassDepthStencilAttachment<'state>> {
+//         self.display
+//             .depth_stencil_attachment(depth_load_op, stencil_ops)
+//     }
+// }

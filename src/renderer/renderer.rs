@@ -1,9 +1,8 @@
 use super::instance::InstanceRenderData;
-use super::texture::{Texture, TextureBuilder};
-use super::{MeshRef, PipelineRef, TextureRef};
+use super::texture::Texture;
+use super::{display, DisplayView, MeshRef, PipelineRef, RenderState, TextureRef};
 use crate::{color::*, geom::*, transform::*};
 use glam::Mat4;
-use std::borrow::Borrow;
 use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, DerefMut};
 use wgpu::util::DeviceExt;
@@ -73,11 +72,20 @@ impl ModelInstanceData {
 
 impl<T: Transform> ModelInstanceData<T> {
     #[inline]
+    pub fn transform(transform: T) -> Self {
+        Self {
+            transform,
+            subtexture: Rect::default(),
+            tint: Color::WHITE,
+        }
+    }
+
+    #[inline]
     pub fn as_raw(&self) -> RawInstanceData {
-        let model = self.transform.as_mat4().to_cols_array_2d();
+        let model = self.transform.as_mat4(); //.to_cols_array_2d();
         RawInstanceData {
-            uv_scale: self.subtexture.dim.into(),
-            uv_offset: self.subtexture.pos.into(),
+            uv_scale: [self.subtexture.dim.x, self.subtexture.dim.y],
+            uv_offset: [self.subtexture.pos.x, self.subtexture.pos.y],
             tint: [self.tint.r, self.tint.g, self.tint.b, self.tint.a],
             model,
         }
@@ -100,7 +108,7 @@ pub struct RawInstanceData {
     uv_scale: [f32; 2],
     uv_offset: [f32; 2],
     tint: [f32; 4],
-    model: [[f32; 4]; 4],
+    model: Mat4,
 }
 
 impl<T: Transform> From<ModelInstanceData<T>> for RawInstanceData {
@@ -125,25 +133,64 @@ impl Default for RawInstanceData {
             uv_scale: Default::default(),
             uv_offset: Default::default(),
             tint: [1.0, 1.0, 1.0, 1.0],
-            model: Mat4::IDENTITY.to_cols_array_2d(),
+            model: Mat4::IDENTITY,
         }
     }
 }
 
-pub trait RenderTarget {
-    fn size_pixels(&self) -> Point<u32>;
+#[derive(Copy, Clone)]
+pub enum RenderTarget<'a> {
+    Offscreen(&'a OffscreenFramebuffer),
+    Display(&'a DisplayView<'a>),
+}
 
-    fn color_attachment(
-        &self,
+impl<'a> RenderTarget<'a> {
+    pub fn size_pixels(self) -> Point<u32> {
+        match self {
+            RenderTarget::Offscreen(fb) => fb.size,
+            RenderTarget::Display(display_view) => display_view.size_pixels(),
+        }
+    }
+
+    pub fn color_attachment(
+        self,
+        state: &'a RenderState,
         load_op: wgpu::LoadOp<wgpu::Color>,
-    ) -> wgpu::RenderPassColorAttachment;
+    ) -> wgpu::RenderPassColorAttachment {
+        let view = match self {
+            RenderTarget::Offscreen(fb) => &state.get_texture(fb.color).view,
+            RenderTarget::Display(display_view) => &display_view.view,
+        };
+        wgpu::RenderPassColorAttachment {
+            view,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: load_op,
+                store: wgpu::StoreOp::Store,
+            },
+        }
+    }
 
-    fn depth_stencil_attachment(
-        &self,
-        _depth_load_op: wgpu::LoadOp<f32>,
-        _stencil_ops: impl Into<Option<wgpu::Operations<u32>>>,
+    pub fn depth_stencil_attachment(
+        self,
+        state: &'a RenderState,
+        depth_load_op: wgpu::LoadOp<f32>,
+        stencil_ops: impl Into<Option<wgpu::Operations<u32>>>,
     ) -> Option<wgpu::RenderPassDepthStencilAttachment> {
-        None
+        let depth = match self {
+            RenderTarget::Offscreen(fb) => fb.depth,
+            RenderTarget::Display(display_view) => {
+                return display_view.depth_stencil_attachment(depth_load_op, stencil_ops);
+            }
+        };
+        depth.map(|tex| wgpu::RenderPassDepthStencilAttachment {
+            view: &state.get_texture(tex).view,
+            depth_ops: Some(wgpu::Operations {
+                load: depth_load_op,
+                store: wgpu::StoreOp::Store,
+            }),
+            stencil_ops: stencil_ops.into(),
+        })
     }
 }
 
@@ -157,69 +204,48 @@ pub const DEFAULT_TEXTURE_DATA: [u8; 16] = [
 
 #[derive(Debug)]
 pub struct OffscreenFramebuffer {
-    pub color: BindGroup<Texture>,
-    pub depth: Option<Texture>,
+    pub color: TextureRef,
+    pub depth: Option<TextureRef>,
+    pub(super) size: Point<u32>,
 }
 
-impl OffscreenFramebuffer {
-    pub fn new(
-        device: &wgpu::Device,
-        bind_group_layout: &wgpu::BindGroupLayout,
-        size: Point<u32>,
-    ) -> Self {
-        let color = TextureBuilder::render_target()
-            .with_label("offscreen_color_target")
-            .build(device, size);
-        let depth = TextureBuilder::depth()
-            .with_label("offscreen_depth_target")
-            .build(device, size);
-        Self {
-            color: BindGroup::new(device, bind_group_layout, color),
-            depth: Some(depth),
-        }
-    }
-}
-
-impl<T> RenderTarget for T
-where
-    T: Borrow<OffscreenFramebuffer>,
-{
-    fn size_pixels(&self) -> Point<u32> {
-        self.borrow().color.size_pixels()
-    }
-
-    fn color_attachment(
-        &self,
-        load_op: wgpu::LoadOp<wgpu::Color>,
-    ) -> wgpu::RenderPassColorAttachment {
-        wgpu::RenderPassColorAttachment {
-            view: &self.borrow().color.view,
-            resolve_target: None,
-            ops: wgpu::Operations {
-                load: load_op,
-                store: wgpu::StoreOp::Store,
-            },
-        }
-    }
-
-    fn depth_stencil_attachment(
-        &self,
-        depth_load_op: wgpu::LoadOp<f32>,
-        stencil_ops: impl Into<Option<wgpu::Operations<u32>>>,
-    ) -> Option<wgpu::RenderPassDepthStencilAttachment> {
-        self.borrow()
-            .depth
-            .as_ref()
-            .map(|tex| wgpu::RenderPassDepthStencilAttachment {
-                view: &tex.view,
-                depth_ops: Some(wgpu::Operations {
-                    load: depth_load_op,
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: stencil_ops.into(),
-            })
-    }
-}
+// impl RenderTarget for OffscreenFramebuffer {
+//     fn size_pixels(&self) -> Point<u32> {
+//         self.size
+//     }
+//
+//     fn color_attachment<'state>(
+//         &self,
+//         state: &'state RenderState,
+//         load_op: wgpu::LoadOp<wgpu::Color>,
+//     ) -> wgpu::RenderPassColorAttachment<'state> {
+//         wgpu::RenderPassColorAttachment {
+//             view: &state.get_texture(self.color).view,
+//             resolve_target: None,
+//             ops: wgpu::Operations {
+//                 load: load_op,
+//                 store: wgpu::StoreOp::Store,
+//             },
+//         }
+//     }
+//
+//     fn depth_stencil_attachment<'state>(
+//         &self,
+//         state: &'state RenderState,
+//         depth_load_op: wgpu::LoadOp<f32>,
+//         stencil_ops: impl Into<Option<wgpu::Operations<u32>>>,
+//     ) -> Option<wgpu::RenderPassDepthStencilAttachment<'state>> {
+//         self.depth
+//             .map(|tex| wgpu::RenderPassDepthStencilAttachment {
+//                 view: &state.get_texture(tex).view,
+//                 depth_ops: Some(wgpu::Operations {
+//                     load: depth_load_op,
+//                     store: wgpu::StoreOp::Store,
+//                 }),
+//                 stencil_ops: stencil_ops.into(),
+//             })
+//     }
+// }
 
 pub trait VertexLayouts {
     fn vertex_layouts() -> Vec<VertexBufferLayout<'static>>;

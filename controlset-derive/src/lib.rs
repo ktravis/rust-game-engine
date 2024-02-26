@@ -40,7 +40,10 @@ impl std::convert::TryFrom<DeriveInput> for ControlSetData {
     fn try_from(input: DeriveInput) -> std::result::Result<Self, Self::Error> {
         let enum_ident = format_ident!("{}DeriveControls", input.ident);
         let Data::Struct(data) = input.clone().data else {
-            return Err(Error::new_spanned(input, "ControlSet can only be derived on a struct."));
+            return Err(Error::new_spanned(
+                input,
+                "ControlSet can only be derived on a struct.",
+            ));
         };
         let struct_fields = data.fields.clone();
         let enum_fields = struct_fields
@@ -162,6 +165,7 @@ impl ControlSetData {
         let field_changed_mapping = self.controls_mapping(|e, s| quote!(#e => self.#s.changed()));
         let clear_field_changed_mapping =
             self.controls_mapping(|e, s| quote!(#e => self.#s.clear_changed()));
+        let field_state_mapping = self.controls_mapping(|e, s| quote!(#e => self.#s.state()));
         let init_fields = self.init_fields()?;
 
         Ok(quote!(
@@ -195,6 +199,10 @@ impl ControlSetData {
 
                 fn clear_control_changed(&mut self, control: &Self::Control) {
                     #clear_field_changed_mapping
+                }
+
+                fn control_state(&self, control: &Self::Control) -> ::rust_game_engine::input::InputState {
+                    #field_state_mapping
                 }
             }
         ))

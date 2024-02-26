@@ -4,6 +4,7 @@ use std::ops::DerefMut;
 
 use glam::Vec2;
 
+use super::InputState;
 use super::{
     AnalogInput, AnyInput, Cursor, DigitalInput, InputChange, KeyOrMouseButton, StateChange,
 };
@@ -48,6 +49,7 @@ pub trait ControlSet {
     fn bound_inputs(&self, control: &Self::Control) -> Vec<AnyInput>;
     fn control_changed(&self, control: &Self::Control) -> bool;
     fn clear_control_changed(&mut self, control: &Self::Control);
+    fn control_state(&self, control: &Self::Control) -> InputState;
 }
 
 impl<Controls> InputManager<Controls>
