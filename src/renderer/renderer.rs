@@ -1,10 +1,10 @@
 use super::instance::InstanceRenderData;
-use super::texture::Texture;
-use super::{display, DisplayView, MeshRef, PipelineRef, RenderState, TextureRef};
+use super::{MeshRef, PipelineRef, TextureRef};
 use crate::{color::*, geom::*, transform::*};
 use glam::Mat4;
 use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use wgpu::{vertex_attr_array, VertexAttribute, VertexBufferLayout, VertexStepMode};
 
@@ -138,62 +138,6 @@ impl Default for RawInstanceData {
     }
 }
 
-#[derive(Copy, Clone)]
-pub enum RenderTarget<'a> {
-    Offscreen(&'a OffscreenFramebuffer),
-    Display(&'a DisplayView<'a>),
-}
-
-impl<'a> RenderTarget<'a> {
-    pub fn size_pixels(self) -> Point<u32> {
-        match self {
-            RenderTarget::Offscreen(fb) => fb.size,
-            RenderTarget::Display(display_view) => display_view.size_pixels(),
-        }
-    }
-
-    pub fn color_attachment(
-        self,
-        state: &'a RenderState,
-        load_op: wgpu::LoadOp<wgpu::Color>,
-    ) -> wgpu::RenderPassColorAttachment {
-        let view = match self {
-            RenderTarget::Offscreen(fb) => &state.get_texture(fb.color).view,
-            RenderTarget::Display(display_view) => &display_view.view,
-        };
-        wgpu::RenderPassColorAttachment {
-            view,
-            resolve_target: None,
-            ops: wgpu::Operations {
-                load: load_op,
-                store: wgpu::StoreOp::Store,
-            },
-        }
-    }
-
-    pub fn depth_stencil_attachment(
-        self,
-        state: &'a RenderState,
-        depth_load_op: wgpu::LoadOp<f32>,
-        stencil_ops: impl Into<Option<wgpu::Operations<u32>>>,
-    ) -> Option<wgpu::RenderPassDepthStencilAttachment> {
-        let depth = match self {
-            RenderTarget::Offscreen(fb) => fb.depth,
-            RenderTarget::Display(display_view) => {
-                return display_view.depth_stencil_attachment(depth_load_op, stencil_ops);
-            }
-        };
-        depth.map(|tex| wgpu::RenderPassDepthStencilAttachment {
-            view: &state.get_texture(tex).view,
-            depth_ops: Some(wgpu::Operations {
-                load: depth_load_op,
-                store: wgpu::StoreOp::Store,
-            }),
-            stencil_ops: stencil_ops.into(),
-        })
-    }
-}
-
 #[rustfmt::skip]
 pub const DEFAULT_TEXTURE_DATA: [u8; 16] = [
     255, 0, 255, 255,
@@ -208,44 +152,6 @@ pub struct OffscreenFramebuffer {
     pub depth: Option<TextureRef>,
     pub(super) size: Point<u32>,
 }
-
-// impl RenderTarget for OffscreenFramebuffer {
-//     fn size_pixels(&self) -> Point<u32> {
-//         self.size
-//     }
-//
-//     fn color_attachment<'state>(
-//         &self,
-//         state: &'state RenderState,
-//         load_op: wgpu::LoadOp<wgpu::Color>,
-//     ) -> wgpu::RenderPassColorAttachment<'state> {
-//         wgpu::RenderPassColorAttachment {
-//             view: &state.get_texture(self.color).view,
-//             resolve_target: None,
-//             ops: wgpu::Operations {
-//                 load: load_op,
-//                 store: wgpu::StoreOp::Store,
-//             },
-//         }
-//     }
-//
-//     fn depth_stencil_attachment<'state>(
-//         &self,
-//         state: &'state RenderState,
-//         depth_load_op: wgpu::LoadOp<f32>,
-//         stencil_ops: impl Into<Option<wgpu::Operations<u32>>>,
-//     ) -> Option<wgpu::RenderPassDepthStencilAttachment<'state>> {
-//         self.depth
-//             .map(|tex| wgpu::RenderPassDepthStencilAttachment {
-//                 view: &state.get_texture(tex).view,
-//                 depth_ops: Some(wgpu::Operations {
-//                     load: depth_load_op,
-//                     store: wgpu::StoreOp::Store,
-//                 }),
-//                 stencil_ops: stencil_ops.into(),
-//             })
-//     }
-// }
 
 pub trait VertexLayouts {
     fn vertex_layouts() -> Vec<VertexBufferLayout<'static>>;
@@ -279,7 +185,7 @@ pub trait Bindable {
 
 pub struct BindGroup<T: Bindable> {
     resource: T,
-    bind_group: wgpu::BindGroup,
+    bind_group: Arc<wgpu::BindGroup>,
 }
 
 impl<T: Bindable + Debug> Debug for BindGroup<T> {
@@ -293,14 +199,14 @@ impl<T: Bindable + Debug> Debug for BindGroup<T> {
 
 impl<T: Bindable> BindGroup<T> {
     pub fn new(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, resource: T) -> Self {
-        let bind_group = resource.bind_group(device, layout);
+        let bind_group = Arc::new(resource.bind_group(device, layout));
         Self {
             resource,
             bind_group,
         }
     }
 
-    pub fn bind_group(&self) -> &wgpu::BindGroup {
+    pub fn bind_group(&self) -> &Arc<wgpu::BindGroup> {
         &self.bind_group
     }
 }

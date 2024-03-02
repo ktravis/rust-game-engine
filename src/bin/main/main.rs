@@ -2,7 +2,6 @@ use std::borrow::Cow;
 use std::io::Read;
 
 use glam::{vec2, vec3, Mat4, Quat, Vec3};
-use recycle_vec::VecExt;
 use slotmap::Key as SlotmapKey;
 use ttf_parser::Face;
 use winit::dpi::{PhysicalPosition, PhysicalSize, Size};
@@ -19,17 +18,14 @@ use rust_game_engine::geom::{ModelVertexData, Point};
 use rust_game_engine::input::{
     AnalogInput, Axis, Button, ControlSet, InputManager, Key, MouseButton, Toggle,
 };
-use rust_game_engine::renderer::instance::{
-    InstanceRenderData, InstanceRenderer, InstanceStorage, InstancedDrawOp,
-};
+use rust_game_engine::renderer::instance::InstanceRenderData;
 use rust_game_engine::renderer::mesh::LoadMesh;
 use rust_game_engine::renderer::state::{GlobalUniforms, ViewProjectionUniforms};
 use rust_game_engine::renderer::text::TextDisplayOptions;
 use rust_game_engine::renderer::{
-    BindGroup, Display, OffscreenFramebuffer, PipelineRef, RawInstanceData, RenderData, RenderPass,
-    RenderState, ScalingMode, UniformBuffer,
+    Display, OffscreenFramebuffer, PipelineRef, RenderData, RenderState, RenderTarget, ScalingMode,
 };
-use rust_game_engine::renderer::{ModelInstanceData, RenderTarget, VertexLayout};
+use rust_game_engine::renderer::{ModelInstanceData, VertexLayout};
 use rust_game_engine::renderer::{TextureBuilder, TextureRef};
 use rust_game_engine::sprite_manager::SpriteManager;
 use rust_game_engine::time::FrameTiming;
@@ -124,67 +120,6 @@ struct GameAssets {
     sprites: SpriteManager,
 }
 
-struct Renderer {
-    storage: InstanceStorage,
-    instance_buffer: wgpu::Buffer,
-    state: RenderState,
-    pipelines: RenderPipelines,
-}
-
-impl Renderer {
-    pub fn render_stage(
-        &mut self,
-        display: &Display,
-        name: &str,
-        render_target: RenderTarget<'_>,
-        view_projection: &wgpu::BindGroup,
-        pass: impl FnOnce(&RenderState, &mut InstanceRenderer<'_>),
-    ) {
-        let (mut ops, instances) = self.storage.temp();
-
-        ops.push(InstancedDrawOp::SetBindGroup(
-            RenderPass::VIEW_PROJECTION_UNIFORMS_BIND_GROUP_INDEX,
-            view_projection,
-        ));
-
-        let mut r = InstanceRenderer::new(ops, instances);
-        pass(&self.state, &mut r);
-        let (mut ops, raw_instances) = r.commit();
-        let req_size =
-            (raw_instances.len() * std::mem::size_of::<RawInstanceData>()) as wgpu::BufferAddress;
-        if self.instance_buffer.size() < req_size {
-            self.instance_buffer.destroy();
-            self.instance_buffer = display.device().create_buffer(&wgpu::BufferDescriptor {
-                label: None,
-                size: req_size * 2,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
-                mapped_at_creation: false,
-            });
-        }
-        display.queue().write_buffer(
-            &self.instance_buffer,
-            0,
-            bytemuck::cast_slice(&raw_instances),
-        );
-        let mut encoder = display.command_encoder();
-        {
-            let mut render_pass = self.state.begin_render_pass(
-                &mut encoder,
-                name,
-                &[Some(render_target.color_attachment(
-                    &self.state,
-                    wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                ))],
-                render_target.depth_stencil_attachment(&self.state, wgpu::LoadOp::Clear(1.0), None),
-            );
-            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-            ops.drain(..).for_each(|op| op.apply(&mut render_pass));
-        }
-        display.queue().submit([encoder.finish()]);
-        self.storage.reset(ops.recycle(), raw_instances.recycle());
-    }
-}
-
 struct AppBase<A: App> {
     app: A,
     frame_timing: FrameTiming,
@@ -238,14 +173,14 @@ struct State {
     display: Display,
     asset_manager: AssetManager<GameAssets>,
 
-    // renderer state
-    renderer: Renderer,
+    render_state: RenderState,
+    render_pipelines: RenderPipelines,
 
     // TODO: BitmapFontRenderer
     font_render_data: RenderData,
     sprite_render_data: RenderData,
-    world_view_projection: BindGroup<UniformBuffer<ViewProjectionUniforms>>,
-    ui_view_projection: BindGroup<UniformBuffer<ViewProjectionUniforms>>,
+    world_view_projection: ViewProjectionUniforms,
+    ui_view_projection: ViewProjectionUniforms,
     offscreen_fb_size_pixels: Point<u32>,
     offscreen_framebuffer: OffscreenFramebuffer,
 
@@ -337,8 +272,12 @@ impl State {
                 state.shader_sources.text = std::io::read_to_string(f).unwrap();
             });
 
-        let mut pipelines = RenderPipelines::default();
-        pipelines.create_or_update(&mut render_state, &display, &asset_manager.shader_sources);
+        let mut render_pipelines = RenderPipelines::default();
+        render_pipelines.create_or_update(
+            &mut render_state,
+            &display,
+            &asset_manager.shader_sources,
+        );
 
         let offscreen_fb_size_pixels = Point::new(480, 360);
         let offscreen_framebuffer =
@@ -349,11 +288,11 @@ impl State {
                 texture: Some(crate_texture),
                 mesh: cube_mesh,
                 model: ModelInstanceData::default(),
-                pipeline: pipelines.instanced,
+                pipeline: render_pipelines.instanced,
             },
             InstanceRenderData {
                 texture: Some(cat_texture),
-                mesh: render_state.quad_mesh,
+                mesh: render_state.quad_mesh(),
                 model: ModelInstanceData {
                     transform: Transform3D {
                         position: vec3(4.0, 1.0, 3.0),
@@ -363,31 +302,20 @@ impl State {
                     },
                     ..Default::default()
                 },
-                pipeline: pipelines.instanced,
+                pipeline: render_pipelines.instanced,
             },
         ];
 
         let font_render_data = RenderData {
-            pipeline: pipelines.text,
+            pipeline: render_pipelines.text,
             texture: font_atlas_texture,
-            mesh: render_state.quad_mesh,
+            mesh: render_state.quad_mesh(),
         };
         let sprite_render_data = RenderData {
-            pipeline: pipelines.instanced,
+            pipeline: render_pipelines.instanced,
             texture: sprite_atlas,
-            mesh: render_state.quad_mesh,
+            mesh: render_state.quad_mesh(),
         };
-
-        let world_view_projection =
-            render_state.create_view_projection_uniform(&display, Default::default());
-        let ui_view_projection =
-            render_state.create_view_projection_uniform(&display, Default::default());
-        let instance_buffer = display.device().create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: 1024 * std::mem::size_of::<RawInstanceData>() as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
-            mapped_at_creation: false,
-        });
 
         Ok(Self {
             asset_manager,
@@ -401,16 +329,12 @@ impl State {
             camera: Camera::new(vec3(0.0, 2.3, -6.0), 960.0 / 720.0),
             font_render_data,
             sprite_render_data,
-            world_view_projection,
-            ui_view_projection,
+            world_view_projection: Default::default(),
+            ui_view_projection: Default::default(),
             offscreen_fb_size_pixels,
             offscreen_framebuffer,
-            renderer: Renderer {
-                state: render_state,
-                pipelines,
-                instance_buffer,
-                storage: Default::default(),
-            },
+            render_state,
+            render_pipelines,
         })
     }
 
@@ -466,14 +390,14 @@ impl State {
         if self.asset_manager.check_for_updates() {
             if self.asset_manager.shader_sources.dirty {
                 self.asset_manager.shader_sources.dirty = false;
-                self.renderer.pipelines.create_or_update(
-                    &mut self.renderer.state,
+                self.render_pipelines.create_or_update(
+                    &mut self.render_state,
                     &self.display,
                     &self.asset_manager.shader_sources,
                 );
             }
             if self.asset_manager.sprites.maybe_rebuild() {
-                self.renderer.state.replace_texture(
+                self.render_state.replace_texture(
                     &self.display,
                     self.sprite_render_data.texture,
                     TextureBuilder::labeled("sprite_atlas").from_image(
@@ -536,94 +460,74 @@ impl State {
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        self.renderer.state.global_uniforms.update(
+        self.render_state.global_uniforms.update(
             self.display.queue(),
             GlobalUniforms {
                 time: self.frame_timing.time(),
             },
         );
-        self.world_view_projection.update(
-            self.display.queue(),
-            ViewProjectionUniforms {
-                view: self.camera.view_matrix(),
-                projection: self.camera.perspective_matrix(),
-            },
-        );
-        self.renderer.render_stage(
+        self.world_view_projection = ViewProjectionUniforms {
+            view: self.camera.view_matrix(),
+            projection: self.camera.perspective_matrix(),
+        };
+        self.render_state.render_pass(
             &self.display,
             "Offscreen Pass",
-            RenderTarget::Offscreen(&self.offscreen_framebuffer),
-            self.world_view_projection.bind_group(),
-            |_, r| {
+            &self.offscreen_framebuffer,
+            &self.world_view_projection,
+            |r| {
                 for instance in &self.instances {
                     r.draw_instance(instance);
                 }
             },
         );
 
-        let display_view = self.display.view()?;
-        let target_size = display_view.size_pixels().as_vec2();
-        let projection = Mat4::orthographic_lh(0.0, target_size.x, target_size.y, 0.0, 0.0, 1.0);
-
-        self.ui_view_projection.update(
-            self.display.queue(),
-            ViewProjectionUniforms {
-                view: Mat4::IDENTITY,
-                projection,
-            },
-        );
-        self.renderer.render_stage(
-            &self.display,
-            "Offscreen Pass",
-            RenderTarget::Display(&display_view),
-            self.ui_view_projection.bind_group(),
-            |state, r| {
-                r.draw_instance(&InstanceRenderData {
-                    texture: Some(self.offscreen_framebuffer.color),
-                    pipeline: self.sprite_render_data.pipeline,
-                    mesh: state.quad_mesh,
-                    model: ModelInstanceData::transform(ScalingMode::Centered.view_matrix(
-                        self.offscreen_fb_size_pixels.as_vec2(),
-                        self.display.size_pixels().as_vec2(),
-                    )),
-                });
-                for instance in &self.sprite_instances {
-                    r.draw_instance(instance);
-                }
-                let text = if self.input.show_help.on {
-                    Controls::controls()
-                        .iter()
-                        .map(|c| {
-                            format!(
-                                "{:?}: {} = {}\n",
-                                c,
-                                self.input
-                                    .bound_inputs(c)
-                                    .iter()
-                                    .map(|input| { format!("{}", input) })
-                                    .collect::<Vec<String>>()
-                                    .join(", "),
-                                self.input.control_state(c),
-                            )
-                        })
-                        .collect()
-                } else {
-                    format!("{:.1}", self.frame_timing.fps())
-                };
-                r.draw_text(
-                    &text,
-                    &self.asset_manager.font_atlas,
-                    &self.font_render_data,
-                    Transform2D {
-                        position: vec2(20.0, 40.0),
-                        ..Default::default()
-                    },
-                    TextDisplayOptions::default(),
-                );
-            },
-        );
-
-        display_view.present();
+        self.render_state.default_render_pass(&self.display, |r| {
+            r.draw_instance(&InstanceRenderData {
+                texture: Some(self.offscreen_framebuffer.color),
+                ..self
+                    .sprite_render_data
+                    .for_model_instance(ModelInstanceData::transform(
+                        ScalingMode::Centered.view_matrix(
+                            self.offscreen_fb_size_pixels.as_vec2(),
+                            self.display.size_pixels().as_vec2(),
+                        ),
+                    ))
+            });
+            for instance in &self.sprite_instances {
+                r.draw_instance(instance);
+            }
+            let text = if self.input.show_help.on {
+                Controls::controls()
+                    .iter()
+                    .map(|c| {
+                        format!(
+                            "{:?}: {} = {}\n",
+                            c,
+                            self.input
+                                .bound_inputs(c)
+                                .iter()
+                                .map(|input| { format!("{}", input) })
+                                .collect::<Vec<String>>()
+                                .join(", "),
+                            self.input.control_state(c),
+                        )
+                    })
+                    .collect()
+            } else {
+                format!("{:.1}", self.frame_timing.fps())
+            };
+            r.draw_text(
+                &text,
+                &self.asset_manager.font_atlas,
+                &self.font_render_data,
+                Transform2D {
+                    position: vec2(20.0, 40.0),
+                    ..Default::default()
+                },
+                TextDisplayOptions::default(),
+            );
+        })?;
 
         Ok(())
     }

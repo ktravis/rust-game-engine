@@ -1562,12 +1562,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42a9830a0e1b9fb145ebb365b8bc4ccd75f290f98c0247deafbbe2c75cefb544"
 
 [[package]]
-name = "recycle_vec"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c93f1bc0ff629615c72a2d918c794b85d6f583e22de547115a502c9e9852133c"
-
-[[package]]
 name = "redox_syscall"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1623,7 +1617,6 @@ dependencies = [
  "notify",
  "pollster",
  "rand",
- "recycle_vec",
  "slotmap",
  "tobj",
  "ttf-parser 0.18.1",

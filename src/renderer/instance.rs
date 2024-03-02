@@ -1,15 +1,15 @@
 use std::ops::{Deref, Range};
+use std::sync::Arc;
 
 use glam::{vec3, Mat4, Quat};
-use recycle_vec::VecExt;
 
 use crate::font::FontAtlas;
 use crate::sprite::Sprite;
 use crate::transform::Transform;
 
-use super::state::RenderPass;
+use super::state::{BindGroupAllocator, RenderPass, ViewProjectionUniforms};
 use super::text::TextDisplayOptions;
-use super::{MeshRef, PipelineRef, RawInstanceData, RenderData, TextureRef};
+use super::{Display, MeshRef, PipelineRef, RawInstanceData, RenderData, TextureRef};
 
 use super::ModelInstanceData;
 
@@ -34,58 +34,82 @@ pub trait DrawInstance {
 }
 
 #[derive(Debug, Clone)]
-pub enum InstancedDrawOp<'a> {
+pub enum InstancedDrawOp {
     Draw(Range<u32>),
     SetPipeline(PipelineRef),
     SetTexture(Option<TextureRef>),
     SetMesh(MeshRef),
-    SetBindGroup(u32, &'a wgpu::BindGroup),
+    SetBindGroup(u32, Arc<wgpu::BindGroup>),
 }
 
-impl<'a> InstancedDrawOp<'a> {
-    pub fn apply<'pass>(self, render_pass: &mut RenderPass<'pass>)
-    where
-        'a: 'pass,
-    {
+impl InstancedDrawOp {
+    pub fn apply<'pass, 'op: 'pass>(&'op self, render_pass: &mut RenderPass<'pass>) {
         match self {
-            InstancedDrawOp::Draw(instances) => render_pass.draw_active_mesh(instances),
-            InstancedDrawOp::SetPipeline(pipeline) => render_pass.set_active_pipeline(pipeline),
-            InstancedDrawOp::SetTexture(texture) => render_pass.bind_texture(texture),
-            InstancedDrawOp::SetMesh(mesh) => render_pass.set_active_mesh(mesh),
+            InstancedDrawOp::Draw(instances) => render_pass.draw_active_mesh(instances.clone()),
+            InstancedDrawOp::SetPipeline(pipeline) => render_pass.set_active_pipeline(*pipeline),
+            InstancedDrawOp::SetTexture(texture) => render_pass.bind_texture(*texture),
+            InstancedDrawOp::SetMesh(mesh) => render_pass.set_active_mesh(*mesh),
             InstancedDrawOp::SetBindGroup(index, bind_group) => {
-                render_pass.set_bind_group(index, bind_group, &[])
+                render_pass.set_bind_group(*index, bind_group, &[])
             }
         }
     }
 }
 
-#[derive(Default)]
 pub struct InstanceStorage {
-    ops: Option<Vec<InstancedDrawOp<'static>>>,
-    raw_instances: Option<Vec<RawInstanceData>>,
+    ops: Vec<InstancedDrawOp>,
+    raw_instances: Vec<RawInstanceData>,
+    instance_buffer: wgpu::Buffer,
 }
 
 impl InstanceStorage {
-    pub fn temp<'a>(&mut self) -> (Vec<InstancedDrawOp<'a>>, Vec<RawInstanceData>) {
-        (
-            self.ops.take().unwrap_or_default().recycle(),
-            self.raw_instances.take().unwrap_or_default().recycle(),
-        )
+    pub fn new(display: &Display, initial_size: usize) -> Self {
+        let instance_buffer = display.device().create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (initial_size * std::mem::size_of::<RawInstanceData>()) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
+            mapped_at_creation: false,
+        });
+        Self {
+            ops: vec![],
+            raw_instances: vec![],
+            instance_buffer,
+        }
     }
 
-    pub fn reset(
-        &mut self,
-        ops: Vec<InstancedDrawOp<'static>>,
-        raw_instances: Vec<RawInstanceData>,
-    ) {
-        let _ = self.ops.insert(ops);
-        let _ = self.raw_instances.insert(raw_instances);
+    pub fn render_to<'a>(&'a self, render_pass: &mut RenderPass<'a>) {
+        render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+        self.ops.iter().for_each(|op| op.apply(render_pass));
+    }
+
+    pub fn clear(&mut self) {
+        self.ops.clear();
+        self.raw_instances.clear();
+    }
+
+    fn update_buffer(&mut self, display: &Display) {
+        let req_size = (self.raw_instances.len() * std::mem::size_of::<RawInstanceData>())
+            as wgpu::BufferAddress;
+        if self.instance_buffer.size() < req_size {
+            self.instance_buffer.destroy();
+            self.instance_buffer = display.device().create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: req_size * 2,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
+                mapped_at_creation: false,
+            });
+        }
+        display.queue().write_buffer(
+            &self.instance_buffer,
+            0,
+            bytemuck::cast_slice(&self.raw_instances),
+        );
     }
 }
 
-pub struct InstanceRenderer<'op> {
-    ops: Vec<InstancedDrawOp<'op>>,
-    instances: Vec<RawInstanceData>,
+pub struct InstanceRenderer<'op, 'alloc> {
+    bind_group_allocator: &'op BindGroupAllocator<'alloc>,
+    instance_storage: &'op mut InstanceStorage,
 
     active_texture: Option<TextureRef>,
     active_mesh: Option<MeshRef>,
@@ -94,11 +118,14 @@ pub struct InstanceRenderer<'op> {
     range_start: u32,
 }
 
-impl<'op> InstanceRenderer<'op> {
-    pub fn new(ops: Vec<InstancedDrawOp<'op>>, instances: Vec<RawInstanceData>) -> Self {
+impl<'op, 'alloc> InstanceRenderer<'op, 'alloc> {
+    pub fn new(
+        bind_group_allocator: &'op BindGroupAllocator<'alloc>,
+        instance_storage: &'op mut InstanceStorage,
+    ) -> Self {
         Self {
-            ops,
-            instances,
+            bind_group_allocator,
+            instance_storage,
             active_mesh: None,
             active_texture: None,
             active_pipeline: None,
@@ -107,44 +134,58 @@ impl<'op> InstanceRenderer<'op> {
         }
     }
 
+    pub fn set_view_projection(&mut self, view_projection: &ViewProjectionUniforms) {
+        self.instance_storage
+            .ops
+            .push(InstancedDrawOp::SetBindGroup(
+                RenderPass::VIEW_PROJECTION_UNIFORMS_BIND_GROUP_INDEX,
+                self.bind_group_allocator.get(view_projection),
+            ));
+    }
+
     #[inline]
     pub fn draw_instance(&mut self, instance: &InstanceRenderData<impl Transform>) {
         if instance.pipeline != self.active_pipeline.unwrap_or_default() {
             if self.current_count > 0 {
-                self.ops.push(InstancedDrawOp::Draw(
+                self.instance_storage.ops.push(InstancedDrawOp::Draw(
                     self.range_start..self.range_start + self.current_count,
                 ));
                 self.range_start += self.current_count;
                 self.current_count = 0;
             }
-            self.ops
+            self.instance_storage
+                .ops
                 .push(InstancedDrawOp::SetPipeline(instance.pipeline));
             self.active_pipeline = Some(instance.pipeline);
         }
         if instance.mesh != self.active_mesh.unwrap_or_default() {
             if self.current_count > 0 {
-                self.ops.push(InstancedDrawOp::Draw(
+                self.instance_storage.ops.push(InstancedDrawOp::Draw(
                     self.range_start..self.range_start + self.current_count,
                 ));
                 self.range_start += self.current_count;
                 self.current_count = 0;
             }
-            self.ops.push(InstancedDrawOp::SetMesh(instance.mesh));
+            self.instance_storage
+                .ops
+                .push(InstancedDrawOp::SetMesh(instance.mesh));
             self.active_mesh = Some(instance.mesh);
         }
         if instance.texture != self.active_texture {
             if self.current_count > 0 {
-                self.ops.push(InstancedDrawOp::Draw(
+                self.instance_storage.ops.push(InstancedDrawOp::Draw(
                     self.range_start..self.range_start + self.current_count,
                 ));
                 self.range_start += self.current_count;
                 self.current_count = 0;
             }
-            self.ops.push(InstancedDrawOp::SetTexture(instance.texture));
+            self.instance_storage
+                .ops
+                .push(InstancedDrawOp::SetTexture(instance.texture));
             self.active_texture = instance.texture;
         }
         self.current_count += 1;
-        self.instances.push(instance.as_raw());
+        self.instance_storage.raw_instances.push(instance.as_raw());
     }
 
     #[inline]
@@ -192,12 +233,12 @@ impl<'op> InstanceRenderer<'op> {
         }
     }
 
-    pub fn commit(mut self) -> (Vec<InstancedDrawOp<'op>>, Vec<RawInstanceData>) {
+    pub fn commit(self, display: &Display) {
         if self.current_count > 0 {
-            self.ops.push(InstancedDrawOp::Draw(
+            self.instance_storage.ops.push(InstancedDrawOp::Draw(
                 self.range_start..self.range_start + self.current_count,
             ));
         }
-        (self.ops, self.instances)
+        self.instance_storage.update_buffer(display);
     }
 }

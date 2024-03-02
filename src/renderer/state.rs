@@ -1,13 +1,17 @@
-use std::ops::{Deref, DerefMut, Range};
+use std::{
+    ops::{Deref, DerefMut, Range},
+    sync::{Arc, Mutex},
+};
 
 use glam::Mat4;
 use slotmap::SlotMap;
 use wgpu::{BufferDescriptor, BufferUsages};
 
 use super::{
+    instance::{InstanceRenderer, InstanceStorage},
     mesh::{LoadMesh, Mesh},
     texture::{Texture, TextureBuilder},
-    OffscreenFramebuffer, UniformData, DEFAULT_TEXTURE_DATA,
+    OffscreenFramebuffer, RenderTarget, UniformData, DEFAULT_TEXTURE_DATA,
 };
 use crate::geom::Point;
 
@@ -54,14 +58,69 @@ impl UniformData for ViewProjectionUniforms {
     }
 }
 
+struct CachePool<T> {
+    items: Vec<Arc<T>>,
+    in_use: usize,
+}
+
+impl<T> Default for CachePool<T> {
+    fn default() -> Self {
+        Self {
+            items: vec![],
+            in_use: 0,
+        }
+    }
+}
+
+impl<T> CachePool<T> {
+    pub fn get<'a>(&'a mut self, ctor: impl FnOnce() -> T) -> &'a Arc<T> {
+        if self.in_use >= self.items.len() {
+            self.items.push(Arc::new(ctor()));
+        }
+        &self.items[self.in_use]
+    }
+
+    pub fn reset(&mut self) {
+        self.in_use = 0;
+    }
+}
+
+pub struct BindGroupAllocator<'a> {
+    display: &'a Display,
+    layout: &'a wgpu::BindGroupLayout,
+    bind_groups: &'a Mutex<CachePool<BindGroup<UniformBuffer<ViewProjectionUniforms>>>>,
+}
+
+impl<'a> BindGroupAllocator<'a> {
+    pub fn get(&self, view_projection: &ViewProjectionUniforms) -> Arc<wgpu::BindGroup> {
+        let display = self.display;
+        let mut x = self.bind_groups.lock().unwrap();
+        let bg = x.get(|| {
+            BindGroup::new(
+                display.device(),
+                &self.layout,
+                UniformBuffer::<ViewProjectionUniforms>::new(display.device(), Default::default()),
+            )
+        });
+        display.queue().write_buffer(
+            bg.buffer(),
+            0,
+            bytemuck::bytes_of(&view_projection.as_raw()),
+        );
+        bg.bind_group().clone()
+    }
+}
+
 pub struct RenderState {
     pub global_uniforms: BindGroup<UniformBuffer<GlobalUniforms>>,
-    pub quad_mesh: MeshRef,
+    quad_mesh: MeshRef,
 
+    instance_storage: InstanceStorage,
     global_uniform_bind_group_layout: wgpu::BindGroupLayout,
     view_projection_uniform_bind_group_layout: wgpu::BindGroupLayout,
     texture_bind_group_layout: wgpu::BindGroupLayout,
     depth_texture_bind_group_layout: wgpu::BindGroupLayout,
+    view_proj_bind_groups: Mutex<CachePool<BindGroup<UniformBuffer<ViewProjectionUniforms>>>>,
 
     texture_manager: SlotMap<TextureRef, BoundTexture>,
     default_texture: BoundTexture,
@@ -146,21 +205,28 @@ impl RenderState {
                     Point::new(2, 2),
                 ),
         );
+        let mut mesh_manager = SlotMap::with_key();
+        let quad_mesh = mesh_manager.insert(display.device().load_quad_mesh());
+        let instance_storage = InstanceStorage::new(display, 1024);
 
-        let mut s = Self {
+        Self {
             texture_bind_group_layout,
             depth_texture_bind_group_layout,
             global_uniform_bind_group_layout,
             view_projection_uniform_bind_group_layout,
             default_texture,
             texture_manager: SlotMap::with_key(),
-            mesh_manager: SlotMap::with_key(),
+            mesh_manager,
             pipelines: SlotMap::with_key(),
             global_uniforms,
-            quad_mesh: Default::default(),
-        };
-        s.quad_mesh = s.prepare_mesh(display.device().load_quad_mesh());
-        s
+            quad_mesh,
+            instance_storage,
+            view_proj_bind_groups: Default::default(),
+        }
+    }
+
+    pub fn quad_mesh(&self) -> MeshRef {
+        self.quad_mesh
     }
 
     pub fn create_pipeline<'a>(
@@ -284,30 +350,77 @@ impl RenderState {
         })
     }
 
-    pub fn begin_render_pass<'pass, 'enc: 'pass>(
-        &'pass self,
-        encoder: &'enc mut wgpu::CommandEncoder,
-        name: &str,
-        color_attachments: &[Option<wgpu::RenderPassColorAttachment<'pass>>],
-        depth_stencil_attachment: Option<wgpu::RenderPassDepthStencilAttachment<'pass>>,
-    ) -> RenderPass<'pass> {
-        let mut raw_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some(name),
-            color_attachments,
-            depth_stencil_attachment,
-            ..Default::default()
-        });
-        raw_pass.set_bind_group(
-            RenderPass::GLOBAL_UNIFORMS_BIND_GROUP_INDEX,
-            self.global_uniforms.bind_group(),
-            &[],
+    pub fn default_render_pass(
+        &mut self,
+        display: &Display,
+        pass: impl FnOnce(&mut InstanceRenderer),
+    ) -> Result<(), wgpu::SurfaceError> {
+        let display_view = display.view()?;
+        let target_size = display_view.size_pixels().as_vec2();
+        let projection = Mat4::orthographic_lh(0.0, target_size.x, target_size.y, 0.0, 0.0, 1.0);
+
+        let view_projection = ViewProjectionUniforms {
+            view: Mat4::IDENTITY,
+            projection,
+        };
+        self.render_pass(
+            display,
+            "Default Display Pass",
+            &display_view,
+            &view_projection,
+            pass,
         );
-        RenderPass {
-            raw_pass,
-            render_state: self,
-            active_mesh: None,
-            active_pipeline: None,
+        display_view.present();
+        Ok(())
+    }
+
+    pub fn render_pass(
+        &mut self,
+        display: &Display,
+        name: &str,
+        render_target: &impl RenderTarget,
+        view_projection: &ViewProjectionUniforms,
+        pass: impl FnOnce(&mut InstanceRenderer),
+    ) {
+        let alloc = BindGroupAllocator {
+            display,
+            layout: &self.view_projection_uniform_bind_group_layout,
+            bind_groups: &self.view_proj_bind_groups,
+        };
+        let mut r = InstanceRenderer::new(&alloc, &mut self.instance_storage);
+        r.set_view_projection(view_projection);
+        pass(&mut r);
+        r.commit(display);
+
+        let mut encoder = display.command_encoder();
+        {
+            let mut raw_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some(name),
+                color_attachments: &[Some(
+                    render_target.color_attachment(&self, wgpu::LoadOp::Clear(wgpu::Color::BLACK)),
+                )],
+                depth_stencil_attachment: render_target.depth_stencil_attachment(
+                    &self,
+                    wgpu::LoadOp::Clear(1.0),
+                    None,
+                ),
+                ..Default::default()
+            });
+            raw_pass.set_bind_group(
+                RenderPass::GLOBAL_UNIFORMS_BIND_GROUP_INDEX,
+                self.global_uniforms.bind_group(),
+                &[],
+            );
+            self.instance_storage.render_to(&mut RenderPass {
+                raw_pass,
+                render_state: self,
+                active_mesh: None,
+                active_pipeline: None,
+            });
         }
+        display.queue().submit([encoder.finish()]);
+        self.view_proj_bind_groups.lock().unwrap().reset();
+        self.instance_storage.clear();
     }
 
     pub fn create_offscreen_framebuffer(
@@ -357,38 +470,7 @@ impl RenderState {
     pub fn prepare_mesh(&mut self, mesh: Mesh) -> MeshRef {
         self.mesh_manager.insert(mesh)
     }
-
-    pub fn create_view_projection_uniform(
-        &self,
-        display: &Display,
-        initial_data: ViewProjectionUniforms,
-    ) -> BindGroup<UniformBuffer<ViewProjectionUniforms>> {
-        BindGroup::new(
-            display.device(),
-            &self.view_projection_uniform_bind_group_layout,
-            UniformBuffer::new(display.device(), initial_data),
-        )
-    }
 }
-
-// pub struct RenderStage<'state, 'a> {
-//     pub render_state: &'state RenderState,
-//     pub inner: InstanceRenderer<'state, 'a>,
-// }
-//
-// impl<'state, 'a> Deref for RenderStage<'state, 'a> {
-//     type Target = InstanceRenderer<'state, 'a>;
-//
-//     fn deref(&self) -> &Self::Target {
-//         &self.inner
-//     }
-// }
-//
-// impl<'a> DerefMut for RenderStage<'_, 'a> {
-//     fn deref_mut(&mut self) -> &mut Self::Target {
-//         &mut self.inner
-//     }
-// }
 
 pub struct RenderPass<'a> {
     pub render_state: &'a RenderState,
@@ -417,17 +499,6 @@ impl<'a> RenderPass<'a> {
     const TEXTURE_BIND_GROUP_INDEX: u32 = 0;
     const GLOBAL_UNIFORMS_BIND_GROUP_INDEX: u32 = 1;
     pub const VIEW_PROJECTION_UNIFORMS_BIND_GROUP_INDEX: u32 = 2;
-
-    pub fn bind_view_projection(
-        &mut self,
-        uniform_bind_group: &'a BindGroup<UniformBuffer<ViewProjectionUniforms>>,
-    ) {
-        self.set_bind_group(
-            Self::VIEW_PROJECTION_UNIFORMS_BIND_GROUP_INDEX,
-            uniform_bind_group.bind_group(),
-            &[],
-        );
-    }
 
     pub fn set_active_pipeline(&mut self, pipeline: PipelineRef) {
         if Some(pipeline) == self.active_pipeline {

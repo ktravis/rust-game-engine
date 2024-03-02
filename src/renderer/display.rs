@@ -4,7 +4,7 @@ use super::{
     texture::{Texture, TextureBuilder},
     RenderState,
 };
-use crate::{geom::Point, renderer::RenderTarget};
+use crate::geom::Point;
 
 use glam::{vec3, Mat4, Quat, Vec2};
 use winit::{dpi::PhysicalSize, window::Window};
@@ -213,6 +213,10 @@ pub struct DisplayView<'a> {
 impl DisplayView<'_> {
     pub fn present(self) {
         self.output_texture.present()
+    }
+
+    pub fn display(&self) -> &Display {
+        self.display
     }
 }
 
