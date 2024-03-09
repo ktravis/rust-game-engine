@@ -15,10 +15,10 @@ use super::ModelInstanceData;
 
 #[derive(Debug)]
 pub struct InstanceRenderData<T> {
-    pub texture: Option<TextureRef>,
-    pub pipeline: PipelineRef,
     pub mesh: MeshRef,
     pub model: ModelInstanceData<T>,
+    pub texture: Option<TextureRef>,
+    pub pipeline: Option<PipelineRef>,
 }
 
 impl<T> Deref for InstanceRenderData<T> {
@@ -36,14 +36,14 @@ pub trait DrawInstance {
 #[derive(Debug, Clone)]
 pub enum InstancedDrawOp {
     Draw(Range<u32>),
-    SetPipeline(PipelineRef),
+    SetPipeline(Option<PipelineRef>),
     SetTexture(Option<TextureRef>),
     SetMesh(MeshRef),
     SetBindGroup(u32, Arc<wgpu::BindGroup>),
 }
 
 impl InstancedDrawOp {
-    pub fn apply<'pass, 'op: 'pass>(&'op self, render_pass: &mut RenderPass<'pass>) {
+    pub fn apply<'pass, 'r: 'pass>(&'r self, render_pass: &mut RenderPass<'pass>) {
         match self {
             InstancedDrawOp::Draw(instances) => render_pass.draw_active_mesh(instances.clone()),
             InstancedDrawOp::SetPipeline(pipeline) => render_pass.set_active_pipeline(*pipeline),
@@ -107,9 +107,9 @@ impl InstanceStorage {
     }
 }
 
-pub struct InstanceRenderer<'op, 'alloc> {
-    bind_group_allocator: &'op BindGroupAllocator<'alloc>,
-    instance_storage: &'op mut InstanceStorage,
+pub struct InstanceRenderer<'r, 'alloc> {
+    bind_group_allocator: &'r BindGroupAllocator<'alloc>,
+    instance_storage: &'r mut InstanceStorage,
 
     active_texture: Option<TextureRef>,
     active_mesh: Option<MeshRef>,
@@ -118,10 +118,10 @@ pub struct InstanceRenderer<'op, 'alloc> {
     range_start: u32,
 }
 
-impl<'op, 'alloc> InstanceRenderer<'op, 'alloc> {
+impl<'r, 'alloc> InstanceRenderer<'r, 'alloc> {
     pub fn new(
-        bind_group_allocator: &'op BindGroupAllocator<'alloc>,
-        instance_storage: &'op mut InstanceStorage,
+        bind_group_allocator: &'r BindGroupAllocator<'alloc>,
+        instance_storage: &'r mut InstanceStorage,
     ) -> Self {
         Self {
             bind_group_allocator,
@@ -135,6 +135,13 @@ impl<'op, 'alloc> InstanceRenderer<'op, 'alloc> {
     }
 
     pub fn set_view_projection(&mut self, view_projection: &ViewProjectionUniforms) {
+        if self.current_count > 0 {
+            self.instance_storage.ops.push(InstancedDrawOp::Draw(
+                self.range_start..self.range_start + self.current_count,
+            ));
+            self.range_start += self.current_count;
+            self.current_count = 0;
+        }
         self.instance_storage
             .ops
             .push(InstancedDrawOp::SetBindGroup(
@@ -145,7 +152,7 @@ impl<'op, 'alloc> InstanceRenderer<'op, 'alloc> {
 
     #[inline]
     pub fn draw_instance(&mut self, instance: &InstanceRenderData<impl Transform>) {
-        if instance.pipeline != self.active_pipeline.unwrap_or_default() {
+        if instance.pipeline != self.active_pipeline {
             if self.current_count > 0 {
                 self.instance_storage.ops.push(InstancedDrawOp::Draw(
                     self.range_start..self.range_start + self.current_count,
@@ -156,7 +163,7 @@ impl<'op, 'alloc> InstanceRenderer<'op, 'alloc> {
             self.instance_storage
                 .ops
                 .push(InstancedDrawOp::SetPipeline(instance.pipeline));
-            self.active_pipeline = Some(instance.pipeline);
+            self.active_pipeline = instance.pipeline;
         }
         if instance.mesh != self.active_mesh.unwrap_or_default() {
             if self.current_count > 0 {

@@ -17,7 +17,7 @@ pub struct InputManager<Controls: ControlSet> {
     controls_by_input: HashMap<AnyInput, Vec<Controls::Control>>,
 }
 
-impl<C: ControlSet + Default> Default for InputManager<C> {
+impl<C: ControlSet> Default for InputManager<C> {
     fn default() -> Self {
         Self {
             mouse: Cursor::default(),
@@ -42,9 +42,9 @@ impl<C: ControlSet> DerefMut for InputManager<C> {
     }
 }
 
-pub trait ControlSet {
-    type Control: Sized + std::fmt::Debug + Copy + Eq + std::hash::Hash;
-    fn controls<'a>() -> &'a [Self::Control];
+pub trait ControlSet: Default {
+    type Control: Sized + std::fmt::Debug + Copy + Eq + std::hash::Hash + 'static;
+    fn controls() -> &'static [Self::Control];
     fn handle_input(&mut self, control: &Self::Control, change: Option<InputChange>);
     fn bound_inputs(&self, control: &Self::Control) -> Vec<AnyInput>;
     fn control_changed(&self, control: &Self::Control) -> bool;
@@ -110,6 +110,14 @@ where
             });
             self.clear_control_changed(control);
         }
+    }
+
+    pub fn status(
+        &self,
+    ) -> impl Iterator<Item = (Controls::Control, Vec<AnyInput>, InputState)> + '_ {
+        Controls::controls()
+            .iter()
+            .map(|c| (*c, self.bound_inputs(c), self.control_state(c)))
     }
 
     pub fn end_frame_update(&mut self) {

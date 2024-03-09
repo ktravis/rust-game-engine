@@ -1,9 +1,6 @@
 use std::ops::Deref;
 
-use super::{
-    texture::{Texture, TextureBuilder},
-    RenderState,
-};
+use super::texture::{Texture, TextureBuilder};
 use crate::geom::Point;
 
 use glam::{vec3, Mat4, Quat, Vec2};
@@ -92,9 +89,6 @@ impl Display {
             .unwrap();
 
         let surface_caps = surface.get_capabilities(&adapter);
-        // Shader code in this tutorial assumes an sRGB surface texture. Using a different
-        // one will result all the colors coming out darker. If you want to support non
-        // sRGB surfaces, you'll need to account for that when drawing to the frame.
         let surface_format = surface_caps
             .formats
             .iter()
@@ -218,6 +212,11 @@ impl DisplayView<'_> {
     pub fn display(&self) -> &Display {
         self.display
     }
+
+    pub fn orthographic_projection(&self) -> Mat4 {
+        let target_size = self.size_pixels().as_vec2();
+        Mat4::orthographic_lh(0.0, target_size.x, target_size.y, 0.0, 0.0, 1.0)
+    }
 }
 
 impl<'a> Deref for DisplayView<'a> {
@@ -227,37 +226,3 @@ impl<'a> Deref for DisplayView<'a> {
         self.display
     }
 }
-
-// impl<'a> RenderTarget for DisplayView<'a> {
-//     fn size_pixels(&self) -> Point<u32> {
-//         self.display.size_pixels()
-//     }
-//
-//     fn color_attachment<'state>(
-//         &'a self,
-//         _state: &'state RenderState,
-//         load_op: wgpu::LoadOp<wgpu::Color>,
-//     ) -> wgpu::RenderPassColorAttachment<'state>
-//     where
-//         'a: 'state,
-//     {
-//         wgpu::RenderPassColorAttachment {
-//             view: &self.view,
-//             resolve_target: None,
-//             ops: wgpu::Operations {
-//                 load: load_op,
-//                 store: wgpu::StoreOp::Store,
-//             },
-//         }
-//     }
-//
-//     fn depth_stencil_attachment<'state>(
-//         &self,
-//         _state: &'state RenderState,
-//         depth_load_op: wgpu::LoadOp<f32>,
-//         stencil_ops: impl Into<Option<wgpu::Operations<u32>>>,
-//     ) -> Option<wgpu::RenderPassDepthStencilAttachment<'state>> {
-//         self.display
-//             .depth_stencil_attachment(depth_load_op, stencil_ops)
-//     }
-// }

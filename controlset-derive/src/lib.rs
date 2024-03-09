@@ -179,7 +179,7 @@ impl ControlSetData {
             impl ::rust_game_engine::input::ControlSet for #struct_ident {
                 type Control = #enum_ident;
 
-                fn controls<'a>() -> &'a [Self::Control] {
+                fn controls() -> &'static [Self::Control] {
                     &[
                         #(#enum_fields,)*
                     ]

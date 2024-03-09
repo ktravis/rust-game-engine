@@ -22,7 +22,7 @@ impl RenderData {
     ) -> InstanceRenderData<T> {
         InstanceRenderData {
             texture: Some(self.texture),
-            pipeline: self.pipeline,
+            pipeline: Some(self.pipeline),
             mesh: self.mesh,
             model,
         }
@@ -225,10 +225,7 @@ impl<T: Bindable> DerefMut for BindGroup<T> {
     }
 }
 
-pub trait UniformData {
-    type Raw: bytemuck::Pod + bytemuck::Zeroable;
-    fn as_raw(&self) -> Self::Raw;
-}
+pub trait UniformData: bytemuck::Pod + bytemuck::Zeroable {}
 
 pub struct UniformBuffer<U: UniformData> {
     uniform: U,
@@ -239,7 +236,7 @@ impl<U: UniformData> UniformBuffer<U> {
     pub fn new(device: &wgpu::Device, uniform: U) -> Self {
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Uniform Buffer"),
-            contents: bytemuck::cast_slice(&[uniform.as_raw()]),
+            contents: bytemuck::cast_slice(&[uniform]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         Self { uniform, buffer }
@@ -255,7 +252,7 @@ impl<U: UniformData> UniformBuffer<U> {
 
     pub fn update_with(&mut self, queue: &wgpu::Queue, modifier: impl FnOnce(&mut U)) {
         modifier(&mut self.uniform);
-        queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&self.uniform.as_raw()));
+        queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&self.uniform));
     }
 
     pub fn update(&mut self, queue: &wgpu::Queue, uniform: U) {

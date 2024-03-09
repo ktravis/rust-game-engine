@@ -100,3 +100,26 @@ impl Transform for Transform2D {
         )
     }
 }
+
+pub trait MatrixTransform {
+    fn translate(&mut self, delta: Vec3) -> &mut Self;
+    fn scale(&mut self, s: Vec3) -> &mut Self;
+    fn rotate(&mut self, quat: Quat) -> &mut Self;
+}
+
+impl MatrixTransform for Mat4 {
+    fn translate(&mut self, delta: Vec3) -> &mut Self {
+        *self = Mat4::from_translation(delta) * *self;
+        self
+    }
+
+    fn scale(&mut self, s: Vec3) -> &mut Self {
+        *self = Mat4::from_scale(s) * *self;
+        self
+    }
+
+    fn rotate(&mut self, rotation: Quat) -> &mut Self {
+        *self = Mat4::from_quat(rotation) * *self;
+        self
+    }
+}

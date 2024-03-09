@@ -13,6 +13,7 @@ glam = { version = "0.23.0", features = ["scalar-math", "bytemuck"] }
 glob = "0.3.1"
 pollster = "0.2"
 inflate = "0.4"
+itertools = "0.12"
 byteorder = "1.4"
 asefile = { version = "0.3", features = ["utils"] }
 notify = "5.1.0"

@@ -4,18 +4,18 @@ use std::{
 };
 
 use glam::Mat4;
-use slotmap::SlotMap;
+use slotmap::{Key, SlotMap};
 use wgpu::{BufferDescriptor, BufferUsages};
 
 use super::{
+    display::Display,
     instance::{InstanceRenderer, InstanceStorage},
     mesh::{LoadMesh, Mesh},
     texture::{Texture, TextureBuilder},
-    OffscreenFramebuffer, RenderTarget, UniformData, DEFAULT_TEXTURE_DATA,
+    BindGroup, MeshRef, ModelInstanceData, OffscreenFramebuffer, PipelineRef, RenderTarget,
+    TextureRef, UniformBuffer, UniformData, VertexLayout, DEFAULT_TEXTURE_DATA,
 };
-use crate::geom::Point;
-
-use super::{display::Display, BindGroup, MeshRef, PipelineRef, TextureRef, UniformBuffer};
+use crate::geom::{ModelVertexData, Point};
 
 pub type BoundTexture = BindGroup<Texture>;
 
@@ -25,38 +25,16 @@ pub struct GlobalUniforms {
     pub time: f32,
 }
 
-impl UniformData for GlobalUniforms {
-    type Raw = Self;
+impl UniformData for GlobalUniforms {}
 
-    fn as_raw(&self) -> Self::Raw {
-        Self::Raw { time: self.time }
-    }
-}
-
-#[derive(Default, Debug, Copy, Clone)]
+#[repr(C)]
+#[derive(Default, Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ViewProjectionUniforms {
     pub view: Mat4,
     pub projection: Mat4,
 }
 
-// TODO: come up with a way this doesn't have to be pub
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct ViewProjectionUniformsRaw {
-    view: [[f32; 4]; 4],
-    projection: [[f32; 4]; 4],
-}
-
-impl UniformData for ViewProjectionUniforms {
-    type Raw = ViewProjectionUniformsRaw;
-
-    fn as_raw(&self) -> Self::Raw {
-        Self::Raw {
-            view: self.view.to_cols_array_2d(),
-            projection: self.projection.to_cols_array_2d(),
-        }
-    }
-}
+impl UniformData for ViewProjectionUniforms {}
 
 struct CachePool<T> {
     items: Vec<Arc<T>>,
@@ -77,7 +55,9 @@ impl<T> CachePool<T> {
         if self.in_use >= self.items.len() {
             self.items.push(Arc::new(ctor()));
         }
-        &self.items[self.in_use]
+        let i = self.in_use;
+        self.in_use += 1;
+        &self.items[i]
     }
 
     pub fn reset(&mut self) {
@@ -102,12 +82,25 @@ impl<'a> BindGroupAllocator<'a> {
                 UniformBuffer::<ViewProjectionUniforms>::new(display.device(), Default::default()),
             )
         });
-        display.queue().write_buffer(
-            bg.buffer(),
-            0,
-            bytemuck::bytes_of(&view_projection.as_raw()),
-        );
+        display
+            .queue()
+            .write_buffer(bg.buffer(), 0, bytemuck::bytes_of(view_projection));
         bg.bind_group().clone()
+    }
+}
+
+pub struct PartialRenderPass<'a> {
+    display: &'a Display,
+    command_buffer: wgpu::CommandBuffer,
+}
+
+impl PartialRenderPass<'_> {
+    pub fn command_buffer(self) -> wgpu::CommandBuffer {
+        self.command_buffer
+    }
+
+    pub fn submit(self) {
+        self.display.queue().submit([self.command_buffer]);
     }
 }
 
@@ -127,10 +120,11 @@ pub struct RenderState {
 
     mesh_manager: SlotMap<MeshRef, Mesh>,
     pipelines: SlotMap<PipelineRef, wgpu::RenderPipeline>,
+    default_pipeline: PipelineRef,
 }
 
 impl RenderState {
-    pub fn new(display: &Display) -> Self {
+    pub fn new(display: &Display, default_shader: &wgpu::ShaderModule) -> Self {
         let device = display.device();
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -209,7 +203,7 @@ impl RenderState {
         let quad_mesh = mesh_manager.insert(display.device().load_quad_mesh());
         let instance_storage = InstanceStorage::new(display, 1024);
 
-        Self {
+        let mut s = Self {
             texture_bind_group_layout,
             depth_texture_bind_group_layout,
             global_uniform_bind_group_layout,
@@ -222,11 +216,27 @@ impl RenderState {
             quad_mesh,
             instance_storage,
             view_proj_bind_groups: Default::default(),
-        }
+            default_pipeline: Default::default(),
+        };
+        s.default_pipeline = s.create_pipeline_with_key(
+            "Default Render Pipeline",
+            display,
+            default_shader,
+            &[
+                ModelVertexData::vertex_layout(),
+                ModelInstanceData::vertex_layout(),
+            ],
+            None,
+        );
+        s
     }
 
     pub fn quad_mesh(&self) -> MeshRef {
         self.quad_mesh
+    }
+
+    pub fn default_pipeline(&self) -> PipelineRef {
+        self.default_pipeline
     }
 
     pub fn create_pipeline<'a>(
@@ -350,38 +360,15 @@ impl RenderState {
         })
     }
 
-    pub fn default_render_pass(
+    #[must_use]
+    pub fn render_pass<'a>(
         &mut self,
-        display: &Display,
-        pass: impl FnOnce(&mut InstanceRenderer),
-    ) -> Result<(), wgpu::SurfaceError> {
-        let display_view = display.view()?;
-        let target_size = display_view.size_pixels().as_vec2();
-        let projection = Mat4::orthographic_lh(0.0, target_size.x, target_size.y, 0.0, 0.0, 1.0);
-
-        let view_projection = ViewProjectionUniforms {
-            view: Mat4::IDENTITY,
-            projection,
-        };
-        self.render_pass(
-            display,
-            "Default Display Pass",
-            &display_view,
-            &view_projection,
-            pass,
-        );
-        display_view.present();
-        Ok(())
-    }
-
-    pub fn render_pass(
-        &mut self,
-        display: &Display,
+        display: &'a Display,
         name: &str,
         render_target: &impl RenderTarget,
         view_projection: &ViewProjectionUniforms,
         pass: impl FnOnce(&mut InstanceRenderer),
-    ) {
+    ) -> PartialRenderPass<'a> {
         let alloc = BindGroupAllocator {
             display,
             layout: &self.view_projection_uniform_bind_group_layout,
@@ -411,16 +398,22 @@ impl RenderState {
                 self.global_uniforms.bind_group(),
                 &[],
             );
-            self.instance_storage.render_to(&mut RenderPass {
+            let mut pass = RenderPass {
                 raw_pass,
                 render_state: self,
                 active_mesh: None,
                 active_pipeline: None,
-            });
+            };
+            pass.set_active_pipeline(self.default_pipeline);
+            pass.bind_texture_data(&self.default_texture);
+            self.instance_storage.render_to(&mut pass);
         }
-        display.queue().submit([encoder.finish()]);
         self.view_proj_bind_groups.lock().unwrap().reset();
         self.instance_storage.clear();
+        PartialRenderPass {
+            display,
+            command_buffer: encoder.finish(),
+        }
     }
 
     pub fn create_offscreen_framebuffer(
@@ -500,13 +493,18 @@ impl<'a> RenderPass<'a> {
     const GLOBAL_UNIFORMS_BIND_GROUP_INDEX: u32 = 1;
     pub const VIEW_PROJECTION_UNIFORMS_BIND_GROUP_INDEX: u32 = 2;
 
-    pub fn set_active_pipeline(&mut self, pipeline: PipelineRef) {
-        if Some(pipeline) == self.active_pipeline {
+    pub fn set_active_pipeline(&mut self, pipeline: impl Into<Option<PipelineRef>>) {
+        let pipeline = pipeline.into();
+        if pipeline == self.active_pipeline {
             return;
         }
-        let p = self.render_state.pipelines.get(pipeline).unwrap();
+        let p = self
+            .render_state
+            .pipelines
+            .get(pipeline.unwrap_or(self.render_state.default_pipeline))
+            .unwrap();
         self.set_pipeline(p);
-        self.active_pipeline = Some(pipeline);
+        self.active_pipeline = pipeline;
     }
 
     pub fn set_active_mesh(&mut self, mesh: MeshRef) {
