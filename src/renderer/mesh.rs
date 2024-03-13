@@ -1,15 +1,62 @@
-use std::marker::PhantomData;
+use std::{
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+};
 
 use wgpu::{util::DeviceExt, BufferUsages};
 
 use crate::geom::{cube, quad, ModelVertexData, VertexData};
 
+slotmap::new_key_type! {
+    pub struct RawMeshRef;
+}
+
+#[derive(Debug, Default, Copy, Clone)]
+pub struct MeshRef<V> {
+    raw: RawMeshRef,
+    _marker: PhantomData<V>,
+}
+
+impl<V> MeshRef<V> {
+    pub fn raw(&self) -> RawMeshRef {
+        self.raw
+    }
+}
+
+impl<V> From<RawMeshRef> for MeshRef<V> {
+    fn from(raw: RawMeshRef) -> Self {
+        MeshRef {
+            raw,
+            _marker: PhantomData,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Mesh<V = ModelVertexData> {
+    pub inner: UntypedMesh,
+    _marker: PhantomData<V>,
+}
+
+impl<V> Deref for Mesh<V> {
+    type Target = UntypedMesh;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<V> DerefMut for Mesh<V> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+#[derive(Debug)]
+pub struct UntypedMesh {
     pub vertex_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
     pub num_indices: u32,
-    _marker: PhantomData<V>,
 }
 
 pub trait LoadMesh {
@@ -42,17 +89,19 @@ impl LoadMesh for wgpu::Device {
         indices: &[u16],
     ) -> Result<Mesh<V>, Self::Error> {
         Ok(Mesh {
-            vertex_buffer: self.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Vertex Buffer"),
-                contents: bytemuck::cast_slice(verts),
-                usage: BufferUsages::VERTEX,
-            }),
-            index_buffer: self.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Index Buffer"),
-                contents: bytemuck::cast_slice(indices),
-                usage: BufferUsages::INDEX,
-            }),
-            num_indices: indices.len() as _,
+            inner: UntypedMesh {
+                vertex_buffer: self.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Vertex Buffer"),
+                    contents: bytemuck::cast_slice(verts),
+                    usage: BufferUsages::VERTEX,
+                }),
+                index_buffer: self.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Index Buffer"),
+                    contents: bytemuck::cast_slice(indices),
+                    usage: BufferUsages::INDEX,
+                }),
+                num_indices: indices.len() as _,
+            },
             _marker: PhantomData,
         })
     }

@@ -1,21 +1,21 @@
 use std::{
+    marker::PhantomData,
     ops::{Deref, DerefMut, Range},
     sync::{Arc, Mutex},
 };
 
 use glam::Mat4;
 use slotmap::{Key, SlotMap};
-use wgpu::{BufferDescriptor, BufferUsages};
 
 use super::{
     display::Display,
     instance::{InstanceRenderer, InstanceStorage},
-    mesh::{LoadMesh, Mesh},
+    mesh::{LoadMesh, Mesh, RawMeshRef, UntypedMesh},
     texture::{Texture, TextureBuilder},
-    BindGroup, MeshRef, ModelInstanceData, OffscreenFramebuffer, PipelineRef, RenderTarget,
-    TextureRef, UniformBuffer, UniformData, VertexLayout, DEFAULT_TEXTURE_DATA,
+    BindGroup, InstanceData, MeshRef, ModelInstanceData, OffscreenFramebuffer, RenderTarget,
+    TextureRef, UniformBuffer, UniformData, DEFAULT_TEXTURE_DATA,
 };
-use crate::geom::{ModelVertexData, Point};
+use crate::geom::{ModelVertexData, Point, VertexData};
 
 pub type BoundTexture = BindGroup<Texture>;
 
@@ -104,9 +104,38 @@ impl PartialRenderPass<'_> {
     }
 }
 
+slotmap::new_key_type! {
+    pub(super) struct RawPipelineRef;
+}
+
+#[derive(Copy, Clone, Debug, Default)]
+pub struct PipelineRef<V, I> {
+    raw: RawPipelineRef,
+    _marker: PhantomData<(V, I)>,
+}
+
+impl<V, I> PipelineRef<V, I> {
+    pub(super) fn raw(self) -> RawPipelineRef {
+        self.raw
+    }
+
+    pub fn is_null(&self) -> bool {
+        self.raw.is_null()
+    }
+}
+
+impl<V, I> From<RawPipelineRef> for PipelineRef<V, I> {
+    fn from(raw: RawPipelineRef) -> Self {
+        PipelineRef {
+            raw,
+            _marker: PhantomData,
+        }
+    }
+}
+
 pub struct RenderState {
     pub global_uniforms: BindGroup<UniformBuffer<GlobalUniforms>>,
-    quad_mesh: MeshRef,
+    quad_mesh: MeshRef<ModelVertexData>,
 
     instance_storage: InstanceStorage,
     global_uniform_bind_group_layout: wgpu::BindGroupLayout,
@@ -118,9 +147,9 @@ pub struct RenderState {
     texture_manager: SlotMap<TextureRef, BoundTexture>,
     default_texture: BoundTexture,
 
-    mesh_manager: SlotMap<MeshRef, Mesh>,
-    pipelines: SlotMap<PipelineRef, wgpu::RenderPipeline>,
-    default_pipeline: PipelineRef,
+    mesh_manager: SlotMap<RawMeshRef, UntypedMesh>,
+    pipelines: SlotMap<RawPipelineRef, wgpu::RenderPipeline>,
+    default_pipeline: PipelineRef<ModelVertexData, ModelInstanceData>,
 }
 
 impl RenderState {
@@ -199,8 +228,7 @@ impl RenderState {
                     Point::new(2, 2),
                 ),
         );
-        let mut mesh_manager = SlotMap::with_key();
-        let quad_mesh = mesh_manager.insert(display.device().load_quad_mesh());
+        let mesh_manager = SlotMap::with_key();
         let instance_storage = InstanceStorage::new(display, 1024);
 
         let mut s = Self {
@@ -213,61 +241,55 @@ impl RenderState {
             mesh_manager,
             pipelines: SlotMap::with_key(),
             global_uniforms,
-            quad_mesh,
             instance_storage,
+            quad_mesh: Default::default(),
             view_proj_bind_groups: Default::default(),
             default_pipeline: Default::default(),
         };
-        s.default_pipeline = s.create_pipeline_with_key(
+        s.quad_mesh = s.prepare_mesh(display.device().load_quad_mesh());
+        s.default_pipeline = s.create_pipeline_with_key::<ModelVertexData, ModelInstanceData>(
             "Default Render Pipeline",
             display,
             default_shader,
-            &[
-                ModelVertexData::vertex_layout(),
-                ModelInstanceData::vertex_layout(),
-            ],
             None,
         );
         s
     }
 
-    pub fn quad_mesh(&self) -> MeshRef {
+    pub fn quad_mesh(&self) -> MeshRef<ModelVertexData> {
         self.quad_mesh
     }
 
-    pub fn default_pipeline(&self) -> PipelineRef {
+    pub fn default_pipeline(&self) -> PipelineRef<ModelVertexData, ModelInstanceData> {
         self.default_pipeline
     }
 
-    pub fn create_pipeline<'a>(
+    pub fn create_pipeline<V: VertexData, I: InstanceData>(
         &mut self,
         name: &str,
         display: &Display,
         shader: &wgpu::ShaderModule,
-        vertex_layouts: &[wgpu::VertexBufferLayout<'a>],
-    ) -> PipelineRef {
-        self.create_pipeline_with_key(name, display, shader, vertex_layouts, None)
+    ) -> PipelineRef<V, I> {
+        self.create_pipeline_with_key::<V, I>(name, display, shader, None)
     }
 
-    pub fn replace_pipeline<'a>(
+    pub fn replace_pipeline<V: VertexData, I: InstanceData>(
         &mut self,
         name: &str,
         display: &Display,
         shader: &wgpu::ShaderModule,
-        vertex_layouts: &[wgpu::VertexBufferLayout<'a>],
-        key: PipelineRef,
-    ) -> PipelineRef {
-        self.create_pipeline_with_key(name, display, shader, vertex_layouts, Some(key))
+        key: PipelineRef<V, I>,
+    ) -> PipelineRef<V, I> {
+        self.create_pipeline_with_key::<V, I>(name, display, shader, Some(key))
     }
 
-    pub fn create_pipeline_with_key<'a>(
+    pub fn create_pipeline_with_key<V: VertexData, I: InstanceData>(
         &mut self,
         name: &str,
         display: &Display,
         shader: &wgpu::ShaderModule,
-        vertex_layouts: &[wgpu::VertexBufferLayout<'a>],
-        key: Option<PipelineRef>,
-    ) -> PipelineRef {
+        key: Option<PipelineRef<V, I>>,
+    ) -> PipelineRef<V, I> {
         // TODO: do we need/want to dedupe or cache this?
         let layout = display
             .device()
@@ -288,7 +310,7 @@ impl RenderState {
                 vertex: wgpu::VertexState {
                     module: shader,
                     entry_point: "vs_main",
-                    buffers: vertex_layouts,
+                    buffers: &[V::vertex_layout(), I::vertex_layout()],
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: shader,
@@ -337,27 +359,11 @@ impl RenderState {
             });
         match key {
             Some(key) => {
-                *self.pipelines.get_mut(key).unwrap() = pipeline;
+                *self.pipelines.get_mut(key.raw()).unwrap() = pipeline;
                 key
             }
-            None => self.pipelines.insert(pipeline),
+            None => self.pipelines.insert(pipeline).into(),
         }
-    }
-
-    pub fn create_vertex_buffers<'a, const N: usize>(
-        &mut self,
-        device: &wgpu::Device,
-        vertex_layouts: [wgpu::VertexBufferLayout<'a>; N],
-    ) -> [wgpu::Buffer; N] {
-        std::array::from_fn(|i| {
-            let layout = &vertex_layouts[i];
-            device.create_buffer(&BufferDescriptor {
-                label: None,                      // TODO: pass a name through
-                size: 4096 * layout.array_stride, // TODO: pass the count through as well
-                usage: BufferUsages::COPY_DST | BufferUsages::VERTEX,
-                mapped_at_creation: false,
-            })
-        })
     }
 
     #[must_use]
@@ -460,16 +466,16 @@ impl RenderState {
             BoundTexture::new(display.device(), &self.texture_bind_group_layout, value);
     }
 
-    pub fn prepare_mesh(&mut self, mesh: Mesh) -> MeshRef {
-        self.mesh_manager.insert(mesh)
+    pub fn prepare_mesh<V: VertexData>(&mut self, mesh: Mesh<V>) -> MeshRef<V> {
+        self.mesh_manager.insert(mesh.inner).into()
     }
 }
 
 pub struct RenderPass<'a> {
     pub render_state: &'a RenderState,
     raw_pass: wgpu::RenderPass<'a>,
-    active_mesh: Option<MeshRef>,
-    active_pipeline: Option<PipelineRef>,
+    active_mesh: Option<RawMeshRef>,
+    active_pipeline: Option<RawPipelineRef>,
 }
 
 impl<'a> Deref for RenderPass<'a> {
@@ -493,22 +499,29 @@ impl<'a> RenderPass<'a> {
     const GLOBAL_UNIFORMS_BIND_GROUP_INDEX: u32 = 1;
     pub const VIEW_PROJECTION_UNIFORMS_BIND_GROUP_INDEX: u32 = 2;
 
-    pub fn set_active_pipeline(&mut self, pipeline: impl Into<Option<PipelineRef>>) {
-        let pipeline = pipeline.into();
-        if pipeline == self.active_pipeline {
+    pub fn set_active_pipeline<V, I>(&mut self, pipeline: impl Into<Option<PipelineRef<V, I>>>) {
+        self.set_active_pipeline_raw(pipeline.into().map(PipelineRef::raw));
+    }
+
+    pub(super) fn set_active_pipeline_raw(&mut self, raw: Option<RawPipelineRef>) {
+        if raw == self.active_pipeline {
             return;
         }
         let p = self
             .render_state
             .pipelines
-            .get(pipeline.unwrap_or(self.render_state.default_pipeline))
+            .get(raw.unwrap_or(self.render_state.default_pipeline.raw()))
             .unwrap();
         self.set_pipeline(p);
-        self.active_pipeline = pipeline;
+        self.active_pipeline = raw;
     }
 
-    pub fn set_active_mesh(&mut self, mesh: MeshRef) {
-        self.active_mesh = Some(mesh);
+    pub fn set_active_mesh<V: VertexData>(&mut self, mesh: MeshRef<V>) {
+        self.set_active_mesh_raw(mesh.raw());
+    }
+
+    pub(super) fn set_active_mesh_raw(&mut self, raw: RawMeshRef) {
+        self.active_mesh = Some(raw);
     }
 
     pub fn draw_active_mesh(&mut self, instances: Range<u32>) {
@@ -537,134 +550,3 @@ impl<'a> RenderPass<'a> {
         self.bind_texture_data(self.render_state.get_texture(texture.into()))
     }
 }
-
-// pub async fn load_model(
-//     file_name: &str,
-//     device: &wgpu::Device,
-//     queue: &wgpu::Queue,
-//     material_layout: &wgpu::BindGroupLayout,
-// ) -> anyhow::Result<model::Model> {
-//     let obj_text = load_string(file_name).await?;
-//     let obj_cursor = Cursor::new(obj_text);
-//     let mut obj_reader = BufReader::new(obj_cursor);
-
-//     let (models, obj_materials) = tobj::load_obj_buf_async(
-//         &mut obj_reader,
-//         &tobj::LoadOptions {
-//             triangulate: true,
-//             single_index: true,
-//             ..Default::default()
-//         },
-//         |mat_name| async move {
-//             let mat_text = load_string(&mat_name).await.unwrap();
-//             tobj::load_mtl_buf(&mut BufReader::new(Cursor::new(mat_text)))
-//         },
-//     )
-//     .await?;
-
-//     let mut materials = Vec::new();
-//     for m in obj_materials? {
-//         let diffuse_texture = load_texture(&m.diffuse_texture, false, device, queue).await?;
-//         let normal_texture = load_texture(&m.normal_texture, true, device, queue).await?;
-//         materials.push(model::Material::new(
-//             device,
-//             &m.name,
-//             diffuse_texture,
-//             normal_texture,
-//             material_layout,
-//         ));
-//     }
-
-//     let meshes = models
-//         .into_iter()
-//         .map(|m| {
-//             let mut vertices = (0..m.mesh.positions.len() / 3)
-//                 .map(|i| model::ModelVertex {
-//                     position: [
-//                         m.mesh.positions[i * 3],
-//                         m.mesh.positions[i * 3 + 1],
-//                         m.mesh.positions[i * 3 + 2],
-//                     ],
-//                     tex_coords: [m.mesh.texcoords[i * 2], m.mesh.texcoords[i * 2 + 1]],
-//                     normal: [
-//                         m.mesh.normals[i * 3],
-//                         m.mesh.normals[i * 3 + 1],
-//                         m.mesh.normals[i * 3 + 2],
-//                     ],
-//                     tangent: [0.0; 3],
-//                     bitangent: [0.0; 3],
-//                 })
-//                 .collect::<Vec<_>>();
-
-//             let indices = &m.mesh.indices;
-//             let mut triangles_included = vec![0; vertices.len()];
-
-//             for c in indices.chunks(3) {
-//                 let v0 = vertices[c[0] as usize];
-//                 let v1 = vertices[c[1] as usize];
-//                 let v2 = vertices[c[2] as usize];
-
-//                 let pos0: cgmath::Vector3<_> = v0.position.into();
-//                 let pos1: cgmath::Vector3<_> = v1.position.into();
-//                 let pos2: cgmath::Vector3<_> = v2.position.into();
-
-//                 let uv0: cgmath::Vector2<_> = v0.tex_coords.into();
-//                 let uv1: cgmath::Vector2<_> = v1.tex_coords.into();
-//                 let uv2: cgmath::Vector2<_> = v2.tex_coords.into();
-
-//                 // triangle edges
-//                 let delta_pos1 = pos1 - pos0;
-//                 let delta_pos2 = pos2 - pos0;
-
-//                 let delta_uv1 = uv1 - uv0;
-//                 let delta_uv2 = uv2 - uv0;
-
-//                 let r = 1.0 / (delta_uv1.x * delta_uv2.y - delta_uv1.y * delta_uv2.x);
-//                 let tangent = (delta_pos1 * delta_uv2.y - delta_pos2 * delta_uv1.y) * r;
-//                 // We flip the bitangent to enable right-handed normal
-//                 // maps with wgpu texture coordinate system
-//                 let bitangent = (delta_pos2 * delta_uv1.x - delta_pos1 * delta_uv2.x) * -r;
-
-//                 // We'll use the same tangent/bitangent for each vertex in the triangle
-//                 vertices[c[0] as usize].tangent =
-//                     (tangent + cgmath::Vector3::from(vertices[c[0] as usize].tangent)).into();
-//                 vertices[c[1] as usize].tangent =
-//                     (tangent + cgmath::Vector3::from(vertices[c[1] as usize].tangent)).into();
-//                 vertices[c[2] as usize].tangent =
-//                     (tangent + cgmath::Vector3::from(vertices[c[2] as usize].tangent)).into();
-//                 vertices[c[0] as usize].bitangent =
-//                     (bitangent + cgmath::Vector3::from(vertices[c[0] as usize].bitangent)).into();
-//                 vertices[c[1] as usize].bitangent =
-//                     (bitangent + cgmath::Vector3::from(vertices[c[1] as usize].bitangent)).into();
-//                 vertices[c[2] as usize].bitangent =
-//                     (bitangent + cgmath::Vector3::from(vertices[c[2] as usize].bitangent)).into();
-
-//                 // Used to average the tangents/bitangents
-//                 triangles_included[c[0] as usize] += 1;
-//                 triangles_included[c[1] as usize] += 1;
-//                 triangles_included[c[2] as usize] += 1;
-//             }
-
-//             let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-//                 label: Some(&format!("{:?} Vertex Buffer", file_name)),
-//                 contents: bytemuck::cast_slice(&vertices),
-//                 usage: wgpu::BufferUsages::VERTEX,
-//             });
-//             let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-//                 label: Some(&format!("{:?} Index Buffer", file_name)),
-//                 contents: bytemuck::cast_slice(&m.mesh.indices),
-//                 usage: wgpu::BufferUsages::INDEX,
-//             });
-
-//             model::Mesh {
-//                 name: file_name.to_string(),
-//                 vertex_buffer,
-//                 index_buffer,
-//                 num_elements: m.mesh.indices.len() as u32,
-//                 material: m.mesh.material_id.unwrap_or(0),
-//             }
-//         })
-//         .collect::<Vec<_>>();
-
-//     Ok(model::Model { meshes, materials })
-// }

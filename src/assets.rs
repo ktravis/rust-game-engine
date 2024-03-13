@@ -10,7 +10,7 @@ type AssetChangedCallback<S> = fn(&mut S, &Path, File);
 pub struct AssetManager<S> {
     state: S,
     base_path: PathBuf,
-    watcher: Option<Box<dyn Watcher>>,
+    _watcher: Option<Box<dyn Watcher>>,
     recv: Option<std::sync::mpsc::Receiver<Event>>,
     file_callbacks: HashMap<PathBuf, AssetChangedCallback<S>>,
     glob_callbacks: HashMap<Pattern, AssetChangedCallback<S>>,
@@ -49,7 +49,7 @@ impl<S> AssetManager<S> {
             state,
             base_path,
             recv: Some(recv),
-            watcher: Some(Box::new(watcher)),
+            _watcher: Some(Box::new(watcher)),
             file_callbacks: Default::default(),
             glob_callbacks: Default::default(),
         }

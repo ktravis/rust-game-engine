@@ -1,6 +1,6 @@
 use crate::geom::Point;
 use crate::renderer::Bindable;
-use image::{DynamicImage, EncodableLayout, RgbaImage};
+use image::{EncodableLayout, RgbaImage};
 
 slotmap::new_key_type! {
     pub struct TextureRef;

@@ -120,17 +120,18 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Rect {
-    pub pos: Vec2,
     pub dim: Vec2,
+    pub pos: Vec2,
 }
 
 impl Rect {
     pub fn new(x: f32, y: f32, w: f32, h: f32) -> Self {
         Self {
-            pos: vec2(x, y),
             dim: vec2(w, h),
+            pos: vec2(x, y),
         }
     }
 

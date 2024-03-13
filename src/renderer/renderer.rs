@@ -9,20 +9,17 @@ use wgpu::util::DeviceExt;
 use wgpu::{vertex_attr_array, VertexAttribute, VertexBufferLayout, VertexStepMode};
 
 #[derive(Copy, Clone)]
-pub struct RenderData {
-    pub pipeline: PipelineRef,
+pub struct RenderData<V, I> {
+    pub pipeline: Option<PipelineRef<V, I>>,
     pub texture: TextureRef,
-    pub mesh: MeshRef,
+    pub mesh: MeshRef<V>,
 }
 
-impl RenderData {
-    pub fn for_model_instance<T: Transform>(
-        self,
-        model: ModelInstanceData<T>,
-    ) -> InstanceRenderData<T> {
+impl<V, I: InstanceData> RenderData<V, I> {
+    pub fn for_model_instance(self, model: I) -> InstanceRenderData<V, I> {
         InstanceRenderData {
             texture: Some(self.texture),
-            pipeline: Some(self.pipeline),
+            pipeline: self.pipeline,
             mesh: self.mesh,
             model,
         }
@@ -33,7 +30,7 @@ pub trait VertexLayout {
     fn vertex_layout() -> VertexBufferLayout<'static>;
 }
 
-pub trait InstanceData: Copy + Default + Sized + VertexLayout {}
+pub trait InstanceData: Copy + Default + Sized + VertexLayout + bytemuck::Pod {}
 
 impl VertexLayout for () {
     fn vertex_layout() -> VertexBufferLayout<'static> {
@@ -47,12 +44,15 @@ impl VertexLayout for () {
 
 impl InstanceData for () {}
 
-#[derive(Debug, Clone, Copy)]
-pub struct ModelInstanceData<T = Transform3D> {
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ModelInstanceData {
     pub subtexture: Rect,
     pub tint: Color,
-    pub transform: T,
+    pub transform: Mat4,
 }
+
+impl InstanceData for ModelInstanceData {}
 
 impl ModelInstanceData {
     const ATTRIBUTES: [VertexAttribute; 7] = vertex_attr_array![
@@ -70,24 +70,13 @@ impl ModelInstanceData {
     ];
 }
 
-impl<T: Transform> ModelInstanceData<T> {
+impl ModelInstanceData {
     #[inline]
-    pub fn transform(transform: T) -> Self {
+    pub fn transform(transform: impl Transform) -> Self {
         Self {
-            transform,
+            transform: transform.as_mat4(),
             subtexture: Rect::default(),
             tint: Color::WHITE,
-        }
-    }
-
-    #[inline]
-    pub fn as_raw(&self) -> RawInstanceData {
-        let model = self.transform.as_mat4(); //.to_cols_array_2d();
-        RawInstanceData {
-            uv_scale: [self.subtexture.dim.x, self.subtexture.dim.y],
-            uv_offset: [self.subtexture.pos.x, self.subtexture.pos.y],
-            tint: [self.tint.r, self.tint.g, self.tint.b, self.tint.a],
-            model,
         }
     }
 }
@@ -95,45 +84,19 @@ impl<T: Transform> ModelInstanceData<T> {
 impl VertexLayout for ModelInstanceData {
     fn vertex_layout() -> VertexBufferLayout<'static> {
         VertexBufferLayout {
-            array_stride: std::mem::size_of::<RawInstanceData>() as wgpu::BufferAddress,
+            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
             step_mode: VertexStepMode::Instance,
             attributes: &Self::ATTRIBUTES,
         }
     }
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct RawInstanceData {
-    uv_scale: [f32; 2],
-    uv_offset: [f32; 2],
-    tint: [f32; 4],
-    model: Mat4,
-}
-
-impl<T: Transform> From<ModelInstanceData<T>> for RawInstanceData {
-    fn from(other: ModelInstanceData<T>) -> Self {
-        other.as_raw()
-    }
-}
-
-impl<T: Default> Default for ModelInstanceData<T> {
+impl Default for ModelInstanceData {
     fn default() -> Self {
         Self {
             transform: Default::default(),
             tint: Color::WHITE,
             subtexture: Rect::new(0., 0., 1., 1.),
-        }
-    }
-}
-
-impl Default for RawInstanceData {
-    fn default() -> Self {
-        Self {
-            uv_scale: Default::default(),
-            uv_offset: Default::default(),
-            tint: [1.0, 1.0, 1.0, 1.0],
-            model: Mat4::IDENTITY,
         }
     }
 }

@@ -5,7 +5,6 @@ use glam::{vec2, vec3, Mat4, Quat, Vec3};
 use itertools::Itertools;
 use rust_game_engine::app::{AppState, Context};
 use rust_game_engine::renderer::RenderTarget;
-use slotmap::Key as SlotmapKey;
 use ttf_parser::Face;
 use winit::dpi::{PhysicalSize, Size};
 use winit::event_loop::EventLoop;
@@ -16,14 +15,14 @@ use rust_game_engine::assets::AssetManager;
 use rust_game_engine::camera::Camera;
 use rust_game_engine::font::FontAtlas;
 use rust_game_engine::geom::{ModelVertexData, Point};
-use rust_game_engine::input::{Axis, Button, ControlSet, Key, Toggle};
+use rust_game_engine::input::{Axis, Button, Key, Toggle};
 use rust_game_engine::renderer::{
     instance::InstanceRenderData,
     mesh::LoadMesh,
     state::{GlobalUniforms, ViewProjectionUniforms},
     text::TextDisplayOptions,
     Display, ModelInstanceData, OffscreenFramebuffer, PipelineRef, RenderData, RenderState,
-    ScalingMode, TextureBuilder, TextureRef, VertexLayout,
+    ScalingMode, TextureBuilder, TextureRef,
 };
 use rust_game_engine::sprite_manager::SpriteManager;
 use rust_game_engine::transform::{Transform, Transform2D, Transform3D};
@@ -50,14 +49,12 @@ struct GameControls {
 struct ShaderSource {
     dirty: bool,
 
-    model: String,
     text: String,
 }
 
 #[derive(Default)]
 struct RenderPipelines {
-    instanced: PipelineRef,
-    text: PipelineRef,
+    text: PipelineRef<ModelVertexData, ModelInstanceData>,
 }
 
 impl RenderPipelines {
@@ -69,26 +66,9 @@ impl RenderPipelines {
         display: &Display,
         src: &ShaderSource,
     ) {
-        self.instanced = render_state.create_pipeline_with_key(
-            "Instanced Render Pipeline",
-            &display,
-            &display
-                .device()
-                .create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("instanced"),
-                    source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&src.model)),
-                }),
-            &[
-                ModelVertexData::vertex_layout(),
-                ModelInstanceData::vertex_layout(),
-            ],
-            if self.instanced.is_null() {
-                None
-            } else {
-                Some(self.instanced)
-            },
-        );
-        self.text = render_state.create_pipeline_with_key(
+        // TODO: this should probably just move into the renderer, or maybe have a separate text
+        // renderer layer
+        self.text = render_state.create_pipeline_with_key::<ModelVertexData, ModelInstanceData>(
             "Text Render Pipeline",
             &display,
             &display
@@ -97,10 +77,6 @@ impl RenderPipelines {
                     label: Some("text"),
                     source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&src.text)),
                 }),
-            &[
-                ModelVertexData::vertex_layout(),
-                ModelInstanceData::vertex_layout(),
-            ],
             if self.text.is_null() {
                 None
             } else {
@@ -123,14 +99,14 @@ struct State {
     render_pipelines: RenderPipelines,
 
     // TODO: BitmapFontRenderer
-    font_render_data: RenderData,
-    sprite_render_data: RenderData,
+    font_render_data: RenderData<ModelVertexData, ModelInstanceData>,
+    sprite_render_data: RenderData<ModelVertexData, ModelInstanceData>,
     offscreen_framebuffer: OffscreenFramebuffer,
 
     // "game" state
-    instances: Vec<InstanceRenderData<Transform3D>>,
+    instances: Vec<InstanceRenderData>,
     camera: Camera,
-    sprite_instances: Vec<InstanceRenderData<Mat4>>,
+    sprite_instances: Vec<InstanceRenderData>,
     crate_texture: TextureRef,
     cat_texture: TextureRef,
 }
@@ -228,15 +204,10 @@ impl AppState for State {
                 ),
         );
 
-        asset_manager
-            .track_file("./res/shaders/model.wgsl", |state, _, f| {
-                state.shader_sources.dirty = true;
-                state.shader_sources.model = std::io::read_to_string(f).unwrap();
-            })
-            .track_file("./res/shaders/text.wgsl", |state, _, f| {
-                state.shader_sources.dirty = true;
-                state.shader_sources.text = std::io::read_to_string(f).unwrap();
-            });
+        asset_manager.track_file("./res/shaders/text.wgsl", |state, _, f| {
+            state.shader_sources.dirty = true;
+            state.shader_sources.text = std::io::read_to_string(f).unwrap();
+        });
 
         let mut render_pipelines = RenderPipelines::default();
         render_pipelines.create_or_update(
@@ -265,7 +236,8 @@ impl AppState for State {
                         scale: Vec3::splat(2.5),
                         rotation: Quat::from_rotation_y(180.0f32.to_radians())
                             * Quat::from_rotation_z(10.0f32.to_radians()),
-                    },
+                    }
+                    .as_mat4(),
                     ..Default::default()
                 },
                 pipeline: None,
@@ -273,12 +245,12 @@ impl AppState for State {
         ];
 
         let font_render_data = RenderData {
-            pipeline: render_pipelines.text,
+            pipeline: Some(render_pipelines.text),
             texture: font_atlas_texture,
             mesh: ctx.render_state.quad_mesh(),
         };
         let sprite_render_data = RenderData {
-            pipeline: render_pipelines.instanced,
+            pipeline: None,
             texture: sprite_atlas,
             mesh: ctx.render_state.quad_mesh(),
         };

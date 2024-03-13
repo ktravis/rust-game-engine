@@ -4,41 +4,39 @@ use std::sync::Arc;
 use glam::{vec3, Mat4, Quat};
 
 use crate::font::FontAtlas;
+use crate::geom::{ModelVertexData, VertexData};
 use crate::sprite::Sprite;
 use crate::transform::Transform;
 
-use super::state::{BindGroupAllocator, RenderPass, ViewProjectionUniforms};
+use super::mesh::RawMeshRef;
+use super::state::{BindGroupAllocator, RawPipelineRef, RenderPass, ViewProjectionUniforms};
 use super::text::TextDisplayOptions;
-use super::{Display, MeshRef, PipelineRef, RawInstanceData, RenderData, TextureRef};
+use super::{Display, InstanceData, MeshRef, PipelineRef, RenderData, TextureRef};
 
 use super::ModelInstanceData;
 
 #[derive(Debug)]
-pub struct InstanceRenderData<T> {
-    pub mesh: MeshRef,
-    pub model: ModelInstanceData<T>,
+pub struct InstanceRenderData<V = ModelVertexData, I = ModelInstanceData> {
+    pub mesh: MeshRef<V>,
+    pub model: I,
     pub texture: Option<TextureRef>,
-    pub pipeline: Option<PipelineRef>,
+    pub pipeline: Option<PipelineRef<V, I>>,
 }
 
-impl<T> Deref for InstanceRenderData<T> {
-    type Target = ModelInstanceData<T>;
+impl<V, I> Deref for InstanceRenderData<V, I> {
+    type Target = I;
 
     fn deref(&self) -> &Self::Target {
         &self.model
     }
 }
 
-pub trait DrawInstance {
-    fn draw_instance<T: Transform>(&mut self, instance: &InstanceRenderData<T>);
-}
-
 #[derive(Debug, Clone)]
-pub enum InstancedDrawOp {
+enum InstancedDrawOp {
     Draw(Range<u32>),
-    SetPipeline(Option<PipelineRef>),
+    SetPipeline(Option<RawPipelineRef>),
     SetTexture(Option<TextureRef>),
-    SetMesh(MeshRef),
+    SetMesh(RawMeshRef),
     SetBindGroup(u32, Arc<wgpu::BindGroup>),
 }
 
@@ -46,9 +44,11 @@ impl InstancedDrawOp {
     pub fn apply<'pass, 'r: 'pass>(&'r self, render_pass: &mut RenderPass<'pass>) {
         match self {
             InstancedDrawOp::Draw(instances) => render_pass.draw_active_mesh(instances.clone()),
-            InstancedDrawOp::SetPipeline(pipeline) => render_pass.set_active_pipeline(*pipeline),
+            InstancedDrawOp::SetPipeline(pipeline) => {
+                render_pass.set_active_pipeline_raw(*pipeline)
+            }
             InstancedDrawOp::SetTexture(texture) => render_pass.bind_texture(*texture),
-            InstancedDrawOp::SetMesh(mesh) => render_pass.set_active_mesh(*mesh),
+            InstancedDrawOp::SetMesh(mesh) => render_pass.set_active_mesh_raw(*mesh),
             InstancedDrawOp::SetBindGroup(index, bind_group) => {
                 render_pass.set_bind_group(*index, bind_group, &[])
             }
@@ -58,7 +58,7 @@ impl InstancedDrawOp {
 
 pub struct InstanceStorage {
     ops: Vec<InstancedDrawOp>,
-    raw_instances: Vec<RawInstanceData>,
+    raw_instance_bytes: Vec<u8>,
     instance_buffer: wgpu::Buffer,
 }
 
@@ -66,13 +66,13 @@ impl InstanceStorage {
     pub fn new(display: &Display, initial_size: usize) -> Self {
         let instance_buffer = display.device().create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: (initial_size * std::mem::size_of::<RawInstanceData>()) as u64,
+            size: (initial_size * std::mem::size_of::<ModelInstanceData>()) as u64,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
             mapped_at_creation: false,
         });
         Self {
             ops: vec![],
-            raw_instances: vec![],
+            raw_instance_bytes: vec![],
             instance_buffer,
         }
     }
@@ -84,12 +84,11 @@ impl InstanceStorage {
 
     pub fn clear(&mut self) {
         self.ops.clear();
-        self.raw_instances.clear();
+        self.raw_instance_bytes.clear();
     }
 
     fn update_buffer(&mut self, display: &Display) {
-        let req_size = (self.raw_instances.len() * std::mem::size_of::<RawInstanceData>())
-            as wgpu::BufferAddress;
+        let req_size = self.raw_instance_bytes.len() as wgpu::BufferAddress;
         if self.instance_buffer.size() < req_size {
             self.instance_buffer.destroy();
             self.instance_buffer = display.device().create_buffer(&wgpu::BufferDescriptor {
@@ -99,11 +98,9 @@ impl InstanceStorage {
                 mapped_at_creation: false,
             });
         }
-        display.queue().write_buffer(
-            &self.instance_buffer,
-            0,
-            bytemuck::cast_slice(&self.raw_instances),
-        );
+        display
+            .queue()
+            .write_buffer(&self.instance_buffer, 0, &self.raw_instance_bytes);
     }
 }
 
@@ -112,8 +109,8 @@ pub struct InstanceRenderer<'r, 'alloc> {
     instance_storage: &'r mut InstanceStorage,
 
     active_texture: Option<TextureRef>,
-    active_mesh: Option<MeshRef>,
-    active_pipeline: Option<PipelineRef>,
+    active_mesh: Option<RawMeshRef>,
+    active_pipeline: Option<RawPipelineRef>,
     current_count: u32,
     range_start: u32,
 }
@@ -151,8 +148,12 @@ impl<'r, 'alloc> InstanceRenderer<'r, 'alloc> {
     }
 
     #[inline]
-    pub fn draw_instance(&mut self, instance: &InstanceRenderData<impl Transform>) {
-        if instance.pipeline != self.active_pipeline {
+    pub fn draw_instance<V: VertexData, I: InstanceData>(
+        &mut self,
+        instance: &InstanceRenderData<V, I>,
+    ) {
+        let pipeline = instance.pipeline.map(|p| p.raw());
+        if pipeline != self.active_pipeline {
             if self.current_count > 0 {
                 self.instance_storage.ops.push(InstancedDrawOp::Draw(
                     self.range_start..self.range_start + self.current_count,
@@ -162,10 +163,11 @@ impl<'r, 'alloc> InstanceRenderer<'r, 'alloc> {
             }
             self.instance_storage
                 .ops
-                .push(InstancedDrawOp::SetPipeline(instance.pipeline));
-            self.active_pipeline = instance.pipeline;
+                .push(InstancedDrawOp::SetPipeline(pipeline));
+            self.active_pipeline = pipeline;
         }
-        if instance.mesh != self.active_mesh.unwrap_or_default() {
+        let mesh = instance.mesh.raw();
+        if mesh != self.active_mesh.unwrap_or_default() {
             if self.current_count > 0 {
                 self.instance_storage.ops.push(InstancedDrawOp::Draw(
                     self.range_start..self.range_start + self.current_count,
@@ -175,8 +177,8 @@ impl<'r, 'alloc> InstanceRenderer<'r, 'alloc> {
             }
             self.instance_storage
                 .ops
-                .push(InstancedDrawOp::SetMesh(instance.mesh));
-            self.active_mesh = Some(instance.mesh);
+                .push(InstancedDrawOp::SetMesh(mesh));
+            self.active_mesh = Some(mesh);
         }
         if instance.texture != self.active_texture {
             if self.current_count > 0 {
@@ -192,14 +194,19 @@ impl<'r, 'alloc> InstanceRenderer<'r, 'alloc> {
             self.active_texture = instance.texture;
         }
         self.current_count += 1;
-        self.instance_storage.raw_instances.push(instance.as_raw());
+        self.instance_storage
+            .raw_instance_bytes
+            // .extend_from_slice(bytemuck::cast_slice(&[instance.as_raw()]));
+            .extend_from_slice(bytemuck::bytes_of(&instance.model));
     }
 
+    // I is more constrained here because we want to be able to set `subtexture`. Maybe we could
+    // come up with a TexturedInstanceData trait?
     #[inline]
-    pub fn draw_sprite(
+    pub fn draw_sprite<V: VertexData>(
         &mut self,
         sprite: &Sprite,
-        render_data: &RenderData,
+        render_data: &RenderData<V, ModelInstanceData>,
         frame: usize,
         transform: impl Transform,
     ) {
@@ -216,11 +223,11 @@ impl<'r, 'alloc> InstanceRenderer<'r, 'alloc> {
     }
 
     #[inline]
-    pub fn draw_text(
+    pub fn draw_text<V: VertexData>(
         &mut self,
         s: impl AsRef<str>,
         font: &FontAtlas,
-        render_data: &RenderData,
+        render_data: &RenderData<V, ModelInstanceData>,
         transform: impl Transform,
         opts: TextDisplayOptions,
     ) {
