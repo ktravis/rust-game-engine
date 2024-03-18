@@ -42,6 +42,35 @@ impl ModelVertexData {
 
 impl VertexData for ModelVertexData {}
 
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ModelVertexDataWithNormal {
+    pub pos: [f32; 4],
+    pub uv: [f32; 2],
+    pub normal: [f32; 3],
+}
+
+impl VertexLayout for ModelVertexDataWithNormal {
+    fn vertex_layout() -> VertexBufferLayout<'static> {
+        use std::mem;
+        VertexBufferLayout {
+            array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBUTES,
+        }
+    }
+}
+
+impl ModelVertexDataWithNormal {
+    const ATTRIBUTES: [VertexAttribute; 3] = vertex_attr_array![
+        0 => Float32x4,
+        1 => Float32x2,
+        2 => Float32x3,
+    ];
+}
+
+impl VertexData for ModelVertexDataWithNormal {}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Point<T = i32> {
     pub x: T,
@@ -300,5 +329,80 @@ pub mod cube {
     pub const INDICES: &[u16] = &[
         0, 1, 2, 0, 2, 3, 6, 5, 4, 7, 6, 4, 8, 9, 10, 8, 10, 11, 14, 13, 12, 15, 14, 12, 16, 17,
         18, 16, 18, 19, 22, 21, 20, 23, 22, 20,
+    ];
+}
+
+pub mod cube_with_normals {
+    use glam::Vec3;
+    const BACK: [f32; 3] = Vec3::NEG_Z.to_array();
+    const FORWARD: [f32; 3] = Vec3::Z.to_array();
+    const LEFT: [f32; 3] = Vec3::NEG_X.to_array();
+    const RIGHT: [f32; 3] = Vec3::X.to_array();
+    const DOWN: [f32; 3] = Vec3::NEG_Y.to_array();
+    const UP: [f32; 3] = Vec3::Y.to_array();
+
+    const BL: [f32; 2] = [0.0, 0.0];
+    const BR: [f32; 2] = [1.0, 0.0];
+    const TL: [f32; 2] = [0.0, 1.0];
+    const TR: [f32; 2] = [1.0, 1.0];
+
+    use super::*;
+
+    const fn v(pos: [f32; 3], uv: [f32; 2], normal: [f32; 3]) -> ModelVertexDataWithNormal {
+        ModelVertexDataWithNormal {
+            pos: [pos[0], pos[1], pos[2], 1.0],
+            uv,
+            normal,
+        }
+    }
+
+    pub const VERTICES: [ModelVertexDataWithNormal; 36] = [
+        // front face (facing -z direction)
+        v([1., 1., 1.], TL, FORWARD),
+        v([1., -1., 1.], BL, FORWARD),
+        v([-1., 1., 1.], TR, FORWARD),
+        v([-1., 1., 1.], TR, FORWARD),
+        v([1., -1., 1.], BL, FORWARD),
+        v([-1., -1., 1.], BR, FORWARD),
+        // back face
+        v([-1., 1., -1.], TL, BACK),
+        v([-1., -1., -1.], BL, BACK),
+        v([1., 1., -1.], TR, BACK),
+        v([1., 1., -1.], TR, BACK),
+        v([-1., -1., -1.], BL, BACK),
+        v([1., -1., -1.], BR, BACK),
+        // left face
+        v([-1., 1., 1.], TL, LEFT),
+        v([-1., -1., 1.], BL, LEFT),
+        v([-1., 1., -1.], TR, LEFT),
+        v([-1., 1., -1.], TR, LEFT),
+        v([-1., -1., 1.], BL, LEFT),
+        v([-1., -1., -1.], BR, LEFT),
+        // right face
+        v([1., 1., -1.], TL, RIGHT),
+        v([1., -1., -1.], BL, RIGHT),
+        v([1., 1., 1.], TR, RIGHT),
+        v([1., 1., 1.], TR, RIGHT),
+        v([1., -1., -1.], BL, RIGHT),
+        v([1., -1., 1.], BR, RIGHT),
+        // top face
+        v([-1., 1., 1.], TL, UP),
+        v([-1., 1., -1.], BL, UP),
+        v([1., 1., 1.], TR, UP),
+        v([1., 1., 1.], TR, UP),
+        v([-1., 1., -1.], BL, UP),
+        v([1., 1., -1.], BR, UP),
+        // bottom face
+        v([-1., -1., -1.], TL, DOWN),
+        v([-1., -1., 1.], BL, DOWN),
+        v([1., -1., -1.], TR, DOWN),
+        v([1., -1., -1.], TR, DOWN),
+        v([-1., -1., 1.], BL, DOWN),
+        v([1., -1., 1.], BR, DOWN),
+    ];
+
+    pub const INDICES: &[u16] = &[
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+        25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
     ];
 }

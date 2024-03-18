@@ -5,7 +5,9 @@ use std::{
 
 use wgpu::{util::DeviceExt, BufferUsages};
 
-use crate::geom::{cube, quad, ModelVertexData, VertexData};
+use crate::geom::{
+    cube_with_normals, quad, ModelVertexData, ModelVertexDataWithNormal, VertexData,
+};
 
 slotmap::new_key_type! {
     pub struct RawMeshRef;
@@ -76,8 +78,9 @@ pub trait LoadMesh {
         .unwrap()
     }
 
-    fn load_cube_mesh(&self) -> Mesh {
-        self.load_mesh(&cube::VERTICES, &cube::INDICES).unwrap()
+    fn load_cube_mesh(&self) -> Mesh<ModelVertexDataWithNormal> {
+        self.load_mesh(&cube_with_normals::VERTICES, &cube_with_normals::INDICES)
+            .unwrap()
     }
 }
 

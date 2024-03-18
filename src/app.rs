@@ -150,7 +150,7 @@ pub trait AppState {
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("instanced"),
                     source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
-                        "../res/shaders/model.wgsl"
+                        "../res/shaders/flat.wgsl"
                     ))),
                 }),
         )

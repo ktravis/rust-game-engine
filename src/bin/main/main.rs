@@ -4,7 +4,8 @@ use std::io::Read;
 use glam::{vec2, vec3, Mat4, Quat, Vec3};
 use itertools::Itertools;
 use rust_game_engine::app::{AppState, Context};
-use rust_game_engine::renderer::RenderTarget;
+use rust_game_engine::renderer::model::LoadModel;
+use rust_game_engine::renderer::{MeshRef, RenderTarget};
 use ttf_parser::Face;
 use winit::dpi::{PhysicalSize, Size};
 use winit::event_loop::EventLoop;
@@ -14,7 +15,7 @@ use controlset_derive::ControlSet;
 use rust_game_engine::assets::AssetManager;
 use rust_game_engine::camera::Camera;
 use rust_game_engine::font::FontAtlas;
-use rust_game_engine::geom::{ModelVertexData, Point};
+use rust_game_engine::geom::{ModelVertexData, ModelVertexDataWithNormal, Point};
 use rust_game_engine::input::{Axis, Button, Key, Toggle};
 use rust_game_engine::renderer::{
     instance::InstanceRenderData,
@@ -50,11 +51,13 @@ struct ShaderSource {
     dirty: bool,
 
     text: String,
+    model_with_normals: String,
 }
 
 #[derive(Default)]
 struct RenderPipelines {
     text: PipelineRef<ModelVertexData, ModelInstanceData>,
+    model_with_normals: PipelineRef<ModelVertexDataWithNormal, ModelInstanceData>,
 }
 
 impl RenderPipelines {
@@ -83,6 +86,22 @@ impl RenderPipelines {
                 Some(self.text)
             },
         );
+        self.model_with_normals = render_state
+            .create_pipeline_with_key::<ModelVertexDataWithNormal, ModelInstanceData>(
+                "Normal Model Render Pipeline",
+                &display,
+                &display
+                    .device()
+                    .create_shader_module(wgpu::ShaderModuleDescriptor {
+                        label: Some("model_with_normals"),
+                        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&src.model_with_normals)),
+                    }),
+                if self.model_with_normals.is_null() {
+                    None
+                } else {
+                    Some(self.model_with_normals)
+                },
+            );
     }
 }
 
@@ -104,11 +123,13 @@ struct State {
     offscreen_framebuffer: OffscreenFramebuffer,
 
     // "game" state
-    instances: Vec<InstanceRenderData>,
     camera: Camera,
     sprite_instances: Vec<InstanceRenderData>,
     crate_texture: TextureRef,
     cat_texture: TextureRef,
+    cube_mesh: MeshRef<ModelVertexDataWithNormal>,
+
+    model_meshes: Vec<(MeshRef<ModelVertexDataWithNormal>, Option<tobj::Material>)>,
 }
 
 impl State {
@@ -209,6 +230,23 @@ impl AppState for State {
             state.shader_sources.text = std::io::read_to_string(f).unwrap();
         });
 
+        asset_manager.track_file("./res/shaders/model.wgsl", |state, _, f| {
+            state.shader_sources.dirty = true;
+            state.shader_sources.model_with_normals = std::io::read_to_string(f).unwrap();
+        });
+
+        let model = ctx
+            .display
+            .device()
+            .load_model("./res/models/astronautB.obj")
+            .unwrap();
+
+        let model_meshes = model
+            .meshes
+            .into_iter()
+            .map(|m| (ctx.render_state.prepare_mesh(m.mesh), m.material))
+            .collect();
+
         let mut render_pipelines = RenderPipelines::default();
         render_pipelines.create_or_update(
             &mut ctx.render_state,
@@ -219,30 +257,6 @@ impl AppState for State {
         let offscreen_framebuffer = ctx
             .render_state
             .create_offscreen_framebuffer(&ctx.display, Point::new(480, 360));
-
-        let instances = vec![
-            InstanceRenderData {
-                texture: Some(crate_texture),
-                mesh: cube_mesh,
-                model: ModelInstanceData::default(),
-                pipeline: None,
-            },
-            InstanceRenderData {
-                texture: Some(cat_texture),
-                mesh: ctx.render_state.quad_mesh(),
-                model: ModelInstanceData {
-                    transform: Transform3D {
-                        position: vec3(4.0, 1.0, 3.0),
-                        scale: Vec3::splat(2.5),
-                        rotation: Quat::from_rotation_y(180.0f32.to_radians())
-                            * Quat::from_rotation_z(10.0f32.to_radians()),
-                    }
-                    .as_mat4(),
-                    ..Default::default()
-                },
-                pipeline: None,
-            },
-        ];
 
         let font_render_data = RenderData {
             pipeline: Some(render_pipelines.text),
@@ -259,13 +273,14 @@ impl AppState for State {
             asset_manager,
             crate_texture,
             cat_texture,
-            instances,
+            cube_mesh,
             sprite_instances: vec![],
             camera: Camera::new(vec3(0.0, 2.3, -6.0), 960.0 / 720.0),
             font_render_data,
             sprite_render_data,
             offscreen_framebuffer,
             render_pipelines,
+            model_meshes,
         }
     }
 
@@ -322,6 +337,7 @@ impl AppState for State {
                 time: ctx.frame_timing.time(),
             },
         );
+        let quad_mesh = ctx.render_state.quad_mesh();
         ctx.render_state
             .render_pass(
                 &ctx.display,
@@ -332,8 +348,42 @@ impl AppState for State {
                     projection: self.camera.perspective_matrix(),
                 },
                 |r| {
-                    for instance in &self.instances {
-                        r.draw_instance(instance);
+                    r.draw_instance(&InstanceRenderData {
+                        texture: Some(self.crate_texture),
+                        mesh: self.cube_mesh,
+                        model: Default::default(),
+                        pipeline: Some(self.render_pipelines.model_with_normals),
+                    });
+                    r.draw_instance(&InstanceRenderData {
+                        texture: Some(self.cat_texture),
+                        mesh: quad_mesh,
+                        model: ModelInstanceData {
+                            transform: Transform3D {
+                                position: vec3(4.0, 1.0, 3.0),
+                                scale: Vec3::splat(2.5),
+                                rotation: Quat::from_rotation_y(180.0f32.to_radians())
+                                    * Quat::from_rotation_z(10.0f32.to_radians()),
+                            }
+                            .as_mat4(),
+                            ..Default::default()
+                        },
+                        pipeline: None,
+                    });
+                    for (mesh, mat) in &self.model_meshes {
+                        r.draw_instance(&InstanceRenderData {
+                            mesh: *mesh,
+                            model: ModelInstanceData {
+                                tint: mat.as_ref().map(|m| m.diffuse.into()).unwrap_or_default(),
+                                transform: Transform3D {
+                                    position: vec3(0.0, 2.0, 0.0),
+                                    ..Default::default()
+                                }
+                                .as_mat4(),
+                                ..Default::default()
+                            },
+                            texture: None,
+                            pipeline: Some(self.render_pipelines.model_with_normals),
+                        });
                     }
                 },
             )

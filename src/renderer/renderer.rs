@@ -57,16 +57,16 @@ impl InstanceData for ModelInstanceData {}
 impl ModelInstanceData {
     const ATTRIBUTES: [VertexAttribute; 7] = vertex_attr_array![
         // uv_scale: vec2<f32>
-        2 => Float32x2,
+        0 => Float32x2,
         // uv_offset: vec2<f32>
-        3 => Float32x2,
+        1 => Float32x2,
         // tint: vec4<f32>
-        4 => Float32x4,
+        2 => Float32x4,
         // model_N: vec4<f32> * 4
+        3 => Float32x4,
+        4 => Float32x4,
         5 => Float32x4,
         6 => Float32x4,
-        7 => Float32x4,
-        8 => Float32x4,
     ];
 }
 
@@ -103,10 +103,12 @@ impl Default for ModelInstanceData {
 
 #[rustfmt::skip]
 pub const DEFAULT_TEXTURE_DATA: [u8; 16] = [
-    255, 0, 255, 255,
+    // 255, 0, 255, 255,
     255, 255, 255, 255,
     255, 255, 255, 255,
-    255, 0, 255, 255,
+    255, 255, 255, 255,
+    255, 255, 255, 255,
+    // 255, 0, 255, 255,
 ];
 
 #[derive(Debug)]

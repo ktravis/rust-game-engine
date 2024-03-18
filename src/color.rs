@@ -83,6 +83,12 @@ impl From<(f32, f32, f32)> for Color {
     }
 }
 
+impl From<[f32; 3]> for Color {
+    fn from([r, g, b]: [f32; 3]) -> Self {
+        Self { r, g, b, a: 1.0 }
+    }
+}
+
 impl From<u32> for Color {
     fn from(c: u32) -> Self {
         Self {

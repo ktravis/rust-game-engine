@@ -5,7 +5,9 @@ use std::{
 };
 
 use glam::Mat4;
+use itertools::Itertools;
 use slotmap::{Key, SlotMap};
+use wgpu::{VertexAttribute, VertexBufferLayout};
 
 use super::{
     display::Display,
@@ -65,21 +67,21 @@ impl<T> CachePool<T> {
     }
 }
 
-pub struct BindGroupAllocator<'a> {
+pub struct BindGroupAllocator<'a, U: UniformData> {
     display: &'a Display,
     layout: &'a wgpu::BindGroupLayout,
-    bind_groups: &'a Mutex<CachePool<BindGroup<UniformBuffer<ViewProjectionUniforms>>>>,
+    bind_groups: &'a Mutex<CachePool<BindGroup<UniformBuffer<U>>>>,
 }
 
-impl<'a> BindGroupAllocator<'a> {
-    pub fn get(&self, view_projection: &ViewProjectionUniforms) -> Arc<wgpu::BindGroup> {
+impl<'a, U: UniformData + Default> BindGroupAllocator<'a, U> {
+    pub fn get(&self, view_projection: &U) -> Arc<wgpu::BindGroup> {
         let display = self.display;
         let mut x = self.bind_groups.lock().unwrap();
         let bg = x.get(|| {
             BindGroup::new(
                 display.device(),
                 &self.layout,
-                UniformBuffer::<ViewProjectionUniforms>::new(display.device(), Default::default()),
+                UniformBuffer::<U>::new(display.device(), Default::default()),
             )
         });
         display
@@ -302,6 +304,26 @@ impl RenderState {
                 ],
                 push_constant_ranges: &[],
             });
+        let vv = V::vertex_layout();
+        let ii = I::vertex_layout();
+        let start_location = vv
+            .attributes
+            .last()
+            .map(|a| a.shader_location + 1)
+            .unwrap_or_default();
+        let offset_attributes = ii
+            .attributes
+            .iter()
+            .map(|a| VertexAttribute {
+                shader_location: start_location + a.shader_location,
+                ..a.clone()
+            })
+            .collect_vec();
+        let ii = VertexBufferLayout {
+            attributes: &offset_attributes,
+            ..ii
+        };
+
         let pipeline = display
             .device()
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -310,7 +332,7 @@ impl RenderState {
                 vertex: wgpu::VertexState {
                     module: shader,
                     entry_point: "vs_main",
-                    buffers: &[V::vertex_layout(), I::vertex_layout()],
+                    buffers: &[vv, ii],
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: shader,

@@ -105,7 +105,7 @@ impl InstanceStorage {
 }
 
 pub struct InstanceRenderer<'r, 'alloc> {
-    bind_group_allocator: &'r BindGroupAllocator<'alloc>,
+    bind_group_allocator: &'r BindGroupAllocator<'alloc, ViewProjectionUniforms>,
     instance_storage: &'r mut InstanceStorage,
 
     active_texture: Option<TextureRef>,
@@ -117,7 +117,7 @@ pub struct InstanceRenderer<'r, 'alloc> {
 
 impl<'r, 'alloc> InstanceRenderer<'r, 'alloc> {
     pub fn new(
-        bind_group_allocator: &'r BindGroupAllocator<'alloc>,
+        bind_group_allocator: &'r BindGroupAllocator<'alloc, ViewProjectionUniforms>,
         instance_storage: &'r mut InstanceStorage,
     ) -> Self {
         Self {

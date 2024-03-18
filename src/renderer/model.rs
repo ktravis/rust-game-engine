@@ -1,17 +1,17 @@
-use crate::geom::ModelVertexData;
+use crate::geom::ModelVertexDataWithNormal;
 use crate::renderer::mesh::Mesh;
 
 use super::mesh::LoadMesh;
 
 #[derive(Debug)]
 pub struct ModelMesh {
-    mesh: Mesh<ModelVertexData>,
-    material: Option<tobj::Material>,
+    pub mesh: Mesh<ModelVertexDataWithNormal>,
+    pub material: Option<tobj::Material>,
 }
 
 #[derive(Debug)]
 pub struct Model {
-    meshes: Vec<ModelMesh>,
+    pub meshes: Vec<ModelMesh>,
 }
 
 pub trait LoadModel {
@@ -51,15 +51,32 @@ impl LoadModel for wgpu::Device {
                         .step_by(2)
                         .map(|(i, _)| glam::vec2(raw_mesh.texcoords[i], raw_mesh.texcoords[i + 1])),
                 )
-                .map(|(pos, uv)| ModelVertexData {
+                .zip(
+                    raw_mesh
+                        .normals
+                        .iter()
+                        .enumerate()
+                        .step_by(3)
+                        .map(|(i, _)| {
+                            glam::vec3(
+                                raw_mesh.normals[i],
+                                raw_mesh.normals[i + 1],
+                                raw_mesh.normals[i + 2],
+                            )
+                        }),
+                )
+                .map(|((pos, uv), normal)| ModelVertexDataWithNormal {
                     pos: pos.into(),
                     uv: uv.into(),
+                    normal: normal.into(),
                 })
                 .collect::<Vec<_>>();
             let indices = raw_mesh
                 .indices
-                .iter()
-                .map(|i| *i as u16)
+                // rewind faces to Ccw
+                .chunks_exact(3)
+                .map(|x| [x[0] as u16, x[2] as u16, x[1] as u16])
+                .flatten()
                 .collect::<Vec<_>>();
             let mesh = self.load_mesh(&vertices, &indices).unwrap();
             meshes.push(ModelMesh { mesh, material })

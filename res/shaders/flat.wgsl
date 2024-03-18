@@ -18,25 +18,23 @@ var<uniform> view_proj_uniforms: ViewProjectionUniforms;
 struct VertexInput {
     @location(0) position: vec4<f32>,
     @location(1) tex_coords: vec2<f32>,
-    @location(2) normal: vec3<f32>,
 }
 
 struct InstanceInput {
-    @location(3) uv_scale: vec2<f32>,
-    @location(4) uv_offset: vec2<f32>,
-    @location(5) tint: vec4<f32>,
-    @location(6) model_1: vec4<f32>,
-    @location(7) model_2: vec4<f32>,
-    @location(8) model_3: vec4<f32>,
-    @location(9) model_4: vec4<f32>,
+    @location(2) uv_scale: vec2<f32>,
+    @location(3) uv_offset: vec2<f32>,
+    @location(4) tint: vec4<f32>,
+    @location(5) model_1: vec4<f32>,
+    @location(6) model_2: vec4<f32>,
+    @location(7) model_3: vec4<f32>,
+    @location(8) model_4: vec4<f32>,
 }
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) tex_coords: vec2<f32>,
-    @location(1) world_pos: vec3<f32>,
+    @location(1) screen_pos: vec2<f32>,
     @location(2) tint_color: vec4<f32>,
-    @location(3) view_space_normal: vec3<f32>,
 }
 
 @vertex
@@ -55,9 +53,8 @@ fn vs_main(
     let model = model_transform * vertex.position;
     let model_view = view_proj_uniforms.view * model;
     out.clip_position = view_proj_uniforms.projection * model_view;
+    out.screen_pos = model_view.xy;
     out.tint_color = instance.tint;
-    out.view_space_normal = (view_proj_uniforms.view * model_transform * vec4(vertex.normal, 0.0)).xyz;
-    out.world_pos = model.xyz;
     return out;
 }
 
@@ -68,14 +65,7 @@ var t_diffuse: texture_2d<f32>;
 @group(0) @binding(1)
 var s_diffuse: sampler;
 
-const AMBIENT_LIGHT_FACTOR = 0.1;
-
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let c = in.tint_color * textureSample(t_diffuse, s_diffuse, in.tex_coords);
-    let light_pos = view_proj_uniforms.view * vec4(20.0 * cos(global_uniforms.time), 10.0, 20.0 * sin(global_uniforms.time), 0.0);
-    let light_dir = normalize(light_pos.xyz - in.view_space_normal.xyz);
-    let diffuse = max(dot(in.view_space_normal, light_dir), 0.0);
-    let light_factor = min(AMBIENT_LIGHT_FACTOR + diffuse, 1.0);
-    return vec4(light_factor * c.xyz, c.w);
+    return textureSample(t_diffuse, s_diffuse, in.tex_coords);
 }
