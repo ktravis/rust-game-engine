@@ -215,7 +215,7 @@ impl DisplayView<'_> {
 
     pub fn orthographic_projection(&self) -> Mat4 {
         let target_size = self.size_pixels().as_vec2();
-        Mat4::orthographic_lh(0.0, target_size.x, target_size.y, 0.0, 0.0, 1.0)
+        Mat4::orthographic_rh(0.0, target_size.x, 0.0, target_size.y, 0.0, 1.0)
     }
 }
 

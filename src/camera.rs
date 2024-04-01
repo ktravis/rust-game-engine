@@ -16,7 +16,7 @@ pub struct Camera {
 }
 
 impl Camera {
-    const DEFAULT_FOV_RADIANS: f32 = 60.0 * (std::f32::consts::PI / 180.0);
+    const DEFAULT_FOV_RADIANS: f32 = 55.0 * (std::f32::consts::PI / 180.0);
     const DEFAULT_MAX_YAW: f32 = 80.0 * (std::f32::consts::PI / 180.0);
     const DEFAULT_MIN_YAW: f32 = -80.0 * (std::f32::consts::PI / 180.0);
     const DEFAULT_Z_NEAR: f32 = 0.01;
@@ -27,29 +27,45 @@ impl Camera {
             position,
             aspect_ratio,
             pitch: -12.0f32.to_radians(),
-            yaw: 90.0f32.to_radians(),
-            look_dir: Vec3::Z,
+            yaw: -90.0f32.to_radians(),
+            look_dir: Vec3::NEG_Z,
             ..Default::default()
         }
     }
 
+    pub fn position(&self) -> Vec3 {
+        self.position
+    }
+
+    pub fn look_dir(&self) -> Vec3 {
+        self.look_dir
+    }
+
+    pub fn pitch(&self) -> f32 {
+        self.pitch
+    }
+
+    pub fn yaw(&self) -> f32 {
+        self.yaw
+    }
+
     pub fn view_matrix(&self) -> Mat4 {
-        Mat4::look_to_lh(self.position, self.look_dir, Vec3::Y)
+        Mat4::look_to_rh(self.position, self.look_dir, Vec3::Y)
     }
 
     pub fn perspective_matrix(&self) -> Mat4 {
-        Mat4::perspective_lh(self.fov_radians, self.aspect_ratio, self.z_near, self.z_far)
+        Mat4::perspective_rh(self.fov_radians, self.aspect_ratio, self.z_near, self.z_far)
     }
 
     pub fn update_position(&mut self, d: Vec3) -> Vec3 {
         let flat = vec3(self.look_dir.x, 0.0, self.look_dir.z).normalize();
-        self.position += -d.x * flat.cross(Vec3::Y) - d.z * flat;
+        self.position += d.x * flat.cross(Vec3::Y) - d.z * flat;
         self.position.y += d.y;
         self.position
     }
 
     pub fn update_angle(&mut self, delta_yaw: f32, delta_pitch: f32) -> Vec3 {
-        self.yaw -= delta_yaw;
+        self.yaw += delta_yaw;
         self.pitch -= delta_pitch;
         self.pitch = self.pitch.clamp(self.min_yaw, self.max_yaw);
         let (pitch_sin, pitch_cos) = self.pitch.sin_cos();
@@ -63,10 +79,10 @@ impl Default for Camera {
     fn default() -> Self {
         Camera {
             position: Vec3::ZERO,
-            pitch: -0.40,
-            yaw: 4.7, // TODO: debug value
+            pitch: 0.0,
+            yaw: 0.0,
             fov_radians: Self::DEFAULT_FOV_RADIANS,
-            look_dir: Vec3::Z,
+            look_dir: Vec3::NEG_Z,
             min_yaw: Self::DEFAULT_MIN_YAW,
             max_yaw: Self::DEFAULT_MAX_YAW,
             z_near: Self::DEFAULT_Z_NEAR,

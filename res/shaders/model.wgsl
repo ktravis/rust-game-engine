@@ -10,10 +10,19 @@ var<uniform> global_uniforms: GlobalUniforms;
 struct ViewProjectionUniforms {
     view: mat4x4<f32>,
     projection: mat4x4<f32>,
+    camera_pos: vec3<f32>,
 }
 
 @group(2) @binding(0)
 var<uniform> view_proj_uniforms: ViewProjectionUniforms;
+
+struct LightsUniform {
+    positions: array<vec4<f32>, 16>,
+    count: u32,
+}
+
+@group(3) @binding(0)
+var<uniform> lights: LightsUniform;
 
 struct VertexInput {
     @location(0) position: vec4<f32>,
@@ -73,9 +82,20 @@ const AMBIENT_LIGHT_FACTOR = 0.1;
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let c = in.tint_color * textureSample(t_diffuse, s_diffuse, in.tex_coords);
-    let light_pos = view_proj_uniforms.view * vec4(20.0 * cos(global_uniforms.time), 10.0, 20.0 * sin(global_uniforms.time), 0.0);
-    let light_dir = normalize(light_pos.xyz - in.view_space_normal.xyz);
-    let diffuse = max(dot(in.view_space_normal, light_dir), 0.0);
-    let light_factor = min(AMBIENT_LIGHT_FACTOR + diffuse, 1.0);
+
+    var specular = 0.0;
+    var diffuse = 0.0;
+    for (var i = 0; i < i32(lights.count); i++) {
+        let light_pos_w = lights.positions[i];
+        let view_dir_v = view_proj_uniforms.view * vec4(normalize(view_proj_uniforms.camera_pos - in.world_pos), 0.0);
+        let light_pos_v = view_proj_uniforms.view * vec4(light_pos_w.xyz, 0.0);//vec4(20.0 * cos(global_uniforms.time), 10.0, 20.0 * sin(global_uniforms.time), 0.0);
+        let light_dir_v = normalize(light_pos_v.xyz - in.view_space_normal.xyz);
+        let half_dir_v = normalize(view_dir_v.xyz + light_dir_v);
+        let reflect_dir_v = reflect(-light_dir_v, in.view_space_normal.xyz);
+
+        specular += pow(max(dot(view_dir_v.xyz, reflect_dir_v), 0.0), 32.0);
+        diffuse += max(dot(in.view_space_normal, half_dir_v), 0.0);
+    }
+    let light_factor = AMBIENT_LIGHT_FACTOR + diffuse + specular;
     return vec4(light_factor * c.xyz, c.w);
 }

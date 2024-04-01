@@ -132,7 +132,7 @@ impl FontAtlas {
                 c,
                 GlyphMetrics {
                     bounds: Rect {
-                        pos: vec2(bounds_left, bounds_top) * resolution as f32,
+                        pos: vec2(bounds_left, -bounds_bottom) * resolution as f32,
                         dim: vec2(bounds_right - bounds_left, bounds_bottom - bounds_top)
                             * resolution as f32,
                     },
@@ -236,9 +236,9 @@ impl FontAtlas {
                 None
             } else {
                 let mut glyph_data = self.glyph_data(c);
+                glyph_data.bounds.dim *= opts.scale;
                 glyph_data.bounds.pos.y *= opts.scale;
                 glyph_data.bounds.pos += cursor;
-                glyph_data.bounds.dim *= opts.scale;
                 cursor.x += glyph_data.bounds.dim.x;
                 Some(glyph_data)
             }

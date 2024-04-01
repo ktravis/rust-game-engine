@@ -1,10 +1,12 @@
 use std::{
+    collections::HashMap,
+    hash::Hash,
     marker::PhantomData,
     ops::{Deref, DerefMut, Range},
     sync::{Arc, Mutex},
 };
 
-use glam::Mat4;
+use glam::{Mat4, Vec3};
 use itertools::Itertools;
 use slotmap::{Key, SlotMap};
 use wgpu::{VertexAttribute, VertexBufferLayout};
@@ -14,10 +16,10 @@ use super::{
     instance::{InstanceRenderer, InstanceStorage},
     mesh::{LoadMesh, Mesh, RawMeshRef, UntypedMesh},
     texture::{Texture, TextureBuilder},
-    BindGroup, InstanceData, MeshRef, ModelInstanceData, OffscreenFramebuffer, RenderTarget,
-    TextureRef, UniformBuffer, UniformData, DEFAULT_TEXTURE_DATA,
+    BasicInstanceData, BindGroup, Bindable, InstanceData, MeshRef, OffscreenFramebuffer,
+    RenderTarget, TextureRef, UniformBindGroup, UniformBuffer, UniformData, DEFAULT_TEXTURE_DATA,
 };
-use crate::geom::{ModelVertexData, Point, VertexData};
+use crate::geom::{BasicVertexData, Point, VertexData};
 
 pub type BoundTexture = BindGroup<Texture>;
 
@@ -34,9 +36,12 @@ impl UniformData for GlobalUniforms {}
 pub struct ViewProjectionUniforms {
     pub view: Mat4,
     pub projection: Mat4,
+    pub pos: Vec3,
 }
 
 impl UniformData for ViewProjectionUniforms {}
+
+impl UniformData for Vec3 {}
 
 struct CachePool<T> {
     items: Vec<Arc<T>>,
@@ -66,6 +71,9 @@ impl<T> CachePool<T> {
         self.in_use = 0;
     }
 }
+
+// TODO: I think we could make this hold bind groups + buffers for multiple types by making an
+// UntypedUniformBindGroup and keeping it in a map based on the size?
 
 pub struct BindGroupAllocator<'a, U: UniformData> {
     display: &'a Display,
@@ -106,6 +114,15 @@ impl PartialRenderPass<'_> {
     }
 }
 
+pub trait BindingSlot {
+    fn slot(&self) -> u32;
+    fn value(&self) -> &Arc<wgpu::BindGroup>;
+}
+
+pub trait Bindings {
+    fn types() -> Vec<BindingType>;
+}
+
 slotmap::new_key_type! {
     pub(super) struct RawPipelineRef;
 }
@@ -135,92 +152,117 @@ impl<V, I> From<RawPipelineRef> for PipelineRef<V, I> {
     }
 }
 
+#[derive(Copy, Clone, Hash, Eq, PartialEq)]
+pub enum BindingType {
+    Uniform,
+    Texture { depth: bool },
+    Direct(wgpu::BindingType),
+}
+
+impl BindingType {
+    pub fn create_layout(&self, device: &wgpu::Device, name: &str) -> wgpu::BindGroupLayout {
+        let entries = &match *self {
+            BindingType::Uniform => vec![wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+            BindingType::Texture { depth } => vec![
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: if depth {
+                            wgpu::TextureSampleType::Depth
+                        } else {
+                            wgpu::TextureSampleType::Float { filterable: true }
+                        },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(if depth {
+                        wgpu::SamplerBindingType::Comparison
+                    } else {
+                        wgpu::SamplerBindingType::Filtering
+                    }),
+                    count: None,
+                },
+            ],
+            BindingType::Direct(ty) => vec![wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty,
+                count: None,
+            }],
+        };
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries,
+            label: Some(name),
+        })
+    }
+}
+
 pub struct RenderState {
-    pub global_uniforms: BindGroup<UniformBuffer<GlobalUniforms>>,
-    quad_mesh: MeshRef<ModelVertexData>,
+    pub global_uniforms: UniformBindGroup<GlobalUniforms>,
+    quad_mesh: MeshRef<BasicVertexData>,
+
+    default_bindings: Vec<BindingType>,
+    bind_group_layouts: HashMap<BindingType, Arc<wgpu::BindGroupLayout>>,
 
     instance_storage: InstanceStorage,
-    global_uniform_bind_group_layout: wgpu::BindGroupLayout,
-    view_projection_uniform_bind_group_layout: wgpu::BindGroupLayout,
-    texture_bind_group_layout: wgpu::BindGroupLayout,
-    depth_texture_bind_group_layout: wgpu::BindGroupLayout,
     view_proj_bind_groups: Mutex<CachePool<BindGroup<UniformBuffer<ViewProjectionUniforms>>>>,
 
     texture_manager: SlotMap<TextureRef, BoundTexture>,
-    default_texture: BoundTexture,
+    default_texture: TextureRef,
 
     mesh_manager: SlotMap<RawMeshRef, UntypedMesh>,
     pipelines: SlotMap<RawPipelineRef, wgpu::RenderPipeline>,
-    default_pipeline: PipelineRef<ModelVertexData, ModelInstanceData>,
+    default_pipeline: PipelineRef<BasicVertexData, BasicInstanceData>,
 }
 
 impl RenderState {
     pub fn new(display: &Display, default_shader: &wgpu::ShaderModule) -> Self {
         let device = display.device();
-        let texture_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-                label: Some("texture_bind_group_layout"),
-            });
-        let depth_texture_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Depth,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-                        count: None,
-                    },
-                ],
-                label: Some("depth_texture_bind_group_layout"),
-            });
-        let global_uniform_bind_group_layout = UniformBuffer::<GlobalUniforms>::bind_group_layout(
+
+        let global_uniforms = UniformBindGroup::new(
             device,
-            "global_uniform_bind_group_layout",
-            wgpu::ShaderStages::VERTEX_FRAGMENT,
-        );
-        let global_uniforms = BindGroup::new(
-            device,
-            &global_uniform_bind_group_layout,
+            &BindingType::Uniform.create_layout(device, "global uniform"),
             UniformBuffer::new(device, Default::default()),
         );
-        let view_projection_uniform_bind_group_layout =
-            UniformBuffer::<ViewProjectionUniforms>::bind_group_layout(
-                device,
-                "view_projection_uniform_bind_group_layout",
-                wgpu::ShaderStages::VERTEX_FRAGMENT,
-            );
+        let mesh_manager = SlotMap::with_key();
+        let instance_storage = InstanceStorage::new(display, 1024);
 
-        let default_texture = BoundTexture::new(
-            display.device(),
-            &texture_bind_group_layout,
+        let mut s = Self {
+            default_bindings: vec![
+                BindingType::Texture { depth: false }, // material texture
+                BindingType::Uniform,                  // global
+                BindingType::Uniform,                  // view/projection
+            ],
+            bind_group_layouts: HashMap::default(),
+            texture_manager: SlotMap::with_key(),
+            mesh_manager,
+            pipelines: SlotMap::with_key(),
+            global_uniforms,
+            instance_storage,
+            quad_mesh: Default::default(),
+            view_proj_bind_groups: Default::default(),
+            default_pipeline: Default::default(),
+            default_texture: Default::default(),
+        };
+        s.bind_group_layout(device, BindingType::Uniform);
+
+        s.default_texture = s.load_texture(
+            display,
             TextureBuilder::render_target()
                 .with_label("default_texture")
                 .from_raw_bytes(
@@ -230,39 +272,52 @@ impl RenderState {
                     Point::new(2, 2),
                 ),
         );
-        let mesh_manager = SlotMap::with_key();
-        let instance_storage = InstanceStorage::new(display, 1024);
-
-        let mut s = Self {
-            texture_bind_group_layout,
-            depth_texture_bind_group_layout,
-            global_uniform_bind_group_layout,
-            view_projection_uniform_bind_group_layout,
-            default_texture,
-            texture_manager: SlotMap::with_key(),
-            mesh_manager,
-            pipelines: SlotMap::with_key(),
-            global_uniforms,
-            instance_storage,
-            quad_mesh: Default::default(),
-            view_proj_bind_groups: Default::default(),
-            default_pipeline: Default::default(),
-        };
         s.quad_mesh = s.prepare_mesh(display.device().load_quad_mesh());
-        s.default_pipeline = s.create_pipeline_with_key::<ModelVertexData, ModelInstanceData>(
+        s.default_pipeline = s.create_pipeline_with_key::<BasicVertexData, BasicInstanceData>(
             "Default Render Pipeline",
             display,
             default_shader,
+            &[],
             None,
         );
         s
     }
 
-    pub fn quad_mesh(&self) -> MeshRef<ModelVertexData> {
+    fn bind_group_layout(
+        &mut self,
+        device: &wgpu::Device,
+        binding_type: BindingType,
+    ) -> Arc<wgpu::BindGroupLayout> {
+        self.bind_group_layouts
+            .entry(binding_type)
+            .or_insert_with(|| Arc::new(binding_type.create_layout(device, "TODO")))
+            .clone()
+    }
+
+    pub fn create_bind_group<T: Bindable>(
+        &mut self,
+        device: &wgpu::Device,
+        resource: T,
+    ) -> BindGroup<T> {
+        let layout = self.bind_group_layout(device, resource.binding_type());
+        BindGroup::new(device, &layout, resource)
+    }
+
+    pub fn create_uniform_bind_group<U: UniformData>(
+        &mut self,
+        device: &wgpu::Device,
+        uniform: U,
+    ) -> UniformBindGroup<U> {
+        let layout = self.bind_group_layout(device, BindingType::Uniform);
+        let resource = UniformBuffer::new(device, uniform);
+        BindGroup::new(device, &layout, resource)
+    }
+
+    pub fn quad_mesh(&self) -> MeshRef<BasicVertexData> {
         self.quad_mesh
     }
 
-    pub fn default_pipeline(&self) -> PipelineRef<ModelVertexData, ModelInstanceData> {
+    pub fn default_pipeline(&self) -> PipelineRef<BasicVertexData, BasicInstanceData> {
         self.default_pipeline
     }
 
@@ -271,8 +326,9 @@ impl RenderState {
         name: &str,
         display: &Display,
         shader: &wgpu::ShaderModule,
+        extra_bindings: &[BindingType],
     ) -> PipelineRef<V, I> {
-        self.create_pipeline_with_key::<V, I>(name, display, shader, None)
+        self.create_pipeline_with_key::<V, I>(name, display, shader, extra_bindings, None)
     }
 
     pub fn replace_pipeline<V: VertexData, I: InstanceData>(
@@ -280,9 +336,10 @@ impl RenderState {
         name: &str,
         display: &Display,
         shader: &wgpu::ShaderModule,
+        extra_bindings: &[BindingType],
         key: PipelineRef<V, I>,
     ) -> PipelineRef<V, I> {
-        self.create_pipeline_with_key::<V, I>(name, display, shader, Some(key))
+        self.create_pipeline_with_key::<V, I>(name, display, shader, extra_bindings, Some(key))
     }
 
     pub fn create_pipeline_with_key<V: VertexData, I: InstanceData>(
@@ -290,18 +347,27 @@ impl RenderState {
         name: &str,
         display: &Display,
         shader: &wgpu::ShaderModule,
+        extra_bindings: &[BindingType],
         key: Option<PipelineRef<V, I>>,
     ) -> PipelineRef<V, I> {
+        let bind_group_layouts_vec = self
+            .default_bindings
+            .clone() // TODO: this clone seems unnecessary
+            .iter()
+            .chain(extra_bindings.iter())
+            .map(|t| self.bind_group_layout(display.device(), *t))
+            .collect_vec();
+
+        let refs = bind_group_layouts_vec
+            .iter()
+            .map(|b| b.as_ref())
+            .collect_vec();
         // TODO: do we need/want to dedupe or cache this?
         let layout = display
             .device()
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some(&format!("{} Layout", name)),
-                bind_group_layouts: &[
-                    &self.texture_bind_group_layout,
-                    &self.global_uniform_bind_group_layout,
-                    &self.view_projection_uniform_bind_group_layout,
-                ],
+                bind_group_layouts: &refs,
                 push_constant_ranges: &[],
             });
         let vv = V::vertex_layout();
@@ -311,6 +377,7 @@ impl RenderState {
             .last()
             .map(|a| a.shader_location + 1)
             .unwrap_or_default();
+        let mut vertex_buffers = vec![vv];
         let offset_attributes = ii
             .attributes
             .iter()
@@ -319,10 +386,13 @@ impl RenderState {
                 ..a.clone()
             })
             .collect_vec();
-        let ii = VertexBufferLayout {
-            attributes: &offset_attributes,
-            ..ii
-        };
+        if offset_attributes.len() > 0 {
+            let ii = VertexBufferLayout {
+                attributes: &offset_attributes,
+                ..ii
+            };
+            vertex_buffers.push(ii);
+        }
 
         let pipeline = display
             .device()
@@ -332,7 +402,7 @@ impl RenderState {
                 vertex: wgpu::VertexState {
                     module: shader,
                     entry_point: "vs_main",
-                    buffers: &[vv, ii],
+                    buffers: &vertex_buffers,
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: shader,
@@ -355,7 +425,7 @@ impl RenderState {
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::TriangleList,
                     strip_index_format: None,
-                    front_face: wgpu::FrontFace::Ccw,
+                    front_face: wgpu::FrontFace::Cw,
                     cull_mode: Some(wgpu::Face::Back),
                     polygon_mode: wgpu::PolygonMode::Fill,
                     // Requires Features::DEPTH_CLIP_CONTROL
@@ -399,10 +469,10 @@ impl RenderState {
     ) -> PartialRenderPass<'a> {
         let alloc = BindGroupAllocator {
             display,
-            layout: &self.view_projection_uniform_bind_group_layout,
+            layout: &self.bind_group_layout(display.device(), BindingType::Uniform),
             bind_groups: &self.view_proj_bind_groups,
         };
-        let mut r = InstanceRenderer::new(&alloc, &mut self.instance_storage);
+        let mut r = InstanceRenderer::new(&alloc, &mut self.instance_storage, self.quad_mesh);
         r.set_view_projection(view_projection);
         pass(&mut r);
         r.commit(display);
@@ -433,11 +503,80 @@ impl RenderState {
                 active_pipeline: None,
             };
             pass.set_active_pipeline(self.default_pipeline);
-            pass.bind_texture_data(&self.default_texture);
+            pass.bind_texture(self.default_texture);
             self.instance_storage.render_to(&mut pass);
         }
         self.view_proj_bind_groups.lock().unwrap().reset();
         self.instance_storage.clear();
+        PartialRenderPass {
+            display,
+            command_buffer: encoder.finish(),
+        }
+    }
+
+    #[must_use]
+    pub fn direct_render_pass<'a>(
+        &mut self,
+        display: &'a Display,
+        name: &str,
+        render_target: &impl RenderTarget,
+        view_projection: &ViewProjectionUniforms,
+        pass_func: impl FnOnce(&mut RenderPass<'_>),
+    ) -> PartialRenderPass<'a> {
+        let bind_group = {
+            let layout = self.bind_group_layout(display.device(), BindingType::Uniform);
+            let mut x = self.view_proj_bind_groups.lock().unwrap();
+            let bg = x.get(|| {
+                BindGroup::new(
+                    display.device(),
+                    &layout,
+                    UniformBuffer::<ViewProjectionUniforms>::new(
+                        display.device(),
+                        Default::default(),
+                    ),
+                )
+            });
+            display
+                .queue()
+                .write_buffer(bg.buffer(), 0, bytemuck::bytes_of(view_projection));
+            bg.bind_group().clone()
+        };
+
+        let mut encoder = display.command_encoder();
+        {
+            let mut raw_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some(name),
+                color_attachments: &[Some(
+                    render_target.color_attachment(&self, wgpu::LoadOp::Clear(wgpu::Color::BLACK)),
+                )],
+                depth_stencil_attachment: render_target.depth_stencil_attachment(
+                    &self,
+                    wgpu::LoadOp::Clear(1.0),
+                    None,
+                ),
+                ..Default::default()
+            });
+            raw_pass.set_bind_group(
+                RenderPass::GLOBAL_UNIFORMS_BIND_GROUP_INDEX,
+                self.global_uniforms.bind_group(),
+                &[],
+            );
+            raw_pass.set_bind_group(
+                RenderPass::VIEW_PROJECTION_UNIFORMS_BIND_GROUP_INDEX,
+                &bind_group,
+                &[],
+            );
+            let mut pass = RenderPass {
+                raw_pass,
+                render_state: self,
+                active_mesh: None,
+                active_pipeline: None,
+            };
+            pass.set_active_pipeline(self.default_pipeline);
+            pass.bind_texture(self.default_texture);
+            pass_func(&mut pass);
+        }
+        self.view_proj_bind_groups.lock().unwrap().reset();
         PartialRenderPass {
             display,
             command_buffer: encoder.finish(),
@@ -467,25 +606,21 @@ impl RenderState {
     }
 
     pub fn load_texture(&mut self, display: &Display, t: Texture) -> TextureRef {
-        let layout = if t.is_depth() {
-            &self.depth_texture_bind_group_layout
-        } else {
-            &self.texture_bind_group_layout
-        };
+        let layout = self.bind_group_layout(display.device(), t.binding_type());
         self.texture_manager
-            .insert(BoundTexture::new(display.device(), layout, t))
+            .insert(BoundTexture::new(display.device(), &layout, t))
     }
 
     pub fn get_texture(&self, texture: impl Into<Option<TextureRef>>) -> &BoundTexture {
-        texture
-            .into()
-            .map(|t| self.texture_manager.get(t).unwrap())
-            .unwrap_or(&self.default_texture)
+        self.texture_manager
+            .get(texture.into().unwrap_or(self.default_texture))
+            .unwrap()
     }
 
     pub fn replace_texture(&mut self, display: &Display, texture_ref: TextureRef, value: Texture) {
+        let layout = self.bind_group_layout(display.device(), value.binding_type());
         *self.texture_manager.get_mut(texture_ref).unwrap() =
-            BoundTexture::new(display.device(), &self.texture_bind_group_layout, value);
+            BoundTexture::new(display.device(), &layout, value);
     }
 
     pub fn prepare_mesh<V: VertexData>(&mut self, mesh: Mesh<V>) -> MeshRef<V> {
@@ -546,21 +681,11 @@ impl<'a> RenderPass<'a> {
         self.active_mesh = Some(raw);
     }
 
-    pub fn draw_active_mesh(&mut self, instances: Range<u32>) {
-        let mesh = self
-            .render_state
-            .mesh_manager
-            .get(self.active_mesh.expect("no active mesh"))
-            .unwrap();
-        self.raw_pass
-            .set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-        self.raw_pass
-            .set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-        self.raw_pass
-            .draw_indexed(0..mesh.num_indices, 0, instances);
+    pub fn bind_texture(&mut self, texture: impl Into<Option<TextureRef>>) {
+        self.bind_texture_data(self.render_state.get_texture(texture.into()))
     }
 
-    pub fn bind_texture_data(&mut self, texture_data: &'a BoundTexture) {
+    fn bind_texture_data(&mut self, texture_data: &'a BoundTexture) {
         self.raw_pass.set_bind_group(
             Self::TEXTURE_BIND_GROUP_INDEX,
             texture_data.bind_group(),
@@ -568,7 +693,35 @@ impl<'a> RenderPass<'a> {
         );
     }
 
-    pub fn bind_texture(&mut self, texture: impl Into<Option<TextureRef>>) {
-        self.bind_texture_data(self.render_state.get_texture(texture.into()))
+    pub fn draw_raw_mesh_ex(
+        &mut self,
+        raw_mesh: RawMeshRef,
+        base_vertex: i32,
+        mesh_indices: Option<Range<u32>>,
+        instances: Range<u32>,
+    ) {
+        let mesh = self.render_state.mesh_manager.get(raw_mesh).unwrap();
+        self.raw_pass
+            .set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+        self.raw_pass
+            .set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        self.raw_pass.draw_indexed(
+            mesh_indices.unwrap_or(0..mesh.num_indices),
+            base_vertex,
+            instances,
+        );
+    }
+
+    pub fn draw_mesh<V: VertexData>(&mut self, mesh: MeshRef<V>) {
+        self.draw_raw_mesh_ex(mesh.raw(), 0, None, 0..1)
+    }
+
+    pub fn draw_active_mesh_instanced(&mut self, instances: Range<u32>) {
+        self.draw_raw_mesh_ex(
+            self.active_mesh.expect("no active mesh"),
+            0,
+            None,
+            instances,
+        )
     }
 }

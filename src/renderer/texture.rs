@@ -1,6 +1,9 @@
+use image::{EncodableLayout, RgbaImage};
+
 use crate::geom::Point;
 use crate::renderer::Bindable;
-use image::{EncodableLayout, RgbaImage};
+
+use super::state::BindingType;
 
 slotmap::new_key_type! {
     pub struct TextureRef;
@@ -208,20 +211,22 @@ impl Texture {
 }
 
 impl Bindable for Texture {
-    fn bind_group(&self, device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> wgpu::BindGroup {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&self.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-            ],
-            label: Some("texture_bind_group"),
-        })
+    fn entries(&self) -> Vec<wgpu::BindGroupEntry> {
+        vec![
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&self.view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&self.sampler),
+            },
+        ]
+    }
+
+    fn binding_type(&self) -> BindingType {
+        BindingType::Texture {
+            depth: self.is_depth(),
+        }
     }
 }

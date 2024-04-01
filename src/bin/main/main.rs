@@ -1,11 +1,13 @@
 use std::borrow::Cow;
 use std::io::Read;
 
-use glam::{vec2, vec3, Mat4, Quat, Vec3};
+use glam::{vec2, vec3, Quat, Vec3, Vec4};
 use itertools::Itertools;
 use rust_game_engine::app::{AppState, Context};
 use rust_game_engine::renderer::model::LoadModel;
-use rust_game_engine::renderer::{MeshRef, RenderTarget};
+use rust_game_engine::renderer::state::{Bindings};
+use rust_game_engine::renderer::{MeshRef, RenderTarget, UniformBindGroup, UniformData};
+use rust_game_engine::user_render_bindings;
 use ttf_parser::Face;
 use winit::dpi::{PhysicalSize, Size};
 use winit::event_loop::EventLoop;
@@ -15,14 +17,14 @@ use controlset_derive::ControlSet;
 use rust_game_engine::assets::AssetManager;
 use rust_game_engine::camera::Camera;
 use rust_game_engine::font::FontAtlas;
-use rust_game_engine::geom::{ModelVertexData, ModelVertexDataWithNormal, Point};
+use rust_game_engine::geom::{BasicVertexData, ModelVertexData, Point};
 use rust_game_engine::input::{Axis, Button, Key, Toggle};
 use rust_game_engine::renderer::{
     instance::InstanceRenderData,
     mesh::LoadMesh,
     state::{GlobalUniforms, ViewProjectionUniforms},
     text::TextDisplayOptions,
-    Display, ModelInstanceData, OffscreenFramebuffer, PipelineRef, RenderData, RenderState,
+    BasicInstanceData, Display, OffscreenFramebuffer, PipelineRef, RenderData, RenderState,
     ScalingMode, TextureBuilder, TextureRef,
 };
 use rust_game_engine::sprite_manager::SpriteManager;
@@ -56,8 +58,8 @@ struct ShaderSource {
 
 #[derive(Default)]
 struct RenderPipelines {
-    text: PipelineRef<ModelVertexData, ModelInstanceData>,
-    model_with_normals: PipelineRef<ModelVertexDataWithNormal, ModelInstanceData>,
+    text: PipelineRef<BasicVertexData, BasicInstanceData>,
+    model_with_normals: PipelineRef<ModelVertexData, BasicInstanceData>,
 }
 
 impl RenderPipelines {
@@ -71,7 +73,7 @@ impl RenderPipelines {
     ) {
         // TODO: this should probably just move into the renderer, or maybe have a separate text
         // renderer layer
-        self.text = render_state.create_pipeline_with_key::<ModelVertexData, ModelInstanceData>(
+        self.text = render_state.create_pipeline_with_key::<BasicVertexData, BasicInstanceData>(
             "Text Render Pipeline",
             &display,
             &display
@@ -80,6 +82,7 @@ impl RenderPipelines {
                     label: Some("text"),
                     source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&src.text)),
                 }),
+            &[],
             if self.text.is_null() {
                 None
             } else {
@@ -87,7 +90,7 @@ impl RenderPipelines {
             },
         );
         self.model_with_normals = render_state
-            .create_pipeline_with_key::<ModelVertexDataWithNormal, ModelInstanceData>(
+            .create_pipeline_with_key::<ModelVertexData, BasicInstanceData>(
                 "Normal Model Render Pipeline",
                 &display,
                 &display
@@ -96,6 +99,7 @@ impl RenderPipelines {
                         label: Some("model_with_normals"),
                         source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&src.model_with_normals)),
                     }),
+                &ModelPipelineBindings::types(),
                 if self.model_with_normals.is_null() {
                     None
                 } else {
@@ -104,6 +108,23 @@ impl RenderPipelines {
             );
     }
 }
+
+#[derive(Copy, Clone, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
+pub struct Lights {
+    positions: [Vec4; 16],
+    count: u32,
+    _pad: [u32; 3],
+}
+
+impl UniformData for Lights {}
+
+user_render_bindings!{
+    ModelPipelineBindings {
+        uniform Lights,
+    }
+}
+
 
 #[derive(Default)]
 struct GameAssets {
@@ -118,18 +139,19 @@ struct State {
     render_pipelines: RenderPipelines,
 
     // TODO: BitmapFontRenderer
-    font_render_data: RenderData<ModelVertexData, ModelInstanceData>,
-    sprite_render_data: RenderData<ModelVertexData, ModelInstanceData>,
+    font_render_data: RenderData<BasicVertexData, BasicInstanceData>,
+    sprite_render_data: RenderData<BasicVertexData, BasicInstanceData>,
     offscreen_framebuffer: OffscreenFramebuffer,
 
     // "game" state
     camera: Camera,
+    lights: UniformBindGroup<Lights>,
     sprite_instances: Vec<InstanceRenderData>,
     crate_texture: TextureRef,
     cat_texture: TextureRef,
-    cube_mesh: MeshRef<ModelVertexDataWithNormal>,
+    cube_mesh: MeshRef<ModelVertexData>,
 
-    model_meshes: Vec<(MeshRef<ModelVertexDataWithNormal>, Option<tobj::Material>)>,
+    model_meshes: Vec<(MeshRef<ModelVertexData>, Option<tobj::Material>)>,
 }
 
 impl State {
@@ -139,20 +161,19 @@ impl State {
         let sprite = self.asset_manager.sprites.get_sprite(sprite_ref);
         for _ in 0..100 {
             self.sprite_instances.push(
-                self.sprite_render_data
-                    .for_model_instance(ModelInstanceData {
-                        subtexture: sprite.frames[0].region,
-                        transform: Transform2D {
-                            position: vec2(
-                                (rand::random::<u32>() % size.x) as f32,
-                                (rand::random::<u32>() % size.y) as f32,
-                            ),
-                            scale: 4.0 * sprite.size.as_vec2(),
-                            ..Default::default()
-                        }
-                        .as_mat4(),
+                self.sprite_render_data.for_instance(BasicInstanceData {
+                    subtexture: sprite.frames[0].region,
+                    transform: Transform2D {
+                        position: vec2(
+                            (rand::random::<u32>() % size.x) as f32,
+                            (rand::random::<u32>() % size.y) as f32,
+                        ),
+                        scale: 4.0 * sprite.size.as_vec2(),
                         ..Default::default()
-                    }),
+                    }
+                    .as_mat4(),
+                    ..Default::default()
+                }),
             );
         }
     }
@@ -268,6 +289,9 @@ impl AppState for State {
             texture: sprite_atlas,
             mesh: ctx.render_state.quad_mesh(),
         };
+        let lights = ctx
+            .render_state
+            .create_uniform_bind_group(ctx.display.device(), Default::default());
 
         Self {
             asset_manager,
@@ -275,7 +299,8 @@ impl AppState for State {
             cat_texture,
             cube_mesh,
             sprite_instances: vec![],
-            camera: Camera::new(vec3(0.0, 2.3, -6.0), 960.0 / 720.0),
+            camera: Camera::new(vec3(0.0, 2.3, 6.0), 960.0 / 720.0),
+            lights,
             font_render_data,
             sprite_render_data,
             offscreen_framebuffer,
@@ -331,13 +356,17 @@ impl AppState for State {
     }
 
     fn render(&mut self, ctx: &mut Context<GameControls>) -> Result<(), wgpu::SurfaceError> {
+        let display_view = ctx.display.view()?;
         ctx.render_state.global_uniforms.update(
             ctx.display.queue(),
             GlobalUniforms {
                 time: ctx.frame_timing.time(),
             },
         );
-        let quad_mesh = ctx.render_state.quad_mesh();
+        self.lights.update_with(ctx.display.queue(), |lights| {
+            lights.count = 1;
+            lights.positions[0] = self.camera.position().extend(0.0);
+        });
         ctx.render_state
             .render_pass(
                 &ctx.display,
@@ -346,33 +375,28 @@ impl AppState for State {
                 &ViewProjectionUniforms {
                     view: self.camera.view_matrix(),
                     projection: self.camera.perspective_matrix(),
+                    pos: self.camera.position(),
                 },
                 |r| {
+                    r.bind(ModelPipelineBindings::Lights(&self.lights));
                     r.draw_instance(&InstanceRenderData {
                         texture: Some(self.crate_texture),
                         mesh: self.cube_mesh,
-                        model: Default::default(),
+                        instance: Default::default(),
                         pipeline: Some(self.render_pipelines.model_with_normals),
                     });
-                    r.draw_instance(&InstanceRenderData {
-                        texture: Some(self.cat_texture),
-                        mesh: quad_mesh,
-                        model: ModelInstanceData {
-                            transform: Transform3D {
-                                position: vec3(4.0, 1.0, 3.0),
-                                scale: Vec3::splat(2.5),
-                                rotation: Quat::from_rotation_y(180.0f32.to_radians())
-                                    * Quat::from_rotation_z(10.0f32.to_radians()),
-                            }
-                            .as_mat4(),
-                            ..Default::default()
+                    r.draw_quad(
+                        self.cat_texture,
+                        Transform3D {
+                            position: vec3(2.0, 1.0, -3.0),
+                            scale: Vec3::splat(2.5),
+                            rotation: Quat::IDENTITY,
                         },
-                        pipeline: None,
-                    });
+                    );
                     for (mesh, mat) in &self.model_meshes {
                         r.draw_instance(&InstanceRenderData {
                             mesh: *mesh,
-                            model: ModelInstanceData {
+                            instance: BasicInstanceData {
                                 tint: mat.as_ref().map(|m| m.diffuse.into()).unwrap_or_default(),
                                 transform: Transform3D {
                                     position: vec3(0.0, 2.0, 0.0),
@@ -389,28 +413,23 @@ impl AppState for State {
             )
             .submit();
 
-        let display_view = ctx.display.view()?;
         ctx.render_state
             .render_pass(
                 &ctx.display,
                 "Default Pass",
                 &display_view,
                 &ViewProjectionUniforms {
-                    view: Mat4::IDENTITY,
                     projection: display_view.orthographic_projection(),
+                    ..Default::default()
                 },
                 |r| {
-                    r.draw_instance(&InstanceRenderData {
-                        texture: Some(self.offscreen_framebuffer.color),
-                        ..self
-                            .sprite_render_data
-                            .for_model_instance(ModelInstanceData::transform(
-                                ScalingMode::Centered.view_matrix(
-                                    self.offscreen_framebuffer.size_pixels().as_vec2(),
-                                    ctx.display.size_pixels().as_vec2(),
-                                ),
-                            ))
-                    });
+                    r.draw_quad(
+                        self.offscreen_framebuffer.color,
+                        ScalingMode::Centered.view_matrix(
+                            self.offscreen_framebuffer.size_pixels().as_vec2(),
+                            ctx.display.size_pixels().as_vec2(),
+                        ),
+                    );
                     for instance in &self.sprite_instances {
                         r.draw_instance(instance);
                     }
@@ -422,7 +441,13 @@ impl AppState for State {
                             })
                             .join("\n")
                     } else {
-                        format!("{:.1}", ctx.frame_timing.fps())
+                        format!(
+                            "{:.2},{:.2},{:.2} | {}",
+                            self.camera.position().x,
+                            self.camera.position().y,
+                            self.camera.position().z,
+                            self.camera.look_dir(),
+                        )
                     };
                     r.draw_text(
                         &text,

@@ -1,11 +1,11 @@
-use crate::geom::ModelVertexDataWithNormal;
+use crate::geom::ModelVertexData;
 use crate::renderer::mesh::Mesh;
 
 use super::mesh::LoadMesh;
 
 #[derive(Debug)]
 pub struct ModelMesh {
-    pub mesh: Mesh<ModelVertexDataWithNormal>,
+    pub mesh: Mesh<ModelVertexData>,
     pub material: Option<tobj::Material>,
 }
 
@@ -65,7 +65,7 @@ impl LoadModel for wgpu::Device {
                             )
                         }),
                 )
-                .map(|((pos, uv), normal)| ModelVertexDataWithNormal {
+                .map(|((pos, uv), normal)| ModelVertexData {
                     pos: pos.into(),
                     uv: uv.into(),
                     normal: normal.into(),

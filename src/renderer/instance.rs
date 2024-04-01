@@ -3,22 +3,27 @@ use std::sync::Arc;
 
 use glam::{vec3, Mat4, Quat};
 
+use crate::color::Color;
 use crate::font::FontAtlas;
-use crate::geom::{ModelVertexData, VertexData};
+use crate::geom::{BasicVertexData, Rect, VertexData};
 use crate::sprite::Sprite;
-use crate::transform::Transform;
+use crate::transform::{Transform, Transform2D};
 
 use super::mesh::RawMeshRef;
-use super::state::{BindGroupAllocator, RawPipelineRef, RenderPass, ViewProjectionUniforms};
+use super::state::{
+    BindGroupAllocator, BindingSlot, RawPipelineRef, RenderPass, ViewProjectionUniforms,
+};
 use super::text::TextDisplayOptions;
-use super::{Display, InstanceData, MeshRef, PipelineRef, RenderData, TextureRef};
+use super::{
+    BindGroup, Bindable, Display, InstanceData, MeshRef, PipelineRef, RenderData, TextureRef,
+};
 
-use super::ModelInstanceData;
+use super::BasicInstanceData;
 
 #[derive(Debug)]
-pub struct InstanceRenderData<V = ModelVertexData, I = ModelInstanceData> {
+pub struct InstanceRenderData<V = BasicVertexData, I = BasicInstanceData> {
     pub mesh: MeshRef<V>,
-    pub model: I,
+    pub instance: I,
     pub texture: Option<TextureRef>,
     pub pipeline: Option<PipelineRef<V, I>>,
 }
@@ -27,7 +32,7 @@ impl<V, I> Deref for InstanceRenderData<V, I> {
     type Target = I;
 
     fn deref(&self) -> &Self::Target {
-        &self.model
+        &self.instance
     }
 }
 
@@ -43,7 +48,9 @@ enum InstancedDrawOp {
 impl InstancedDrawOp {
     pub fn apply<'pass, 'r: 'pass>(&'r self, render_pass: &mut RenderPass<'pass>) {
         match self {
-            InstancedDrawOp::Draw(instances) => render_pass.draw_active_mesh(instances.clone()),
+            InstancedDrawOp::Draw(instances) => {
+                render_pass.draw_active_mesh_instanced(instances.clone())
+            }
             InstancedDrawOp::SetPipeline(pipeline) => {
                 render_pass.set_active_pipeline_raw(*pipeline)
             }
@@ -66,7 +73,7 @@ impl InstanceStorage {
     pub fn new(display: &Display, initial_size: usize) -> Self {
         let instance_buffer = display.device().create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: (initial_size * std::mem::size_of::<ModelInstanceData>()) as u64,
+            size: (initial_size * std::mem::size_of::<BasicInstanceData>()) as u64,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
             mapped_at_creation: false,
         });
@@ -107,43 +114,70 @@ impl InstanceStorage {
 pub struct InstanceRenderer<'r, 'alloc> {
     bind_group_allocator: &'r BindGroupAllocator<'alloc, ViewProjectionUniforms>,
     instance_storage: &'r mut InstanceStorage,
+    quad_mesh: MeshRef<BasicVertexData>,
 
     active_texture: Option<TextureRef>,
     active_mesh: Option<RawMeshRef>,
     active_pipeline: Option<RawPipelineRef>,
-    current_count: u32,
-    range_start: u32,
+    current_draw_range: Range<u32>,
 }
 
 impl<'r, 'alloc> InstanceRenderer<'r, 'alloc> {
+    const DEFAULT_BIND_GROUP_COUNT: u32 = 3;
+
     pub fn new(
         bind_group_allocator: &'r BindGroupAllocator<'alloc, ViewProjectionUniforms>,
         instance_storage: &'r mut InstanceStorage,
+        quad_mesh: MeshRef<BasicVertexData>,
     ) -> Self {
         Self {
             bind_group_allocator,
             instance_storage,
+            quad_mesh,
             active_mesh: None,
             active_texture: None,
             active_pipeline: None,
-            current_count: 0,
-            range_start: 0,
+            current_draw_range: 0..0,
         }
     }
 
-    pub fn set_view_projection(&mut self, view_projection: &ViewProjectionUniforms) {
-        if self.current_count > 0 {
-            self.instance_storage.ops.push(InstancedDrawOp::Draw(
-                self.range_start..self.range_start + self.current_count,
-            ));
-            self.range_start += self.current_count;
-            self.current_count = 0;
+    fn flush_draw_calls(&mut self) {
+        if self.current_draw_range.is_empty() {
+            return;
         }
+        self.instance_storage
+            .ops
+            .push(InstancedDrawOp::Draw(self.current_draw_range.clone()));
+        self.current_draw_range.start = self.current_draw_range.end
+    }
+
+    pub fn set_bind_group<T: Bindable>(&mut self, index: u32, bind_group: &BindGroup<T>) {
+        self.flush_draw_calls();
+        self.instance_storage
+            .ops
+            .push(InstancedDrawOp::SetBindGroup(
+                index,
+                bind_group.bind_group().clone(),
+            ));
+    }
+
+    pub fn set_view_projection(&mut self, view_projection: &ViewProjectionUniforms) {
+        self.flush_draw_calls();
         self.instance_storage
             .ops
             .push(InstancedDrawOp::SetBindGroup(
                 RenderPass::VIEW_PROJECTION_UNIFORMS_BIND_GROUP_INDEX,
                 self.bind_group_allocator.get(view_projection),
+            ));
+    }
+
+    pub fn bind<T: BindingSlot>(&mut self, binding_slot: T) {
+        self.flush_draw_calls();
+        self.instance_storage
+            .ops
+            .push(InstancedDrawOp::SetBindGroup(
+                Self::DEFAULT_BIND_GROUP_COUNT + binding_slot.slot(),
+                binding_slot.value().clone(),
             ));
     }
 
@@ -154,13 +188,7 @@ impl<'r, 'alloc> InstanceRenderer<'r, 'alloc> {
     ) {
         let pipeline = instance.pipeline.map(|p| p.raw());
         if pipeline != self.active_pipeline {
-            if self.current_count > 0 {
-                self.instance_storage.ops.push(InstancedDrawOp::Draw(
-                    self.range_start..self.range_start + self.current_count,
-                ));
-                self.range_start += self.current_count;
-                self.current_count = 0;
-            }
+            self.flush_draw_calls();
             self.instance_storage
                 .ops
                 .push(InstancedDrawOp::SetPipeline(pipeline));
@@ -168,36 +196,24 @@ impl<'r, 'alloc> InstanceRenderer<'r, 'alloc> {
         }
         let mesh = instance.mesh.raw();
         if mesh != self.active_mesh.unwrap_or_default() {
-            if self.current_count > 0 {
-                self.instance_storage.ops.push(InstancedDrawOp::Draw(
-                    self.range_start..self.range_start + self.current_count,
-                ));
-                self.range_start += self.current_count;
-                self.current_count = 0;
-            }
+            self.flush_draw_calls();
             self.instance_storage
                 .ops
                 .push(InstancedDrawOp::SetMesh(mesh));
             self.active_mesh = Some(mesh);
         }
         if instance.texture != self.active_texture {
-            if self.current_count > 0 {
-                self.instance_storage.ops.push(InstancedDrawOp::Draw(
-                    self.range_start..self.range_start + self.current_count,
-                ));
-                self.range_start += self.current_count;
-                self.current_count = 0;
-            }
+            self.flush_draw_calls();
             self.instance_storage
                 .ops
                 .push(InstancedDrawOp::SetTexture(instance.texture));
             self.active_texture = instance.texture;
         }
-        self.current_count += 1;
+        self.current_draw_range.end += 1;
         self.instance_storage
             .raw_instance_bytes
             // .extend_from_slice(bytemuck::cast_slice(&[instance.as_raw()]));
-            .extend_from_slice(bytemuck::bytes_of(&instance.model));
+            .extend_from_slice(bytemuck::bytes_of(&instance.instance));
     }
 
     // I is more constrained here because we want to be able to set `subtexture`. Maybe we could
@@ -206,7 +222,7 @@ impl<'r, 'alloc> InstanceRenderer<'r, 'alloc> {
     pub fn draw_sprite<V: VertexData>(
         &mut self,
         sprite: &Sprite,
-        render_data: &RenderData<V, ModelInstanceData>,
+        render_data: &RenderData<V, BasicInstanceData>,
         frame: usize,
         transform: impl Transform,
     ) {
@@ -215,7 +231,7 @@ impl<'r, 'alloc> InstanceRenderer<'r, 'alloc> {
         let origin = sprite.pivot.unwrap_or_default().as_vec2();
         let transform = transform.as_mat4()
             * Mat4::from_scale_rotation_translation(scale, Quat::IDENTITY, -origin.extend(0.0));
-        self.draw_instance(&render_data.for_model_instance(ModelInstanceData {
+        self.draw_instance(&render_data.for_instance(BasicInstanceData {
             subtexture: frame.region,
             transform,
             ..Default::default()
@@ -227,7 +243,7 @@ impl<'r, 'alloc> InstanceRenderer<'r, 'alloc> {
         &mut self,
         s: impl AsRef<str>,
         font: &FontAtlas,
-        render_data: &RenderData<V, ModelInstanceData>,
+        render_data: &RenderData<V, BasicInstanceData>,
         transform: impl Transform,
         opts: TextDisplayOptions,
     ) {
@@ -238,7 +254,7 @@ impl<'r, 'alloc> InstanceRenderer<'r, 'alloc> {
                 Quat::IDENTITY,
                 glyph_data.bounds.pos.extend(0.0),
             );
-            self.draw_instance(&render_data.for_model_instance(ModelInstanceData {
+            self.draw_instance(&render_data.for_instance(BasicInstanceData {
                 subtexture: glyph_data.subtexture,
                 tint: opts.color,
                 transform,
@@ -247,12 +263,56 @@ impl<'r, 'alloc> InstanceRenderer<'r, 'alloc> {
         }
     }
 
-    pub fn commit(self, display: &Display) {
-        if self.current_count > 0 {
-            self.instance_storage.ops.push(InstancedDrawOp::Draw(
-                self.range_start..self.range_start + self.current_count,
-            ));
-        }
+    #[inline]
+    pub fn draw_quad(&mut self, texture: impl Into<Option<TextureRef>>, transform: impl Transform) {
+        let texture = texture.into();
+        let transform = transform.as_mat4();
+        self.draw_instance(&InstanceRenderData {
+            mesh: self.quad_mesh,
+            instance: BasicInstanceData {
+                transform,
+                ..Default::default()
+            },
+            texture,
+            pipeline: None,
+        });
+    }
+
+    #[inline]
+    pub fn draw_quad_ex(
+        &mut self,
+        texture: Option<TextureRef>,
+        transform: impl Transform,
+        tint: Color,
+        subtexture: Rect,
+    ) {
+        let transform = transform.as_mat4();
+        self.draw_instance(&InstanceRenderData {
+            mesh: self.quad_mesh,
+            instance: BasicInstanceData {
+                transform,
+                tint,
+                subtexture,
+            },
+            texture,
+            pipeline: None,
+        });
+    }
+
+    #[inline]
+    pub fn draw_rect(&mut self, texture: impl Into<Option<TextureRef>>, rect: Rect) {
+        self.draw_quad(
+            texture,
+            Transform2D {
+                position: rect.pos,
+                scale: rect.dim,
+                rotation_rad: 0.0,
+            },
+        );
+    }
+
+    pub fn commit(mut self, display: &Display) {
+        self.flush_draw_calls();
         self.instance_storage.update_buffer(display);
     }
 }

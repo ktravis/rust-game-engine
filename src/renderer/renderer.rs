@@ -1,11 +1,11 @@
 use super::instance::InstanceRenderData;
+use super::state::BindingType;
 use super::{MeshRef, PipelineRef, TextureRef};
 use crate::{color::*, geom::*, transform::*};
 use glam::Mat4;
 use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
-use wgpu::util::DeviceExt;
 use wgpu::{vertex_attr_array, VertexAttribute, VertexBufferLayout, VertexStepMode};
 
 #[derive(Copy, Clone)]
@@ -16,12 +16,12 @@ pub struct RenderData<V, I> {
 }
 
 impl<V, I: InstanceData> RenderData<V, I> {
-    pub fn for_model_instance(self, model: I) -> InstanceRenderData<V, I> {
+    pub fn for_instance(self, instance: I) -> InstanceRenderData<V, I> {
         InstanceRenderData {
             texture: Some(self.texture),
             pipeline: self.pipeline,
             mesh: self.mesh,
-            model,
+            instance,
         }
     }
 }
@@ -46,15 +46,15 @@ impl InstanceData for () {}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct ModelInstanceData {
+pub struct BasicInstanceData {
     pub subtexture: Rect,
     pub tint: Color,
     pub transform: Mat4,
 }
 
-impl InstanceData for ModelInstanceData {}
+impl InstanceData for BasicInstanceData {}
 
-impl ModelInstanceData {
+impl BasicInstanceData {
     const ATTRIBUTES: [VertexAttribute; 7] = vertex_attr_array![
         // uv_scale: vec2<f32>
         0 => Float32x2,
@@ -70,7 +70,7 @@ impl ModelInstanceData {
     ];
 }
 
-impl ModelInstanceData {
+impl BasicInstanceData {
     #[inline]
     pub fn transform(transform: impl Transform) -> Self {
         Self {
@@ -81,7 +81,7 @@ impl ModelInstanceData {
     }
 }
 
-impl VertexLayout for ModelInstanceData {
+impl VertexLayout for BasicInstanceData {
     fn vertex_layout() -> VertexBufferLayout<'static> {
         VertexBufferLayout {
             array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
@@ -91,7 +91,7 @@ impl VertexLayout for ModelInstanceData {
     }
 }
 
-impl Default for ModelInstanceData {
+impl Default for BasicInstanceData {
     fn default() -> Self {
         Self {
             transform: Default::default(),
@@ -103,12 +103,10 @@ impl Default for ModelInstanceData {
 
 #[rustfmt::skip]
 pub const DEFAULT_TEXTURE_DATA: [u8; 16] = [
-    // 255, 0, 255, 255,
     255, 255, 255, 255,
     255, 255, 255, 255,
     255, 255, 255, 255,
     255, 255, 255, 255,
-    // 255, 0, 255, 255,
 ];
 
 #[derive(Debug)]
@@ -145,7 +143,8 @@ impl_vertex_layouts_tuple!(V1, V2, V3, V4, V5);
 impl_vertex_layouts_tuple!(V1, V2, V3, V4, V5, V6);
 
 pub trait Bindable {
-    fn bind_group(&self, device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> wgpu::BindGroup;
+    fn entries(&self) -> Vec<wgpu::BindGroupEntry>;
+    fn binding_type(&self) -> BindingType;
 }
 
 pub struct BindGroup<T: Bindable> {
@@ -164,7 +163,11 @@ impl<T: Bindable + Debug> Debug for BindGroup<T> {
 
 impl<T: Bindable> BindGroup<T> {
     pub fn new(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, resource: T) -> Self {
-        let bind_group = Arc::new(resource.bind_group(device, layout));
+        let bind_group = Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(&format!("bind group ({})", std::any::type_name::<T>())),
+            layout,
+            entries: &resource.entries(),
+        }));
         Self {
             resource,
             bind_group,
@@ -199,10 +202,13 @@ pub struct UniformBuffer<U: UniformData> {
 
 impl<U: UniformData> UniformBuffer<U> {
     pub fn new(device: &wgpu::Device, uniform: U) -> Self {
-        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let n = std::mem::size_of::<U>();
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Uniform Buffer"),
-            contents: bytemuck::cast_slice(&[uniform]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            // pad to 16 bytes, which will be required in the shader
+            size: (n + (n % 16)) as u64,
+            mapped_at_creation: false,
         });
         Self { uniform, buffer }
     }
@@ -246,14 +252,16 @@ impl<U: UniformData> UniformBuffer<U> {
 }
 
 impl<U: UniformData> Bindable for UniformBuffer<U> {
-    fn bind_group(&self, device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> wgpu::BindGroup {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("uniform_bind_group"),
-            layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: self.buffer.as_entire_binding(),
-            }],
-        })
+    fn entries(&self) -> Vec<wgpu::BindGroupEntry> {
+        vec![wgpu::BindGroupEntry {
+            binding: 0,
+            resource: self.buffer.as_entire_binding(),
+        }]
+    }
+
+    fn binding_type(&self) -> BindingType {
+        BindingType::Uniform
     }
 }
+
+pub type UniformBindGroup<T> = BindGroup<UniformBuffer<T>>;

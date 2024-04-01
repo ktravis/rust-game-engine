@@ -1,14 +1,6 @@
 use crate::renderer::VertexLayout;
-use glam::{vec2, Mat4, Vec2};
+use glam::{vec2, Vec2};
 use wgpu::{vertex_attr_array, VertexAttribute, VertexBufferLayout};
-
-#[rustfmt::skip]
-pub const OPENGL_TO_WGPU_MATRIX: Mat4 = Mat4::from_cols_array(&[
-    1.0, 0.0, 0.0, 0.0,
-    0.0, 1.0, 0.0, 0.0,
-    0.0, 0.0, 0.5, 0.5,
-    0.0, 0.0, 0.0, 1.0,
-]);
 
 pub trait VertexData:
     VertexLayout + std::fmt::Debug + Default + Clone + Copy + bytemuck::Pod + bytemuck::Zeroable
@@ -17,16 +9,42 @@ pub trait VertexData:
 
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct ModelVertexData {
+pub struct BasicVertexData {
     pub pos: [f32; 4],
     pub uv: [f32; 2],
 }
 
+impl VertexLayout for BasicVertexData {
+    fn vertex_layout() -> VertexBufferLayout<'static> {
+        VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBUTES,
+        }
+    }
+}
+
+impl BasicVertexData {
+    const ATTRIBUTES: [VertexAttribute; 2] = vertex_attr_array![
+        0 => Float32x4,
+        1 => Float32x2,
+    ];
+}
+
+impl VertexData for BasicVertexData {}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ModelVertexData {
+    pub pos: [f32; 4],
+    pub uv: [f32; 2],
+    pub normal: [f32; 3],
+}
+
 impl VertexLayout for ModelVertexData {
     fn vertex_layout() -> VertexBufferLayout<'static> {
-        use std::mem;
         VertexBufferLayout {
-            array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
+            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &Self::ATTRIBUTES,
         }
@@ -34,34 +52,6 @@ impl VertexLayout for ModelVertexData {
 }
 
 impl ModelVertexData {
-    const ATTRIBUTES: [VertexAttribute; 2] = vertex_attr_array![
-        0 => Float32x4,
-        1 => Float32x2,
-    ];
-}
-
-impl VertexData for ModelVertexData {}
-
-#[repr(C)]
-#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct ModelVertexDataWithNormal {
-    pub pos: [f32; 4],
-    pub uv: [f32; 2],
-    pub normal: [f32; 3],
-}
-
-impl VertexLayout for ModelVertexDataWithNormal {
-    fn vertex_layout() -> VertexBufferLayout<'static> {
-        use std::mem;
-        VertexBufferLayout {
-            array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &Self::ATTRIBUTES,
-        }
-    }
-}
-
-impl ModelVertexDataWithNormal {
     const ATTRIBUTES: [VertexAttribute; 3] = vertex_attr_array![
         0 => Float32x4,
         1 => Float32x2,
@@ -69,7 +59,7 @@ impl ModelVertexDataWithNormal {
     ];
 }
 
-impl VertexData for ModelVertexDataWithNormal {}
+impl VertexData for ModelVertexData {}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Point<T = i32> {
@@ -200,23 +190,23 @@ pub mod quad {
         h: f32,
         uv1: (f32, f32),
         uv2: (f32, f32),
-    ) -> [ModelVertexData; 4] {
+    ) -> [BasicVertexData; 4] {
         [
-            ModelVertexData {
+            BasicVertexData {
                 pos: [x, y, 0.0, 1.0],
-                uv: [uv1.0, uv1.1],
-            },
-            ModelVertexData {
-                pos: [x, y + h, 0.0, 1.0],
                 uv: [uv1.0, uv2.1],
             },
-            ModelVertexData {
-                pos: [x + w, y + h, 0.0, 1.0],
-                uv: [uv2.0, uv2.1],
+            BasicVertexData {
+                pos: [x, y + h, 0.0, 1.0],
+                uv: [uv1.0, uv1.1],
             },
-            ModelVertexData {
-                pos: [x + w, y, 0.0, 1.0],
+            BasicVertexData {
+                pos: [x + w, y + h, 0.0, 1.0],
                 uv: [uv2.0, uv1.1],
+            },
+            BasicVertexData {
+                pos: [x + w, y, 0.0, 1.0],
+                uv: [uv2.0, uv2.1],
             },
         ]
     }
@@ -225,152 +215,44 @@ pub mod quad {
 }
 
 pub mod cube {
-    use super::*;
-
-    pub const VERTICES: [ModelVertexData; 24] = [
-        ModelVertexData {
-            pos: [-1.0, -1.0, -1.0, 1.],
-            uv: [0.0, 0.0],
-        },
-        ModelVertexData {
-            pos: [1.0, -1.0, -1.0, 1.],
-            uv: [1.0, 0.0],
-        },
-        ModelVertexData {
-            pos: [1.0, 1.0, -1.0, 1.],
-            uv: [1.0, 1.0],
-        },
-        ModelVertexData {
-            pos: [-1.0, 1.0, -1.0, 1.],
-            uv: [0.0, 1.0],
-        },
-        ModelVertexData {
-            pos: [-1.0, -1.0, 1.0, 1.],
-            uv: [0.0, 0.0],
-        },
-        ModelVertexData {
-            pos: [1.0, -1.0, 1.0, 1.],
-            uv: [1.0, 0.0],
-        },
-        ModelVertexData {
-            pos: [1.0, 1.0, 1.0, 1.],
-            uv: [1.0, 1.0],
-        },
-        ModelVertexData {
-            pos: [-1.0, 1.0, 1.0, 1.],
-            uv: [0.0, 1.0],
-        },
-        ModelVertexData {
-            pos: [-1.0, -1.0, -1.0, 1.],
-            uv: [0.0, 0.0],
-        },
-        ModelVertexData {
-            pos: [-1.0, 1.0, -1.0, 1.],
-            uv: [1.0, 0.0],
-        },
-        ModelVertexData {
-            pos: [-1.0, 1.0, 1.0, 1.],
-            uv: [1.0, 1.0],
-        },
-        ModelVertexData {
-            pos: [-1.0, -1.0, 1.0, 1.],
-            uv: [0.0, 1.0],
-        },
-        ModelVertexData {
-            pos: [1.0, -1.0, -1.0, 1.],
-            uv: [0.0, 0.0],
-        },
-        ModelVertexData {
-            pos: [1.0, 1.0, -1.0, 1.],
-            uv: [1.0, 0.0],
-        },
-        ModelVertexData {
-            pos: [1.0, 1.0, 1.0, 1.],
-            uv: [1.0, 1.0],
-        },
-        ModelVertexData {
-            pos: [1.0, -1.0, 1.0, 1.],
-            uv: [0.0, 1.0],
-        },
-        ModelVertexData {
-            pos: [-1.0, -1.0, -1.0, 1.],
-            uv: [0.0, 0.0],
-        },
-        ModelVertexData {
-            pos: [-1.0, -1.0, 1.0, 1.],
-            uv: [1.0, 0.0],
-        },
-        ModelVertexData {
-            pos: [1.0, -1.0, 1.0, 1.],
-            uv: [1.0, 1.0],
-        },
-        ModelVertexData {
-            pos: [1.0, -1.0, -1.0, 1.],
-            uv: [0.0, 1.0],
-        },
-        ModelVertexData {
-            pos: [-1.0, 1.0, -1.0, 1.],
-            uv: [0.0, 0.0],
-        },
-        ModelVertexData {
-            pos: [-1.0, 1.0, 1.0, 1.],
-            uv: [1.0, 0.0],
-        },
-        ModelVertexData {
-            pos: [1.0, 1.0, 1.0, 1.],
-            uv: [1.0, 1.0],
-        },
-        ModelVertexData {
-            pos: [1.0, 1.0, -1.0, 1.],
-            uv: [0.0, 1.0],
-        },
-    ];
-
-    pub const INDICES: &[u16] = &[
-        0, 1, 2, 0, 2, 3, 6, 5, 4, 7, 6, 4, 8, 9, 10, 8, 10, 11, 14, 13, 12, 15, 14, 12, 16, 17,
-        18, 16, 18, 19, 22, 21, 20, 23, 22, 20,
-    ];
-}
-
-pub mod cube_with_normals {
     use glam::Vec3;
-    const BACK: [f32; 3] = Vec3::NEG_Z.to_array();
-    const FORWARD: [f32; 3] = Vec3::Z.to_array();
+    const FORWARD: [f32; 3] = Vec3::NEG_Z.to_array();
+    const BACK: [f32; 3] = Vec3::Z.to_array();
     const LEFT: [f32; 3] = Vec3::NEG_X.to_array();
     const RIGHT: [f32; 3] = Vec3::X.to_array();
     const DOWN: [f32; 3] = Vec3::NEG_Y.to_array();
     const UP: [f32; 3] = Vec3::Y.to_array();
 
-    const BL: [f32; 2] = [0.0, 0.0];
-    const BR: [f32; 2] = [1.0, 0.0];
-    const TL: [f32; 2] = [0.0, 1.0];
-    const TR: [f32; 2] = [1.0, 1.0];
+    const BL: [f32; 2] = [0.0, 1.0];
+    const BR: [f32; 2] = [1.0, 1.0];
+    const TL: [f32; 2] = [0.0, 0.0];
+    const TR: [f32; 2] = [1.0, 0.0];
 
     use super::*;
 
-    const fn v(pos: [f32; 3], uv: [f32; 2], normal: [f32; 3]) -> ModelVertexDataWithNormal {
-        ModelVertexDataWithNormal {
+    const fn v(pos: [f32; 3], uv: [f32; 2], normal: [f32; 3]) -> ModelVertexData {
+        ModelVertexData {
             pos: [pos[0], pos[1], pos[2], 1.0],
             uv,
             normal,
         }
     }
 
-    pub const VERTICES: [ModelVertexDataWithNormal; 36] = [
+    pub const VERTICES: [ModelVertexData; 36] = [
         // front face (facing -z direction)
-        v([1., 1., 1.], TL, FORWARD),
-        v([1., -1., 1.], BL, FORWARD),
-        v([-1., 1., 1.], TR, FORWARD),
-        v([-1., 1., 1.], TR, FORWARD),
-        v([1., -1., 1.], BL, FORWARD),
-        v([-1., -1., 1.], BR, FORWARD),
+        v([-1., 1., -1.], TL, FORWARD),
+        v([-1., -1., -1.], BL, FORWARD),
+        v([1., 1., -1.], TR, FORWARD),
+        v([1., 1., -1.], TR, FORWARD),
+        v([-1., -1., -1.], BL, FORWARD),
+        v([1., -1., -1.], BR, FORWARD),
         // back face
-        v([-1., 1., -1.], TL, BACK),
-        v([-1., -1., -1.], BL, BACK),
-        v([1., 1., -1.], TR, BACK),
-        v([1., 1., -1.], TR, BACK),
-        v([-1., -1., -1.], BL, BACK),
-        v([1., -1., -1.], BR, BACK),
+        v([1., 1., 1.], TL, BACK),
+        v([1., -1., 1.], BL, BACK),
+        v([-1., 1., 1.], TR, BACK),
+        v([-1., 1., 1.], TR, BACK),
+        v([1., -1., 1.], BL, BACK),
+        v([-1., -1., 1.], BR, BACK),
         // left face
         v([-1., 1., 1.], TL, LEFT),
         v([-1., -1., 1.], BL, LEFT),
