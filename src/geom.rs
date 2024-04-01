@@ -1,24 +1,62 @@
-use crate::mesh::Mesh;
 use crate::renderer::VertexLayout;
-use glam::{vec2, vec4, Vec2, Vec4};
-use miniquad::{VertexAttribute, VertexFormat};
+use glam::{vec2, Vec2};
+use wgpu::{vertex_attr_array, VertexAttribute, VertexBufferLayout};
 
-pub trait VertexData: VertexLayout + std::fmt::Debug + Default + Clone + Copy {}
+pub trait VertexData:
+    VertexLayout + std::fmt::Debug + Default + Clone + Copy + bytemuck::Pod + bytemuck::Zeroable
+{
+}
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct BasicVertexData {
+    pub pos: [f32; 4],
+    pub uv: [f32; 2],
+}
+
+impl VertexLayout for BasicVertexData {
+    fn vertex_layout() -> VertexBufferLayout<'static> {
+        VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBUTES,
+        }
+    }
+}
+
+impl BasicVertexData {
+    const ATTRIBUTES: [VertexAttribute; 2] = vertex_attr_array![
+        0 => Float32x4,
+        1 => Float32x2,
+    ];
+}
+
+impl VertexData for BasicVertexData {}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ModelVertexData {
-    pub pos: Vec4,
-    pub uv: Vec2,
+    pub pos: [f32; 4],
+    pub uv: [f32; 2],
+    pub normal: [f32; 3],
 }
 
 impl VertexLayout for ModelVertexData {
-    fn vertex_layout() -> Vec<VertexAttribute> {
-        vec![
-            VertexAttribute::with_buffer("position", VertexFormat::Float4, 0),
-            VertexAttribute::with_buffer("uv", VertexFormat::Float2, 0),
-        ]
+    fn vertex_layout() -> VertexBufferLayout<'static> {
+        VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBUTES,
+        }
     }
+}
+
+impl ModelVertexData {
+    const ATTRIBUTES: [VertexAttribute; 3] = vertex_attr_array![
+        0 => Float32x4,
+        1 => Float32x2,
+        2 => Float32x3,
+    ];
 }
 
 impl VertexData for ModelVertexData {}
@@ -48,6 +86,12 @@ impl<T> From<Point<T>> for (T, T) {
 }
 
 impl Point {
+    pub fn as_vec2(&self) -> Vec2 {
+        Vec2::new(self.x as f32, self.y as f32)
+    }
+}
+
+impl Point<u32> {
     pub fn as_vec2(&self) -> Vec2 {
         Vec2::new(self.x as f32, self.y as f32)
     }
@@ -95,17 +139,18 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Rect {
-    pub pos: Vec2,
     pub dim: Vec2,
+    pub pos: Vec2,
 }
 
 impl Rect {
     pub fn new(x: f32, y: f32, w: f32, h: f32) -> Self {
         Self {
-            pos: vec2(x, y),
             dim: vec2(w, h),
+            pos: vec2(x, y),
         }
     }
 
@@ -125,15 +170,17 @@ impl Rect {
     }
 }
 
+impl Default for Rect {
+    fn default() -> Self {
+        Self {
+            pos: Vec2::default(),
+            dim: vec2(1., 1.),
+        }
+    }
+}
+
 pub mod quad {
     use super::*;
-
-    // #[rustfmt::skip]
-    // pub const VERTICES: &[VertexData] = &verts(0.0, 0.0, 1.0, 1.0, (0.0, 0.0), (1.0, 1.0));
-    // 0.0, 0.0, 0.0, 1.0,   0.0, 0.0,
-    // 1.0, 0.0, 0.0, 1.0,   1.0, 0.0,
-    // 1.0,  1.0, 0.0, 1.0,   1.0, 1.0,
-    // 0.0,  1.0, 0.0, 1.0,   0.0, 1.0,
 
     #[inline]
     pub fn verts(
@@ -143,148 +190,101 @@ pub mod quad {
         h: f32,
         uv1: (f32, f32),
         uv2: (f32, f32),
-    ) -> [ModelVertexData; 4] {
+    ) -> [BasicVertexData; 4] {
         [
-            ModelVertexData {
-                pos: glam::vec4(x, y, 0.0, 1.0),
-                uv: glam::vec2(uv1.0, uv1.1),
+            BasicVertexData {
+                pos: [x, y, 0.0, 1.0],
+                uv: [uv1.0, uv2.1],
             },
-            ModelVertexData {
-                pos: glam::vec4(x, y + h, 0.0, 1.0),
-                uv: glam::vec2(uv1.0, uv2.1),
+            BasicVertexData {
+                pos: [x, y + h, 0.0, 1.0],
+                uv: [uv1.0, uv1.1],
             },
-            ModelVertexData {
-                pos: glam::vec4(x + w, y + h, 0.0, 1.0),
-                uv: glam::vec2(uv2.0, uv2.1),
+            BasicVertexData {
+                pos: [x + w, y + h, 0.0, 1.0],
+                uv: [uv2.0, uv1.1],
             },
-            ModelVertexData {
-                pos: glam::vec4(x + w, y, 0.0, 1.0),
-                uv: glam::vec2(uv2.0, uv1.1),
+            BasicVertexData {
+                pos: [x + w, y, 0.0, 1.0],
+                uv: [uv2.0, uv2.1],
             },
         ]
     }
 
     pub const INDICES: &[u16] = &[0, 1, 2, 0, 2, 3];
-
-    pub fn mesh() -> Mesh<ModelVertexData> {
-        Mesh {
-            vertices: verts(0., 0., 1., 1., (0., 0.), (1., 1.)).to_vec(),
-            indices: INDICES.to_vec(),
-        }
-    }
 }
 
 pub mod cube {
+    use glam::Vec3;
+    const FORWARD: [f32; 3] = Vec3::NEG_Z.to_array();
+    const BACK: [f32; 3] = Vec3::Z.to_array();
+    const LEFT: [f32; 3] = Vec3::NEG_X.to_array();
+    const RIGHT: [f32; 3] = Vec3::X.to_array();
+    const DOWN: [f32; 3] = Vec3::NEG_Y.to_array();
+    const UP: [f32; 3] = Vec3::Y.to_array();
+
+    const BL: [f32; 2] = [0.0, 1.0];
+    const BR: [f32; 2] = [1.0, 1.0];
+    const TL: [f32; 2] = [0.0, 0.0];
+    const TR: [f32; 2] = [1.0, 0.0];
+
     use super::*;
 
-    pub const VERTICES: [ModelVertexData; 24] = [
+    const fn v(pos: [f32; 3], uv: [f32; 2], normal: [f32; 3]) -> ModelVertexData {
         ModelVertexData {
-            pos: vec4(-1.0, -1.0, -1.0, 1.),
-            uv: vec2(0.0, 0.0),
-        },
-        ModelVertexData {
-            pos: vec4(1.0, -1.0, -1.0, 1.),
-            uv: vec2(1.0, 0.0),
-        },
-        ModelVertexData {
-            pos: vec4(1.0, 1.0, -1.0, 1.),
-            uv: vec2(1.0, 1.0),
-        },
-        ModelVertexData {
-            pos: vec4(-1.0, 1.0, -1.0, 1.),
-            uv: vec2(0.0, 1.0),
-        },
-        ModelVertexData {
-            pos: vec4(-1.0, -1.0, 1.0, 1.),
-            uv: vec2(0.0, 0.0),
-        },
-        ModelVertexData {
-            pos: vec4(1.0, -1.0, 1.0, 1.),
-            uv: vec2(1.0, 0.0),
-        },
-        ModelVertexData {
-            pos: vec4(1.0, 1.0, 1.0, 1.),
-            uv: vec2(1.0, 1.0),
-        },
-        ModelVertexData {
-            pos: vec4(-1.0, 1.0, 1.0, 1.),
-            uv: vec2(0.0, 1.0),
-        },
-        ModelVertexData {
-            pos: vec4(-1.0, -1.0, -1.0, 1.),
-            uv: vec2(0.0, 0.0),
-        },
-        ModelVertexData {
-            pos: vec4(-1.0, 1.0, -1.0, 1.),
-            uv: vec2(1.0, 0.0),
-        },
-        ModelVertexData {
-            pos: vec4(-1.0, 1.0, 1.0, 1.),
-            uv: vec2(1.0, 1.0),
-        },
-        ModelVertexData {
-            pos: vec4(-1.0, -1.0, 1.0, 1.),
-            uv: vec2(0.0, 1.0),
-        },
-        ModelVertexData {
-            pos: vec4(1.0, -1.0, -1.0, 1.),
-            uv: vec2(0.0, 0.0),
-        },
-        ModelVertexData {
-            pos: vec4(1.0, 1.0, -1.0, 1.),
-            uv: vec2(1.0, 0.0),
-        },
-        ModelVertexData {
-            pos: vec4(1.0, 1.0, 1.0, 1.),
-            uv: vec2(1.0, 1.0),
-        },
-        ModelVertexData {
-            pos: vec4(1.0, -1.0, 1.0, 1.),
-            uv: vec2(0.0, 1.0),
-        },
-        ModelVertexData {
-            pos: vec4(-1.0, -1.0, -1.0, 1.),
-            uv: vec2(0.0, 0.0),
-        },
-        ModelVertexData {
-            pos: vec4(-1.0, -1.0, 1.0, 1.),
-            uv: vec2(1.0, 0.0),
-        },
-        ModelVertexData {
-            pos: vec4(1.0, -1.0, 1.0, 1.),
-            uv: vec2(1.0, 1.0),
-        },
-        ModelVertexData {
-            pos: vec4(1.0, -1.0, -1.0, 1.),
-            uv: vec2(0.0, 1.0),
-        },
-        ModelVertexData {
-            pos: vec4(-1.0, 1.0, -1.0, 1.),
-            uv: vec2(0.0, 0.0),
-        },
-        ModelVertexData {
-            pos: vec4(-1.0, 1.0, 1.0, 1.),
-            uv: vec2(1.0, 0.0),
-        },
-        ModelVertexData {
-            pos: vec4(1.0, 1.0, 1.0, 1.),
-            uv: vec2(1.0, 1.0),
-        },
-        ModelVertexData {
-            pos: vec4(1.0, 1.0, -1.0, 1.),
-            uv: vec2(0.0, 1.0),
-        },
+            pos: [pos[0], pos[1], pos[2], 1.0],
+            uv,
+            normal,
+        }
+    }
+
+    pub const VERTICES: [ModelVertexData; 36] = [
+        // front face (facing -z direction)
+        v([-1., 1., -1.], TL, FORWARD),
+        v([-1., -1., -1.], BL, FORWARD),
+        v([1., 1., -1.], TR, FORWARD),
+        v([1., 1., -1.], TR, FORWARD),
+        v([-1., -1., -1.], BL, FORWARD),
+        v([1., -1., -1.], BR, FORWARD),
+        // back face
+        v([1., 1., 1.], TL, BACK),
+        v([1., -1., 1.], BL, BACK),
+        v([-1., 1., 1.], TR, BACK),
+        v([-1., 1., 1.], TR, BACK),
+        v([1., -1., 1.], BL, BACK),
+        v([-1., -1., 1.], BR, BACK),
+        // left face
+        v([-1., 1., 1.], TL, LEFT),
+        v([-1., -1., 1.], BL, LEFT),
+        v([-1., 1., -1.], TR, LEFT),
+        v([-1., 1., -1.], TR, LEFT),
+        v([-1., -1., 1.], BL, LEFT),
+        v([-1., -1., -1.], BR, LEFT),
+        // right face
+        v([1., 1., -1.], TL, RIGHT),
+        v([1., -1., -1.], BL, RIGHT),
+        v([1., 1., 1.], TR, RIGHT),
+        v([1., 1., 1.], TR, RIGHT),
+        v([1., -1., -1.], BL, RIGHT),
+        v([1., -1., 1.], BR, RIGHT),
+        // top face
+        v([-1., 1., 1.], TL, UP),
+        v([-1., 1., -1.], BL, UP),
+        v([1., 1., 1.], TR, UP),
+        v([1., 1., 1.], TR, UP),
+        v([-1., 1., -1.], BL, UP),
+        v([1., 1., -1.], BR, UP),
+        // bottom face
+        v([-1., -1., -1.], TL, DOWN),
+        v([-1., -1., 1.], BL, DOWN),
+        v([1., -1., -1.], TR, DOWN),
+        v([1., -1., -1.], TR, DOWN),
+        v([-1., -1., 1.], BL, DOWN),
+        v([1., -1., 1.], BR, DOWN),
     ];
 
     pub const INDICES: &[u16] = &[
-        0, 1, 2, 0, 2, 3, 6, 5, 4, 7, 6, 4, 8, 9, 10, 8, 10, 11, 14, 13, 12, 15, 14, 12, 16, 17,
-        18, 16, 18, 19, 22, 21, 20, 23, 22, 20,
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+        25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
     ];
-
-    pub fn mesh() -> Mesh {
-        Mesh {
-            vertices: VERTICES.to_vec(),
-            indices: INDICES.to_vec(),
-        }
-    }
 }

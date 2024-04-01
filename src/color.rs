@@ -1,9 +1,16 @@
-#[derive(Debug, Default, Copy, Clone)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Color {
     pub r: f32,
     pub g: f32,
     pub b: f32,
     pub a: f32,
+}
+
+impl Default for Color {
+    fn default() -> Self {
+        Self::WHITE
+    }
 }
 
 impl Color {
@@ -72,6 +79,12 @@ impl From<(f32, f32, f32, f32)> for Color {
 
 impl From<(f32, f32, f32)> for Color {
     fn from((r, g, b): (f32, f32, f32)) -> Self {
+        Self { r, g, b, a: 1.0 }
+    }
+}
+
+impl From<[f32; 3]> for Color {
+    fn from([r, g, b]: [f32; 3]) -> Self {
         Self { r, g, b, a: 1.0 }
     }
 }

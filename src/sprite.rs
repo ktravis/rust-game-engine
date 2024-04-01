@@ -17,7 +17,6 @@ pub struct Animation {
 
 #[derive(Debug, Clone, Default)]
 pub struct Sprite {
-    pub(crate) id: usize,
     pub name: String,
     pub size: Point<u32>,
     pub pivot: Option<Point>,

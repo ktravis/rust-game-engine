@@ -4,6 +4,7 @@ use std::ops::DerefMut;
 
 use glam::Vec2;
 
+use super::InputState;
 use super::{
     AnalogInput, AnyInput, Cursor, DigitalInput, InputChange, KeyOrMouseButton, StateChange,
 };
@@ -16,7 +17,7 @@ pub struct InputManager<Controls: ControlSet> {
     controls_by_input: HashMap<AnyInput, Vec<Controls::Control>>,
 }
 
-impl<C: ControlSet + Default> Default for InputManager<C> {
+impl<C: ControlSet> Default for InputManager<C> {
     fn default() -> Self {
         Self {
             mouse: Cursor::default(),
@@ -41,13 +42,14 @@ impl<C: ControlSet> DerefMut for InputManager<C> {
     }
 }
 
-pub trait ControlSet {
-    type Control: Sized + std::fmt::Debug + Copy + Eq + std::hash::Hash;
-    fn controls<'a>() -> &'a [Self::Control];
+pub trait ControlSet: Default {
+    type Control: Sized + std::fmt::Debug + Copy + Eq + std::hash::Hash + 'static;
+    fn controls() -> &'static [Self::Control];
     fn handle_input(&mut self, control: &Self::Control, change: Option<InputChange>);
     fn bound_inputs(&self, control: &Self::Control) -> Vec<AnyInput>;
     fn control_changed(&self, control: &Self::Control) -> bool;
     fn clear_control_changed(&mut self, control: &Self::Control);
+    fn control_state(&self, control: &Self::Control) -> InputState;
 }
 
 impl<Controls> InputManager<Controls>
@@ -110,7 +112,16 @@ where
         }
     }
 
+    pub fn status(
+        &self,
+    ) -> impl Iterator<Item = (Controls::Control, Vec<AnyInput>, InputState)> + '_ {
+        Controls::controls()
+            .iter()
+            .map(|c| (*c, self.bound_inputs(c), self.control_state(c)))
+    }
+
     pub fn end_frame_update(&mut self) {
+        self.mouse.end_frame_update();
         for control in Controls::controls() {
             if self.control_changed(control) {
                 self.update_mappings();

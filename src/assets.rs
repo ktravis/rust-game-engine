@@ -9,8 +9,8 @@ type AssetChangedCallback<S> = fn(&mut S, &Path, File);
 
 pub struct AssetManager<S> {
     state: S,
-    base_path: PathBuf,
-    watcher: Option<Box<dyn Watcher>>,
+    _base_path: PathBuf,
+    _watcher: Option<Box<dyn Watcher>>,
     recv: Option<std::sync::mpsc::Receiver<Event>>,
     file_callbacks: HashMap<PathBuf, AssetChangedCallback<S>>,
     glob_callbacks: HashMap<Pattern, AssetChangedCallback<S>>,
@@ -22,6 +22,7 @@ impl<S> AssetManager<S> {
         notify::event::AccessMode::Write,
     ));
     const CREATE_EVENT: EventKind = EventKind::Create(notify::event::CreateKind::File);
+
     pub fn new(state: S, base_path: impl Into<PathBuf>) -> Self {
         let base_path: PathBuf = base_path.into();
 
@@ -46,9 +47,9 @@ impl<S> AssetManager<S> {
             .unwrap();
         Self {
             state,
-            base_path,
+            _base_path: base_path,
             recv: Some(recv),
-            watcher: Some(Box::new(watcher)),
+            _watcher: Some(Box::new(watcher)),
             file_callbacks: Default::default(),
             glob_callbacks: Default::default(),
         }
