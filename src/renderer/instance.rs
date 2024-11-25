@@ -10,13 +10,9 @@ use crate::sprite::Sprite;
 use crate::transform::{Transform, Transform2D};
 
 use super::mesh::RawMeshRef;
-use super::state::{
-    BindGroupAllocator, BindingSlot, RawPipelineRef, RenderPass, ViewProjectionUniforms,
-};
+use super::state::{BindGroupAllocator, BindingSlot, RenderPass, ViewProjectionUniforms};
 use super::text::TextDisplayOptions;
-use super::{
-    BindGroup, Bindable, Display, InstanceData, MeshRef, PipelineRef, RenderData, TextureRef,
-};
+use super::{Display, InstanceData, MeshRef, PipelineRef, RawPipelineRef, RenderData, TextureRef};
 
 use super::BasicInstanceData;
 
@@ -59,7 +55,7 @@ impl InstancedDrawOp {
             InstancedDrawOp::SetBindGroup(index, bind_group) => {
                 render_pass.set_bind_group(*index, bind_group, &[])
             }
-        }
+        };
     }
 }
 
@@ -115,6 +111,7 @@ pub struct InstanceRenderer<'r, 'alloc> {
     bind_group_allocator: &'r BindGroupAllocator<'alloc, ViewProjectionUniforms>,
     instance_storage: &'r mut InstanceStorage,
     quad_mesh: MeshRef<BasicVertexData>,
+    default_pipeline: RawPipelineRef,
 
     active_texture: Option<TextureRef>,
     active_mesh: Option<RawMeshRef>,
@@ -125,15 +122,17 @@ pub struct InstanceRenderer<'r, 'alloc> {
 impl<'r, 'alloc> InstanceRenderer<'r, 'alloc> {
     const DEFAULT_BIND_GROUP_COUNT: u32 = 3;
 
-    pub fn new(
+    pub(super) fn new(
         bind_group_allocator: &'r BindGroupAllocator<'alloc, ViewProjectionUniforms>,
         instance_storage: &'r mut InstanceStorage,
         quad_mesh: MeshRef<BasicVertexData>,
+        default_pipeline: RawPipelineRef,
     ) -> Self {
         Self {
             bind_group_allocator,
             instance_storage,
             quad_mesh,
+            default_pipeline,
             active_mesh: None,
             active_texture: None,
             active_pipeline: None,
@@ -145,20 +144,23 @@ impl<'r, 'alloc> InstanceRenderer<'r, 'alloc> {
         if self.current_draw_range.is_empty() {
             return;
         }
+        if self.active_pipeline.is_none() {
+            self.active_pipeline = Some(self.default_pipeline);
+            self.instance_storage
+                .ops
+                .push(InstancedDrawOp::SetPipeline(self.active_pipeline));
+        }
         self.instance_storage
             .ops
             .push(InstancedDrawOp::Draw(self.current_draw_range.clone()));
         self.current_draw_range.start = self.current_draw_range.end
     }
 
-    pub fn set_bind_group<T: Bindable>(&mut self, index: u32, bind_group: &BindGroup<T>) {
+    pub fn set_bind_group(&mut self, index: u32, bind_group: Arc<wgpu::BindGroup>) {
         self.flush_draw_calls();
         self.instance_storage
             .ops
-            .push(InstancedDrawOp::SetBindGroup(
-                index,
-                bind_group.bind_group().clone(),
-            ));
+            .push(InstancedDrawOp::SetBindGroup(index, bind_group));
     }
 
     pub fn set_view_projection(&mut self, view_projection: &ViewProjectionUniforms) {
@@ -265,17 +267,7 @@ impl<'r, 'alloc> InstanceRenderer<'r, 'alloc> {
 
     #[inline]
     pub fn draw_quad(&mut self, texture: impl Into<Option<TextureRef>>, transform: impl Transform) {
-        let texture = texture.into();
-        let transform = transform.as_mat4();
-        self.draw_instance(&InstanceRenderData {
-            mesh: self.quad_mesh,
-            instance: BasicInstanceData {
-                transform,
-                ..Default::default()
-            },
-            texture,
-            pipeline: None,
-        });
+        self.draw_quad_ex(texture.into(), transform, Color::WHITE, Rect::default())
     }
 
     #[inline]

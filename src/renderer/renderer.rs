@@ -8,7 +8,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use wgpu::{vertex_attr_array, VertexAttribute, VertexBufferLayout, VertexStepMode};
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub struct RenderData<V, I> {
     pub pipeline: Option<PipelineRef<V, I>>,
     pub texture: TextureRef,
@@ -114,6 +114,17 @@ pub struct OffscreenFramebuffer {
     pub color: TextureRef,
     pub depth: Option<TextureRef>,
     pub(super) size: Point<u32>,
+    pub(super) format: wgpu::TextureFormat,
+}
+
+impl OffscreenFramebuffer {
+    pub fn size_pixels(&self) -> Point<u32> {
+        self.size
+    }
+
+    pub fn color_format(&self) -> wgpu::TextureFormat {
+        self.format
+    }
 }
 
 pub trait VertexLayouts {
@@ -193,21 +204,48 @@ impl<T: Bindable> DerefMut for BindGroup<T> {
     }
 }
 
-pub trait UniformData: bytemuck::Pod + bytemuck::Zeroable {}
+pub trait UniformData {
+    type Raw: bytemuck::Pod + bytemuck::Zeroable;
+    fn raw(&self) -> Self::Raw;
+}
+
+impl<U> UniformData for U
+where
+    U: Sized + bytemuck::Pod + bytemuck::Zeroable,
+{
+    type Raw = Self;
+    fn raw(&self) -> Self::Raw {
+        return *self;
+    }
+}
 
 pub struct UniformBuffer<U: UniformData> {
     uniform: U,
     buffer: wgpu::Buffer,
 }
 
+impl<U: UniformData> Deref for UniformBuffer<U> {
+    type Target = U;
+
+    fn deref(&self) -> &Self::Target {
+        &self.uniform
+    }
+}
+
+impl<U: UniformData> DerefMut for UniformBuffer<U> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.uniform
+    }
+}
+
 impl<U: UniformData> UniformBuffer<U> {
     pub fn new(device: &wgpu::Device, uniform: U) -> Self {
-        let n = std::mem::size_of::<U>();
+        let n = std::mem::size_of::<U::Raw>();
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Uniform Buffer"),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             // pad to 16 bytes, which will be required in the shader
-            size: (n + (n % 16)) as u64,
+            size: n.next_multiple_of(16) as u64,
             mapped_at_creation: false,
         });
         Self { uniform, buffer }
@@ -223,7 +261,7 @@ impl<U: UniformData> UniformBuffer<U> {
 
     pub fn update_with(&mut self, queue: &wgpu::Queue, modifier: impl FnOnce(&mut U)) {
         modifier(&mut self.uniform);
-        queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&self.uniform));
+        queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&self.uniform.raw()));
     }
 
     pub fn update(&mut self, queue: &wgpu::Queue, uniform: U) {

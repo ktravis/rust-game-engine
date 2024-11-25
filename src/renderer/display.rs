@@ -1,9 +1,10 @@
-use std::ops::Deref;
+use std::{ops::Deref, sync::Arc};
 
 use super::texture::{Texture, TextureBuilder};
 use crate::geom::Point;
 
 use glam::{vec3, Mat4, Quat, Vec2};
+use image::ImageResult;
 use winit::{dpi::PhysicalSize, window::Window};
 
 #[derive(Debug, Clone, Copy)]
@@ -34,21 +35,45 @@ impl ScalingMode {
     }
 }
 
+struct BufferUnmapper<'a>(&'a wgpu::Buffer);
+
+impl Drop for BufferUnmapper<'_> {
+    fn drop(&mut self) {
+        self.0.unmap()
+    }
+}
+
+pub struct MappedBufferView<'a> {
+    buffer_view: wgpu::BufferView<'a>,
+    _buffer: BufferUnmapper<'a>,
+}
+
+impl<'a> Deref for MappedBufferView<'a> {
+    type Target = wgpu::BufferView<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.buffer_view
+    }
+}
+
 pub struct Display {
     config: wgpu::SurfaceConfiguration,
-    surface: wgpu::Surface,
+    surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     depth_texture: Texture,
     // The window must be declared after the surface so
     // it gets dropped after it as the surface contains
     // unsafe references to the window's resources.
-    window: Window,
+    window: Arc<Window>,
+
+    staging_buffer: Option<wgpu::Buffer>,
 }
 
 impl Display {
     pub async fn from_window(window: Window) -> Self {
         let size = window.inner_size();
+        let window = Arc::new(window);
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -59,7 +84,7 @@ impl Display {
 
         // The surface needs to live as long as the window that created it.
         // State owns the window so this should be safe.
-        let surface = unsafe { instance.create_surface(&window) }.unwrap();
+        let surface = instance.create_surface(window.clone()).unwrap();
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -73,15 +98,20 @@ impl Display {
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
-                    features: wgpu::Features::POLYGON_MODE_LINE,
+                    label: None,
+                    required_features: wgpu::Features::POLYGON_MODE_LINE
+                        | wgpu::Features::CLEAR_TEXTURE
+                        | wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER,
                     // WebGL doesn't support all of wgpu's features, so if
                     // we're building for the web we'll have to disable some.
-                    limits: if cfg!(target_arch = "wasm32") {
+                    required_limits: if cfg!(target_arch = "wasm32") {
                         wgpu::Limits::downlevel_webgl2_defaults()
                     } else {
-                        wgpu::Limits::default()
+                        wgpu::Limits {
+                            max_bind_groups: 6,
+                            ..wgpu::Limits::default()
+                        }
                     },
-                    label: None,
                 },
                 None,
             )
@@ -103,6 +133,7 @@ impl Display {
             present_mode: surface_caps.present_modes[0],
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
+            desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
         let depth_texture = TextureBuilder::depth()
@@ -115,6 +146,7 @@ impl Display {
             queue,
             depth_texture,
             window,
+            staging_buffer: None,
         }
     }
 
@@ -163,19 +195,8 @@ impl Display {
         }
     }
 
-    pub fn depth_stencil_attachment(
-        &self,
-        depth_load_op: wgpu::LoadOp<f32>,
-        stencil_ops: impl Into<Option<wgpu::Operations<u32>>>,
-    ) -> Option<wgpu::RenderPassDepthStencilAttachment> {
-        Some(wgpu::RenderPassDepthStencilAttachment {
-            view: &self.depth_texture.view,
-            depth_ops: Some(wgpu::Operations {
-                load: depth_load_op,
-                store: wgpu::StoreOp::Store,
-            }),
-            stencil_ops: stencil_ops.into(),
-        })
+    pub fn depth_texture(&self) -> &Texture {
+        &self.depth_texture
     }
 
     pub fn view(&self) -> Result<DisplayView, wgpu::SurfaceError> {
@@ -195,6 +216,64 @@ impl Display {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render Encoder"),
             })
+    }
+
+    pub fn depth_format(&self) -> wgpu::TextureFormat {
+        TextureBuilder::DEFAULT_DEPTH_FORMAT
+    }
+
+    pub fn read_texture_data<'a>(&'a mut self, texture: &Texture) -> MappedBufferView<'a> {
+        let dim = texture.size_pixels();
+        let block_size = texture.format().block_copy_size(None).unwrap();
+        let bytes_per_row = dim.x * block_size;
+        let total_size = (dim.y * bytes_per_row) as u64;
+
+        if let Some(buf) = &self.staging_buffer {
+            if buf.size() < total_size {
+                self.staging_buffer.take();
+            }
+        }
+        let buffer = self.staging_buffer.get_or_insert_with(|| {
+            self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("display staging buffer"),
+                size: total_size,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            })
+        });
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            texture.texture.as_image_copy(),
+            wgpu::ImageCopyBuffer {
+                buffer,
+                layout: wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(dim.y),
+                },
+            },
+            texture.texture.size(),
+        );
+        self.queue.submit([enc.finish()]);
+        let slice = buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |res| res.expect("buffer map failed"));
+        self.device.poll(wgpu::Maintain::wait()).panic_on_timeout();
+        MappedBufferView {
+            _buffer: BufferUnmapper(buffer),
+            buffer_view: slice.get_mapped_range(),
+        }
+    }
+
+    pub fn load_texture_bytes(
+        &self,
+        buffer: &[u8],
+        texture_builder: TextureBuilder,
+    ) -> ImageResult<Texture> {
+        Ok(texture_builder.from_image(
+            &self.device,
+            &self.queue,
+            &image::load_from_memory(buffer)?.into_rgba8(),
+        ))
     }
 }
 
@@ -216,6 +295,10 @@ impl DisplayView<'_> {
     pub fn orthographic_projection(&self) -> Mat4 {
         let target_size = self.size_pixels().as_vec2();
         Mat4::orthographic_rh(0.0, target_size.x, 0.0, target_size.y, 0.0, 1.0)
+    }
+
+    pub fn view(&self) -> &wgpu::TextureView {
+        &self.view
     }
 }
 

@@ -16,8 +16,14 @@ struct ViewProjectionUniforms {
 @group(2) @binding(0)
 var<uniform> view_proj_uniforms: ViewProjectionUniforms;
 
+struct Light {
+    position: vec4<f32>,
+    color: vec4<f32>,
+    view_proj: mat4x4<f32>,
+}
+
 struct LightsUniform {
-    positions: array<vec4<f32>, 16>,
+    items: array<Light, 8>,
     count: u32,
 }
 
@@ -43,7 +49,7 @@ struct InstanceInput {
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) tex_coords: vec2<f32>,
-    @location(1) world_pos: vec3<f32>,
+    @location(1) world_pos: vec4<f32>,
     @location(2) tint_color: vec4<f32>,
     @location(3) view_space_normal: vec3<f32>,
 }
@@ -65,8 +71,8 @@ fn vs_main(
     let model_view = view_proj_uniforms.view * model;
     out.clip_position = view_proj_uniforms.projection * model_view;
     out.tint_color = instance.tint;
-    out.view_space_normal = (view_proj_uniforms.view * model_transform * vec4(vertex.normal, 0.0)).xyz;
-    out.world_pos = model.xyz;
+    out.view_space_normal = normalize(view_proj_uniforms.view * model_transform * vec4(vertex.normal, 0.0)).xyz;
+    out.world_pos = model;
     return out;
 }
 
@@ -77,25 +83,57 @@ var t_diffuse: texture_2d<f32>;
 @group(0) @binding(1)
 var s_diffuse: sampler;
 
-const AMBIENT_LIGHT_FACTOR = 0.1;
+@group(3) @binding(1)
+var shadow_map: texture_depth_2d_array;
+@group(3) @binding(2)
+var shadow_map_sampler: sampler_comparison;
+
+const AMBIENT_LIGHT_FACTOR = vec3(0.1, 0.1, 0.1);
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let c = in.tint_color * textureSample(t_diffuse, s_diffuse, in.tex_coords);
+    let view_pos = view_proj_uniforms.view * in.world_pos;
 
-    var specular = 0.0;
-    var diffuse = 0.0;
-    for (var i = 0; i < i32(lights.count); i++) {
-        let light_pos_w = lights.positions[i];
-        let view_dir_v = view_proj_uniforms.view * vec4(normalize(view_proj_uniforms.camera_pos - in.world_pos), 0.0);
-        let light_pos_v = view_proj_uniforms.view * vec4(light_pos_w.xyz, 0.0);//vec4(20.0 * cos(global_uniforms.time), 10.0, 20.0 * sin(global_uniforms.time), 0.0);
-        let light_dir_v = normalize(light_pos_v.xyz - in.view_space_normal.xyz);
+    var specular = vec3(0.0, 0.0, 0.0);
+    var diffuse = vec3(0.0, 0.0, 0.0);
+    for (var i = 0u; i < lights.count; i++) {
+        let light_pos_w = lights.items[i].position;
+        let view_dir_v = normalize(view_proj_uniforms.view * vec4(view_proj_uniforms.camera_pos - in.world_pos.xyz, 0.0));
+        let light_pos_v = view_proj_uniforms.view * light_pos_w;
+        let light_dir_v = normalize((light_pos_v - view_pos).xyz);
+
+        let shadow_pos = lights.items[i].view_proj * in.world_pos;
+
+        var shadow = 1.0;
+        let flip_correction = vec2<f32>(0.5, -0.5);
+        let proj_correction = 1.0 / shadow_pos.w;
+        if shadow_pos.z * proj_correction > 1.0 {
+            shadow = 1.0;
+        } else {
+            let light_coords = shadow_pos.xy * flip_correction * proj_correction + vec2<f32>(0.5, 0.5);
+            let bias = max(0.05 * (1.0 - dot(in.view_space_normal, light_dir_v)), 0.005);
+            // shadow = textureSampleCompare(shadow_map, shadow_map_sampler, light_coords, i, shadow_pos.z * proj_correction - bias);
+
+            let dim = textureDimensions(shadow_map);
+            let texelSize = 1.0 / vec2(f32(dim.x), f32(dim.y));
+            for (var x = -1; x <= 1; x++) {
+                for (var y = -1; y <= 1; y++) {
+                    shadow += textureSampleCompare(shadow_map, shadow_map_sampler, light_coords + vec2(f32(x), f32(y)) * texelSize, i, shadow_pos.z * proj_correction - bias); 
+                }    
+            }
+            shadow /= 9.0;
+        }
+
         let half_dir_v = normalize(view_dir_v.xyz + light_dir_v);
-        let reflect_dir_v = reflect(-light_dir_v, in.view_space_normal.xyz);
-
-        specular += pow(max(dot(view_dir_v.xyz, reflect_dir_v), 0.0), 32.0);
-        diffuse += max(dot(in.view_space_normal, half_dir_v), 0.0);
+        let reflect_dir_v = reflect(light_dir_v, in.view_space_normal.xyz);
+        let specular_factor = clamp(dot(in.view_space_normal.xyz, half_dir_v), 0.0, 1.0);
+        if (specular_factor > 0.0) {
+            let s = pow(specular_factor, 32.0);
+            specular += shadow * 0.6 * s * lights.items[i].color.xyz;
+        }
+        let d = clamp(dot(in.view_space_normal, light_dir_v), 0.0, 1.0);
+        diffuse += shadow * d * lights.items[i].color.xyz;
     }
-    let light_factor = AMBIENT_LIGHT_FACTOR + diffuse + specular;
-    return vec4(light_factor * c.xyz, c.w);
+    return vec4((AMBIENT_LIGHT_FACTOR + diffuse) * c.xyz + specular, c.w);
 }

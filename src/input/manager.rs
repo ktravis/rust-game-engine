@@ -5,13 +5,12 @@ use std::ops::DerefMut;
 use glam::Vec2;
 
 use super::InputState;
-use super::{
-    AnalogInput, AnyInput, Cursor, DigitalInput, InputChange, KeyOrMouseButton, StateChange,
-};
+use super::{AnalogInput, AnyInput, DigitalInput, InputChange, KeyOrMouseButton, StateChange};
 
 #[derive(Debug)]
 pub struct InputManager<Controls: ControlSet> {
-    pub mouse: Cursor,
+    pub mouse_position: Vec2,
+    pub mouse_delta: Option<Vec2>,
     pub controls: Controls,
     inputs_by_control: HashMap<Controls::Control, Vec<AnyInput>>,
     controls_by_input: HashMap<AnyInput, Vec<Controls::Control>>,
@@ -20,7 +19,8 @@ pub struct InputManager<Controls: ControlSet> {
 impl<C: ControlSet> Default for InputManager<C> {
     fn default() -> Self {
         Self {
-            mouse: Cursor::default(),
+            mouse_position: Default::default(),
+            mouse_delta: Default::default(),
             controls: C::default(),
             inputs_by_control: HashMap::default(),
             controls_by_input: HashMap::default(),
@@ -71,25 +71,18 @@ where
         });
     }
 
-    pub fn handle_mouse_motion(&mut self, x: f32, y: f32) {
-        let Some(d) = self.mouse.update_position(Vec2::new(x, y)) else {
-            return;
-        };
-        if d.x != 0. {
-            self.handle_input_change(InputChange::Analog {
-                input: AnalogInput::MouseMotionX,
-                value: d.x,
-            });
-        }
-        if d.y != 0. {
-            self.handle_input_change(InputChange::Analog {
-                input: AnalogInput::MouseMotionY,
-                value: d.y,
-            });
-        }
-    }
-
     fn handle_input_change(&mut self, input_change: InputChange) {
+        match input_change {
+            InputChange::Analog {
+                input: AnalogInput::MouseMotionX,
+                value,
+            } => self.mouse_delta.get_or_insert(Vec2::ZERO).x += value,
+            InputChange::Analog {
+                input: AnalogInput::MouseMotionY,
+                value,
+            } => self.mouse_delta.get_or_insert(Vec2::ZERO).y += value,
+            _ => {}
+        }
         let Some(controls_to_update) = self.controls_by_input.get(&input_change.input()) else {
             return;
         };
@@ -121,7 +114,7 @@ where
     }
 
     pub fn end_frame_update(&mut self) {
-        self.mouse.end_frame_update();
+        self.mouse_delta.take();
         for control in Controls::controls() {
             if self.control_changed(control) {
                 self.update_mappings();

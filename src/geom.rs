@@ -85,6 +85,12 @@ impl<T> From<Point<T>> for (T, T) {
     }
 }
 
+impl<T> Into<[T; 2]> for Point<T> {
+    fn into(self) -> [T; 2] {
+        [self.x, self.y]
+    }
+}
+
 impl Point {
     pub fn as_vec2(&self) -> Vec2 {
         Vec2::new(self.x as f32, self.y as f32)

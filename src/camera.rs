@@ -16,11 +16,11 @@ pub struct Camera {
 }
 
 impl Camera {
-    const DEFAULT_FOV_RADIANS: f32 = 55.0 * (std::f32::consts::PI / 180.0);
+    pub const DEFAULT_FOV_RADIANS: f32 = 55.0 * (std::f32::consts::PI / 180.0);
     const DEFAULT_MAX_YAW: f32 = 80.0 * (std::f32::consts::PI / 180.0);
     const DEFAULT_MIN_YAW: f32 = -80.0 * (std::f32::consts::PI / 180.0);
-    const DEFAULT_Z_NEAR: f32 = 0.01;
-    const DEFAULT_Z_FAR: f32 = 100.0;
+    pub const DEFAULT_Z_NEAR: f32 = 0.01;
+    pub const DEFAULT_Z_FAR: f32 = 100.0;
 
     pub fn new(position: Vec3, aspect_ratio: f32) -> Self {
         Self {

@@ -3,14 +3,14 @@ use std::borrow::Cow;
 use winit::{
     dpi::PhysicalPosition,
     error::EventLoopError,
-    event::{Event, KeyEvent, WindowEvent},
+    event::{DeviceEvent, Event, KeyEvent, WindowEvent},
     event_loop::{EventLoop, EventLoopWindowTarget},
     keyboard::PhysicalKey,
 };
 
 use crate::{
     input::{AnalogInput, ControlSet, InputManager, Key, MouseButton},
-    renderer::{Display, RenderState},
+    renderer::{egui::EguiRenderer, Display, RenderState},
     time::FrameTiming,
 };
 
@@ -19,23 +19,45 @@ pub struct Context<C: ControlSet> {
     pub render_state: RenderState,
     pub frame_timing: FrameTiming,
     pub input: InputManager<C>,
+    pub egui: EguiRenderer,
 }
 
 impl<C: ControlSet> Context<C> {
     pub fn new(display: Display, render_state: RenderState) -> Self {
+        let egui = EguiRenderer::new(&display, 1);
         Self {
             display,
             render_state,
             frame_timing: Default::default(),
             input: Default::default(),
+            egui,
+        }
+    }
+
+    pub fn handle_device_input(&mut self, event: &DeviceEvent) {
+        match *event {
+            winit::event::DeviceEvent::MouseMotion { delta: (dx, dy) } => {
+                if dx != 0.0 {
+                    self.input
+                        .handle_analog_axis_change(AnalogInput::MouseMotionX, dx as f32);
+                }
+                if dy != 0.0 {
+                    self.input
+                        .handle_analog_axis_change(AnalogInput::MouseMotionY, dy as f32);
+                }
+            }
+            _ => {}
         }
     }
 
     pub fn handle_input(&mut self, event: &WindowEvent) {
+        if self.egui.handle_input(self.display.window(), event) {
+            // input consumed
+            return;
+        }
         match *event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.input
-                    .handle_mouse_motion(position.x as f32, position.y as f32);
+                self.input.mouse_position = glam::vec2(position.x as f32, position.y as f32);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -69,8 +91,29 @@ impl<C: ControlSet> Context<C> {
                 self.input
                     .handle_key_or_button_change(MouseButton::from(button), state.into());
             }
+            // TODO: we need to handle focus lost/regained for capturing cursor
             _ => {}
         }
+    }
+
+    pub fn set_cursor_captured(&self, captured: bool) {
+        if captured {
+            self.display
+                .window()
+                .set_cursor_grab(winit::window::CursorGrabMode::Confined)
+                .or_else(|_| {
+                    self.display
+                        .window()
+                        .set_cursor_grab(winit::window::CursorGrabMode::Locked)
+                })
+                .unwrap();
+        } else {
+            self.display
+                .window()
+                .set_cursor_grab(winit::window::CursorGrabMode::None)
+                .unwrap();
+        }
+        self.display.window().set_cursor_visible(!captured);
     }
 }
 
@@ -90,6 +133,7 @@ impl<A: AppState> App<A> {
         elwt: &EventLoopWindowTarget<T>,
     ) {
         match event {
+            Event::DeviceEvent { ref event, .. } => self.ctx.handle_device_input(event),
             Event::WindowEvent {
                 ref event,
                 window_id,

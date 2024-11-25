@@ -11,7 +11,7 @@ slotmap::new_key_type! {
 
 #[derive(Clone, Default)]
 pub struct TextureBuilder<'a> {
-    label: Option<&'a str>,
+    pub label: Option<&'a str>,
     format: Option<wgpu::TextureFormat>,
     address_mode: Option<wgpu::AddressMode>,
     min_filter: Option<wgpu::FilterMode>,
@@ -19,6 +19,8 @@ pub struct TextureBuilder<'a> {
     mipmap_filter: Option<wgpu::FilterMode>,
     compare_func: Option<wgpu::CompareFunction>,
     usage: Option<wgpu::TextureUsages>,
+    layers: Option<u32>,
+    sampler_border_color: Option<wgpu::SamplerBorderColor>,
     // TODO: more
 }
 
@@ -67,12 +69,27 @@ impl<'a> TextureBuilder<'a> {
         }
     }
 
+    pub fn with_border_color(self, border_color: wgpu::SamplerBorderColor) -> Self {
+        let sampler_border_color = Some(border_color);
+        Self {
+            sampler_border_color,
+            ..self
+        }
+    }
+
     pub fn with_filter_mode(self, filter_mode: wgpu::FilterMode) -> Self {
         let filter_mode = Some(filter_mode);
         Self {
             min_filter: filter_mode,
             mag_filter: filter_mode,
             mipmap_filter: filter_mode,
+            ..self
+        }
+    }
+
+    pub fn with_layers(self, layers: u32) -> Self {
+        Self {
+            layers: Some(layers),
             ..self
         }
     }
@@ -155,7 +172,7 @@ impl<'a> TextureBuilder<'a> {
             size: wgpu::Extent3d {
                 width: size.x,
                 height: size.y,
-                depth_or_array_layers: 1,
+                depth_or_array_layers: self.layers.unwrap_or(1),
             },
             mip_level_count: 1,
             sample_count: 1,
@@ -178,13 +195,13 @@ impl<'a> TextureBuilder<'a> {
             compare: self.compare_func,
             lod_min_clamp: 0.0,
             lod_max_clamp: 100.0,
+            border_color: self.sampler_border_color,
             ..Default::default()
         });
         Texture {
             texture,
             view,
             sampler,
-            is_depth,
         }
     }
 }
@@ -194,7 +211,6 @@ pub struct Texture {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
     pub sampler: wgpu::Sampler,
-    is_depth: bool,
 }
 
 impl Texture {
@@ -206,7 +222,11 @@ impl Texture {
     }
 
     pub fn is_depth(&self) -> bool {
-        self.is_depth
+        self.format().has_depth_aspect()
+    }
+
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.texture.format()
     }
 }
 
@@ -226,7 +246,7 @@ impl Bindable for Texture {
 
     fn binding_type(&self) -> BindingType {
         BindingType::Texture {
-            depth: self.is_depth(),
+            format: self.format(),
         }
     }
 }

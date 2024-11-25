@@ -20,11 +20,14 @@ tobj = "3.2"
 msdfgen = "0.2.1"
 ttf-parser = "0.18"
 log = "0.4.19"
-wgpu = "0.18.0"
+wgpu = "0.19.3"
 winit = {  version = "0.29.2", features = ["rwh_05"] }
 slotmap = "1.0.7"
 
 controlset-derive = { path = "controlset-derive" }
+egui = "0.27.2"
+egui-wgpu = "0.27.2"
+egui-winit = "0.27.2"
 
 
 [dependencies.image]

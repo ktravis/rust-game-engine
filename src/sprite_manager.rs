@@ -100,7 +100,8 @@ impl SpriteManager {
         self.sprites.get_mut(r).unwrap()
     }
 
-    pub fn atlas_image<'a>(&'a self) -> &'a RgbaImage {
+    pub fn atlas_image<'a>(&'a mut self) -> &'a RgbaImage {
+        self.maybe_rebuild();
         self.atlas.image()
     }
 }
