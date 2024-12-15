@@ -112,17 +112,16 @@ impl<'a> TextureBuilder<'a> {
             self.usage = Some(wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST);
         }
         let texture = self.build(device, size);
+        let bytes_per_pixel = texture
+            .format()
+            .block_copy_size(Some(wgpu::TextureAspect::All))
+            .unwrap();
         queue.write_texture(
-            wgpu::ImageCopyTexture {
-                aspect: wgpu::TextureAspect::All,
-                texture: &texture.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-            },
+            texture.texture.as_image_copy(),
             bytes,
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: Some(4 * size.x), // assume 32-bit pixels
+                bytes_per_row: Some(bytes_per_pixel * size.x),
                 rows_per_image: Some(size.y),
             },
             texture.texture.size(),

@@ -12,9 +12,6 @@ use super::{
 
 pub struct GeometryPass {
     pipeline: PipelineRef<ModelVertexData, InstanceDataWithNormalMatrix>,
-    // g_position: Texture,
-    // g_normal: Texture,
-    // g_albedo_specular: Texture,
     pub g_position: TextureRef,
     pub g_normal: TextureRef,
     pub g_albedo_specular: TextureRef,
@@ -211,10 +208,6 @@ impl GeometryPass {
         &self.bind_group_layout
     }
 
-    // pub fn shadow_map_texture(&self) -> &Texture {
-    //     &self.shadow_map
-    // }
-
     pub fn run(
         &mut self,
         state: &mut RenderState,
@@ -227,9 +220,6 @@ impl GeometryPass {
                 &display,
                 "Geometry Pass",
                 &[
-                    // RenderTarget::TextureView(&self.g_position.view),
-                    // RenderTarget::TextureView(&self.g_normal.view),
-                    // RenderTarget::TextureView(&self.g_albedo_specular.view),
                     RenderTarget::TextureRef(self.g_position),
                     RenderTarget::TextureRef(self.g_normal),
                     RenderTarget::TextureRef(self.g_albedo_specular),

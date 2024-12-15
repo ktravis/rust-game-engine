@@ -7,6 +7,8 @@ pub mod mesh;
 pub mod model;
 pub mod pipeline;
 pub mod render_target;
+pub mod shadow_mapping;
+pub mod ssao;
 pub mod state;
 pub mod text;
 pub mod texture;

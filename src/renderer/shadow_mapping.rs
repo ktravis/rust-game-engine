@@ -1,12 +1,9 @@
 use std::sync::Arc;
 
-use glam::{Mat4, Vec3, Vec4, Vec4Swizzles};
+use glam::{Mat4, Vec4, Vec4Swizzles};
 use wgpu::include_wgsl;
 
-use crate::{
-    geom::{ModelVertexData, Point},
-    transform::{Transform, Transform3D},
-};
+use crate::geom::{ModelVertexData, Point};
 
 use super::{
     instance::InstanceRenderData, state::ViewProjectionUniforms, Display,
@@ -44,7 +41,7 @@ impl From<Light> for LightRaw {
 
 #[derive(Copy, Clone, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
-pub struct LightingUniformsRaw {
+pub struct ShadowMappingUniformsRaw {
     items: [LightRaw; MAX_LIGHTS],
     count: u32,
     shadow_bias_minimum: f32,
@@ -72,10 +69,10 @@ impl Default for ShadowMappingUniforms {
 }
 
 impl UniformData for ShadowMappingUniforms {
-    type Raw = LightingUniformsRaw;
+    type Raw = ShadowMappingUniformsRaw;
 
     fn raw(&self) -> Self::Raw {
-        LightingUniformsRaw {
+        ShadowMappingUniformsRaw {
             items: std::array::from_fn(|i| {
                 if i < self.lights.len() {
                     self.lights[i].into()
@@ -91,7 +88,7 @@ impl UniformData for ShadowMappingUniforms {
     }
 }
 
-pub struct LightingPass {
+pub struct ShadowMappingPass {
     shadow_map_pipeline: PipelineRef<ModelVertexData, InstanceDataWithNormalMatrix>,
     shadow_map: Texture,
     bind_group: Arc<wgpu::BindGroup>,
@@ -100,7 +97,7 @@ pub struct LightingPass {
     shadow_mapping_uniform: UniformBuffer<ShadowMappingUniforms>,
 }
 
-impl LightingPass {
+impl ShadowMappingPass {
     pub fn new(state: &mut RenderState, display: &Display) -> Self {
         let shadow_map_pipeline = state
             .pipeline_builder()
