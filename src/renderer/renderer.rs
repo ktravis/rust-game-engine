@@ -2,7 +2,7 @@ use super::instance::InstanceRenderData;
 use super::state::BindingType;
 use super::{MeshRef, PipelineRef, TextureRef};
 use crate::{color::*, geom::*, transform::*};
-use glam::Mat4;
+use glam::{Mat3, Mat4};
 use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
@@ -30,7 +30,7 @@ pub trait VertexLayout {
     fn vertex_layout() -> VertexBufferLayout<'static>;
 }
 
-pub trait InstanceData: Copy + Default + Sized + VertexLayout + bytemuck::Pod {}
+pub trait InstanceData: Copy + Sized + VertexLayout + bytemuck::Pod {}
 
 impl VertexLayout for () {
     fn vertex_layout() -> VertexBufferLayout<'static> {
@@ -97,6 +97,59 @@ impl Default for BasicInstanceData {
             transform: Default::default(),
             tint: Color::WHITE,
             subtexture: Rect::new(0., 0., 1., 1.),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct InstanceDataWithNormalMatrix {
+    pub subtexture: Rect,
+    pub tint: Color,
+    pub transform: Mat4,
+    pub normal_matrix: Mat4,
+}
+
+impl InstanceData for InstanceDataWithNormalMatrix {}
+
+impl InstanceDataWithNormalMatrix {
+    const ATTRIBUTES: [VertexAttribute; 11] = vertex_attr_array![
+        // uv_scale: vec2<f32>
+        0 => Float32x2,
+        // uv_offset: vec2<f32>
+        1 => Float32x2,
+        // tint: vec4<f32>
+        2 => Float32x4,
+        // model_N: vec4<f32> * 4
+        3 => Float32x4,
+        4 => Float32x4,
+        5 => Float32x4,
+        6 => Float32x4,
+        // normal_N: vec4<f32> * 4
+        7 => Float32x4,
+        8 => Float32x4,
+        9 => Float32x4,
+        10 => Float32x4,
+    ];
+}
+
+impl VertexLayout for InstanceDataWithNormalMatrix {
+    fn vertex_layout() -> VertexBufferLayout<'static> {
+        VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: VertexStepMode::Instance,
+            attributes: &Self::ATTRIBUTES,
+        }
+    }
+}
+
+impl InstanceDataWithNormalMatrix {
+    pub fn from_basic(other: BasicInstanceData, view_matrix: Mat4) -> Self {
+        Self {
+            transform: other.transform,
+            tint: other.tint,
+            subtexture: other.subtexture,
+            normal_matrix: (view_matrix * other.transform).inverse().transpose(),
         }
     }
 }

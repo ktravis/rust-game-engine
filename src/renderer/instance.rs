@@ -53,7 +53,7 @@ impl InstancedDrawOp {
             InstancedDrawOp::SetTexture(texture) => render_pass.bind_texture(*texture),
             InstancedDrawOp::SetMesh(mesh) => render_pass.set_active_mesh_raw(*mesh),
             InstancedDrawOp::SetBindGroup(index, bind_group) => {
-                render_pass.set_bind_group(*index, bind_group, &[])
+                render_pass.set_bind_group(*index, Some(bind_group.deref()), &[])
             }
         };
     }

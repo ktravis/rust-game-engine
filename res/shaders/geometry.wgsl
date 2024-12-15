@@ -11,6 +11,7 @@ struct ViewProjectionUniforms {
     view: mat4x4<f32>,
     projection: mat4x4<f32>,
     camera_pos: vec3<f32>,
+    inverse_view: mat4x4<f32>,
 }
 
 @group(2) @binding(0)
@@ -44,13 +45,18 @@ struct InstanceInput {
     @location(7) model_2: vec4<f32>,
     @location(8) model_3: vec4<f32>,
     @location(9) model_4: vec4<f32>,
+    @location(10) normal_1: vec4<f32>,
+    @location(11) normal_2: vec4<f32>,
+    @location(12) normal_3: vec4<f32>,
+    @location(13) normal_4: vec4<f32>,
 }
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) tex_coords: vec2<f32>,
-    @location(1) world_pos: vec4<f32>,
-    @location(2) view_space_normal: vec3<f32>,
+    @location(1) view_pos: vec4<f32>,
+    @location(2) view_space_normal: vec4<f32>,
+    // @location(2) world_normal: vec3<f32>,
     @location(3) tint_color: vec4<f32>,
 }
 
@@ -65,13 +71,22 @@ fn vs_main(
         instance.model_3,
         instance.model_4,
     );
+    let normal_matrix = mat4x4<f32>(
+        instance.normal_1,
+        instance.normal_2,
+        instance.normal_3,
+        instance.normal_4,
+    );
     var out: VertexOutput;
     out.tex_coords = instance.uv_offset + instance.uv_scale * vertex.tex_coords;
     let model = model_transform * vertex.position;
-    let model_view = view_proj_uniforms.view * model;
-    out.clip_position = view_proj_uniforms.projection * model_view;
-    out.view_space_normal = normalize(view_proj_uniforms.view * model_transform * vec4(vertex.normal, 0.0)).xyz;
-    out.world_pos = model;
+    let model_view_pos = view_proj_uniforms.view * model;
+    out.clip_position = view_proj_uniforms.projection * model_view_pos;
+    // out.view_space_normal = transpose(mat3(model_view_pos)) * normalize(view_proj_uniforms.view * model_transform * vec4(vertex.normal, 0.0)).xyz;
+    let model_view = (view_proj_uniforms.view * model_transform);
+    out.view_space_normal = (normal_matrix * vec4(vertex.normal, 1.0));
+    // out.world_normal = (model_transform * vec4(vertex.normal, 0.0)).xyz;
+    out.view_pos = model_view_pos;
     out.tint_color = instance.tint;
     return out;
 }
@@ -99,9 +114,11 @@ struct FragmentOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> FragmentOutput {
-    var out: FragmentOutput;    
-    out.g_position = in.world_pos;
-    out.g_normal = vec4(in.view_space_normal, 1.0);
+    var out: FragmentOutput;
+    out.g_position = in.view_pos;
+    // out.g_normal = vec4(normalize(in.world_normal) * 0.5 + 0.5, 1.0);
+    // out.g_normal = vec4(normalize(in.view_space_normal) * 0.5 + 0.5, 1.0);
+    out.g_normal = normalize(in.view_space_normal);
     out.g_albedo_spec = in.tint_color * textureSample(t_diffuse, s_diffuse, in.tex_coords);
     return out;
 }

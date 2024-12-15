@@ -5,7 +5,7 @@ pub struct Camera {
     position: Vec3,
     pitch: f32,
     yaw: f32,
-    look_dir: Vec3,
+    pub look_dir: Vec3,
     fov_radians: f32,
 
     aspect_ratio: f32,

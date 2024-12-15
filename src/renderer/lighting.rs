@@ -9,8 +9,9 @@ use crate::{
 };
 
 use super::{
-    instance::InstanceRenderData, state::ViewProjectionUniforms, BasicInstanceData, Display,
-    PipelineRef, RenderState, RenderTarget, Texture, TextureBuilder, UniformBuffer, UniformData,
+    instance::InstanceRenderData, state::ViewProjectionUniforms, Display,
+    InstanceDataWithNormalMatrix, PipelineRef, RenderState, RenderTarget, Texture, TextureBuilder,
+    UniformBuffer, UniformData,
 };
 
 pub const MAX_LIGHTS: usize = 8;
@@ -29,21 +30,6 @@ pub struct Light {
     pub color: Vec4,
     pub view: Mat4,
     pub proj: Mat4,
-}
-
-impl Light {
-    pub fn instance(&self) -> BasicInstanceData {
-        BasicInstanceData {
-            tint: self.color.into(),
-            transform: Transform3D {
-                position: self.position.xyz(),
-                scale: Vec3::splat(0.1),
-                ..Default::default()
-            }
-            .as_mat4(),
-            ..Default::default()
-        }
-    }
 }
 
 impl From<Light> for LightRaw {
@@ -106,7 +92,7 @@ impl UniformData for LightingUniforms {
 }
 
 pub struct ShadowMappingPass {
-    shadow_map_pipeline: PipelineRef<ModelVertexData, BasicInstanceData>,
+    shadow_map_pipeline: PipelineRef<ModelVertexData, InstanceDataWithNormalMatrix>,
     shadow_map: Texture,
     bind_group: Arc<wgpu::BindGroup>,
     bind_group_layout: wgpu::BindGroupLayout,
@@ -231,7 +217,7 @@ impl ShadowMappingPass {
         state: &mut RenderState,
         display: &Display,
         lights: &[Light],
-        scene: &[InstanceRenderData<ModelVertexData, BasicInstanceData>],
+        scene: &[InstanceRenderData<ModelVertexData, InstanceDataWithNormalMatrix>],
     ) {
         self.lights_uniform.update(
             display.queue(),

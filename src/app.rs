@@ -1,11 +1,12 @@
 use std::borrow::Cow;
 
 use winit::{
-    dpi::PhysicalPosition,
-    error::EventLoopError,
-    event::{DeviceEvent, Event, KeyEvent, WindowEvent},
-    event_loop::{EventLoop, EventLoopWindowTarget},
+    application::ApplicationHandler,
+    dpi::{PhysicalPosition, Size},
+    event::{DeviceEvent, KeyEvent, WindowEvent},
+    event_loop::ActiveEventLoop,
     keyboard::PhysicalKey,
+    window::Window,
 };
 
 use crate::{
@@ -118,60 +119,86 @@ impl<C: ControlSet> Context<C> {
 }
 
 pub struct App<A: AppState> {
-    ctx: Context<A::Controls>,
-    app_state: A,
+    size: Size,
+    state: Option<(Context<A::Controls>, A)>,
 }
 
 impl<A: AppState> App<A> {
-    pub fn run<T: 'static>(&mut self, event_loop: EventLoop<T>) -> Result<(), EventLoopError> {
-        event_loop.run(|event, elwt| self.window_event_handler(event, elwt))
+    pub fn new(size: Size) -> Self {
+        Self { size, state: None }
+    }
+}
+
+impl<A: AppState> ApplicationHandler for App<A> {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.state.is_none() {
+            let window = event_loop
+                .create_window(Window::default_attributes().with_inner_size(self.size))
+                .unwrap();
+
+            let display = pollster::block_on(Display::from_window(window));
+            let render_state = A::init_render_state(&display);
+            let mut ctx = Context::new(display, render_state);
+            let app_state = A::new(&mut ctx);
+            self.state = Some((ctx, app_state));
+        }
     }
 
-    fn window_event_handler<T>(
+    fn device_event(
         &mut self,
-        event: winit::event::Event<T>,
-        elwt: &EventLoopWindowTarget<T>,
+        _event_loop: &ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
+        event: DeviceEvent,
     ) {
-        match event {
-            Event::DeviceEvent { ref event, .. } => self.ctx.handle_device_input(event),
-            Event::WindowEvent {
-                ref event,
-                window_id,
-            } if window_id == self.ctx.display.window().id() => {
-                self.ctx.handle_input(event);
-                match event {
-                    WindowEvent::CloseRequested => elwt.exit(),
-                    WindowEvent::Resized(physical_size) => {
-                        self.ctx.display.resize(*physical_size);
-                        self.ctx.display.window().request_redraw();
-                    }
-                    // WindowEvent::ScaleFactorChanged { scale_factor, .. } => {}
-                    WindowEvent::RedrawRequested => {
-                        self.ctx.frame_timing.update();
-                        if !self.app_state.update(&mut self.ctx) {
-                            elwt.exit();
-                            return;
-                        }
-                        // Do this after the frame is done updating, so we can clear state and update controls for the next frame.
-                        self.ctx.input.end_frame_update();
+        if let Some((ctx, _)) = &mut self.state {
+            ctx.handle_device_input(&event);
+        }
+    }
 
-                        match self.app_state.render(&mut self.ctx) {
-                            Ok(_) => {}
-                            // Reconfigure the surface if it's lost or outdated
-                            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                                self.ctx.display.reconfigure();
-                            }
-                            // The system is out of memory, we should probably quit
-                            Err(wgpu::SurfaceError::OutOfMemory) => {
-                                log::error!("Out of memory?!");
-                                elwt.exit();
-                            }
-                            Err(wgpu::SurfaceError::Timeout) => log::warn!("Surface timeout"),
-                        }
-                        self.ctx.display.window().request_redraw();
-                    }
-                    _ => {}
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: winit::window::WindowId,
+        event: WindowEvent,
+    ) {
+        let Some((ctx, state)) = &mut self.state else {
+            return;
+        };
+        if window_id != ctx.display.window().id() {
+            return;
+        }
+        ctx.handle_input(&event);
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(new_size) => {
+                self.size = Size::Physical(new_size);
+                ctx.display.resize(new_size);
+                ctx.display.window().request_redraw();
+            }
+            // WindowEvent::ScaleFactorChanged { scale_factor, .. } => {}
+            WindowEvent::RedrawRequested => {
+                ctx.frame_timing.update();
+                if !state.update(ctx) {
+                    event_loop.exit();
+                    return;
                 }
+                // Do this after the frame is done updating, so we can clear state and update controls for the next frame.
+                ctx.input.end_frame_update();
+
+                match state.render(ctx) {
+                    Ok(_) => {}
+                    // Reconfigure the surface if it's lost or outdated
+                    Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                        ctx.display.reconfigure();
+                    }
+                    // The system is out of memory, we should probably quit
+                    Err(wgpu::SurfaceError::OutOfMemory) => {
+                        log::error!("Out of memory?!");
+                        event_loop.exit();
+                    }
+                    Err(wgpu::SurfaceError::Timeout) => log::warn!("Surface timeout"),
+                }
+                ctx.display.window().request_redraw();
             }
             _ => {}
         }
@@ -198,15 +225,5 @@ pub trait AppState {
                     ))),
                 }),
         )
-    }
-
-    fn create_app(display: Display) -> App<Self>
-    where
-        Self: Sized,
-    {
-        let render_state = Self::init_render_state(&display);
-        let mut ctx = Context::new(display, render_state);
-        let app_state = Self::new(&mut ctx);
-        App { ctx, app_state }
     }
 }

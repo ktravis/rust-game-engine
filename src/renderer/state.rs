@@ -215,6 +215,7 @@ pub struct RenderState {
     default_texture: TextureRef,
 
     mesh_manager: SlotMap<RawMeshRef, UntypedMesh>,
+    // pub(crate) pipeline_cache: wgpu::PipelineCache,
     pipelines: SlotMap<RawPipelineRef, wgpu::RenderPipeline>,
     default_pipeline: PipelineRef<BasicVertexData, BasicInstanceData>,
 }
@@ -232,6 +233,13 @@ impl RenderState {
         );
         let mesh_manager = SlotMap::with_key();
         let instance_storage = InstanceStorage::new(display, 1024);
+        // let pipeline_cache = unsafe {
+        //     device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
+        //         label: Some("general pipeline cache"),
+        //         data: None,
+        //         fallback: true,
+        //     })
+        // };
 
         let mut s = Self {
             bind_group_layouts: HashMap::default(),
@@ -244,6 +252,7 @@ impl RenderState {
             view_proj_bind_groups: Default::default(),
             default_pipeline: Default::default(),
             default_texture: Default::default(),
+            // pipeline_cache,
         };
 
         s.default_texture = s.load_texture(
@@ -397,7 +406,7 @@ impl RenderState {
             });
             raw_pass.set_bind_group(
                 RenderPass::GLOBAL_UNIFORMS_BIND_GROUP_INDEX,
-                self.global_uniforms.bind_group(),
+                self.global_uniforms.bind_group().deref(),
                 &[],
             );
             let mut pass = RenderPass {
@@ -544,6 +553,10 @@ impl RenderState {
     pub fn prepare_mesh<V: VertexData>(&mut self, mesh: Mesh<V>) -> MeshRef<V> {
         self.mesh_manager.insert(mesh.inner).into()
     }
+
+    pub fn default_texture(&self) -> TextureRef {
+        self.default_texture
+    }
 }
 
 pub struct RenderPass<'a> {
@@ -604,7 +617,7 @@ impl<'a> RenderPass<'a> {
     fn bind_texture_data(&mut self, texture_data: &'a BoundTexture) {
         self.raw_pass.set_bind_group(
             Self::TEXTURE_BIND_GROUP_INDEX,
-            texture_data.bind_group(),
+            texture_data.bind_group().deref(),
             &[],
         );
     }

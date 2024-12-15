@@ -1,24 +1,23 @@
 use std::sync::Arc;
 
-use glam::{Mat4, Vec3, Vec4, Vec4Swizzles};
 use wgpu::{include_wgsl, TextureUsages};
 
-use crate::{
-    geom::{ModelVertexData, Point},
-    transform::{Transform, Transform3D},
-};
+use crate::geom::{ModelVertexData, Point};
 
 use super::{
-    instance::InstanceRenderData, state::ViewProjectionUniforms, BasicInstanceData, Display,
-    PipelineBuilder, PipelineRef, RenderState, RenderTarget, Texture, TextureBuilder,
-    UniformBuffer, UniformData,
+    instance::InstanceRenderData, state::ViewProjectionUniforms, Display,
+    InstanceDataWithNormalMatrix, PipelineBuilder, PipelineRef, RenderState, RenderTarget, Texture,
+    TextureBuilder, TextureRef,
 };
 
 pub struct GeometryPass {
-    pipeline: PipelineRef<ModelVertexData, BasicInstanceData>,
-    g_position: Texture,
-    g_normal: Texture,
-    g_albedo_specular: Texture,
+    pipeline: PipelineRef<ModelVertexData, InstanceDataWithNormalMatrix>,
+    // g_position: Texture,
+    // g_normal: Texture,
+    // g_albedo_specular: Texture,
+    pub g_position: TextureRef,
+    pub g_normal: TextureRef,
+    pub g_albedo_specular: TextureRef,
     depth_target: Texture,
     bind_group: Arc<wgpu::BindGroup>,
     bind_group_layout: wgpu::BindGroupLayout,
@@ -190,6 +189,9 @@ impl GeometryPass {
                 ],
             })
             .into();
+        let g_position = state.load_texture(display, g_position);
+        let g_normal = state.load_texture(display, g_normal);
+        let g_albedo_specular = state.load_texture(display, g_albedo_specular);
         Self {
             pipeline,
             g_position,
@@ -218,16 +220,19 @@ impl GeometryPass {
         state: &mut RenderState,
         display: &Display,
         view_projection: &ViewProjectionUniforms,
-        scene: &[InstanceRenderData<ModelVertexData, BasicInstanceData>],
+        scene: &[InstanceRenderData<ModelVertexData, InstanceDataWithNormalMatrix>],
     ) {
         state
             .render_pass(
                 &display,
                 "Geometry Pass",
                 &[
-                    RenderTarget::TextureView(&self.g_position.view),
-                    RenderTarget::TextureView(&self.g_normal.view),
-                    RenderTarget::TextureView(&self.g_albedo_specular.view),
+                    // RenderTarget::TextureView(&self.g_position.view),
+                    // RenderTarget::TextureView(&self.g_normal.view),
+                    // RenderTarget::TextureView(&self.g_albedo_specular.view),
+                    RenderTarget::TextureRef(self.g_position),
+                    RenderTarget::TextureRef(self.g_normal),
+                    RenderTarget::TextureRef(self.g_albedo_specular),
                 ],
                 Some(RenderTarget::TextureView(&self.depth_target.view)),
                 view_projection,

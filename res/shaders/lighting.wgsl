@@ -11,6 +11,7 @@ struct ViewProjectionUniforms {
     view: mat4x4<f32>,
     projection: mat4x4<f32>,
     camera_pos: vec3<f32>,
+    inverse_view: mat4x4<f32>,
 }
 
 @group(2) @binding(0)
@@ -101,60 +102,70 @@ var shadow_map: texture_depth_2d_array;
 @group(4) @binding(2)
 var shadow_map_sampler: sampler_comparison;
 
-const AMBIENT_LIGHT_FACTOR = vec3(0.4, 0.4, 0.4);
+const AMBIENT_LIGHT_FACTOR = vec3(0.5, 0.5, 0.5);
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let world_pos = textureSample(g_position, g_position_sampler, in.tex_coords);
+    let view_pos = textureSample(g_position, g_position_sampler, in.tex_coords);
     let view_space_normal = textureSample(g_normal, g_normal_sampler, in.tex_coords);
     let albedo_spec = in.tint_color * textureSample(g_albedo_spec, g_albedo_spec_sampler, in.tex_coords);
 
-    let view_pos = view_proj_uniforms.view * world_pos;
+    // let view_pos = view_proj_uniforms.view * world_pos;
 
-    var specular = vec3(0.0, 0.0, 0.0);
-    var diffuse = vec3(0.0, 0.0, 0.0);
+    var specular = vec4(0.0, 0.0, 0.0, 0.0);
+    var diffuse = vec4(0.0, 0.0, 0.0, 0.0);
+    var total_light = vec4(clamp(textureSample(t_diffuse, s_diffuse, in.tex_coords).r, 0.0, 1.0));
+    // let ao = textureSample(t_diffuse, s_diffuse, in.tex_coords).r;
+    // var total_light = vec4(0.8) * (1.0 - ao);
+
     for (var i = 0u; i < lights.count; i++) {
+        let light_color = lights.items[i].color;
+        // let ambient_color = light_color * (1.0 - ao);
+
         let light_pos_w = lights.items[i].position;
         let view_dir_v = normalize(view_pos);
         let light_pos_v = view_proj_uniforms.view * light_pos_w;
         let light_dir_v = normalize((light_pos_v - view_pos).xyz);
 
-        let shadow_pos = lights.items[i].view_proj * world_pos;
+        // let shadow_pos = lights.items[i].view_proj * world_pos;
+        let shadow_pos = lights.items[i].view_proj * view_proj_uniforms.inverse_view * view_pos;
 
         var shadow = 1.0;
-        let flip_correction = vec2<f32>(0.5, -0.5);
-        let proj_correction = 1.0 / shadow_pos.w;
-        if shadow_pos.z * proj_correction > 1.0 {
-            shadow = 1.0;
-        } else {
-            let light_coords = shadow_pos.xy * flip_correction * proj_correction + vec2<f32>(0.5, 0.5);
-            let bias = max(lights.shadow_bias_factor * (1.0 - dot(view_space_normal.xyz, light_dir_v)), lights.shadow_bias_minimum);
-            // shadow = textureSampleCompare(shadow_map, shadow_map_sampler, light_coords, i, shadow_pos.z * proj_correction - bias);
-
-            let dim = textureDimensions(shadow_map);
-            let texelSize = 1.0 / vec2(f32(dim.x), f32(dim.y));
-            var weight = 0.0;
-            for (var x = -lights.shadow_blur_half_kernel_size; x <= lights.shadow_blur_half_kernel_size; x++) {
-                for (var y = -lights.shadow_blur_half_kernel_size; y <= lights.shadow_blur_half_kernel_size; y++) {
-                    shadow += textureSampleCompare(shadow_map, shadow_map_sampler, light_coords + vec2(f32(x), f32(y)) * texelSize, i, shadow_pos.z * proj_correction - bias);
-                    weight += 1.0;
-                }
-            }
-            shadow /= weight;
-        }
+        // let flip_correction = vec2<f32>(0.5, -0.5);
+        // let proj_correction = 1.0 / shadow_pos.w;
+        // if shadow_pos.z * proj_correction > 1.0 {
+        //     shadow = 1.0;
+        // } else {
+        //     let light_coords = shadow_pos.xy * flip_correction * proj_correction + vec2<f32>(0.5, 0.5);
+        //     let bias = max(lights.shadow_bias_factor * (1.0 - dot(view_space_normal.xyz, light_dir_v)), lights.shadow_bias_minimum);
+        //     // shadow = textureSampleCompare(shadow_map, shadow_map_sampler, light_coords, i, shadow_pos.z * proj_correction - bias);
+        //
+        //     let dim = textureDimensions(shadow_map);
+        //     let texelSize = 1.0 / vec2(f32(dim.x), f32(dim.y));
+        //     var weight = 0.0;
+        //     for (var x = -lights.shadow_blur_half_kernel_size; x <= lights.shadow_blur_half_kernel_size; x++) {
+        //         for (var y = -lights.shadow_blur_half_kernel_size; y <= lights.shadow_blur_half_kernel_size; y++) {
+        //             shadow += textureSampleCompare(shadow_map, shadow_map_sampler, light_coords + vec2(f32(x), f32(y)) * texelSize, i, shadow_pos.z * proj_correction - bias);
+        //             weight += 1.0;
+        //         }
+        //     }
+        //     shadow /= weight;
+        // }
 
         let half_dir_v = normalize(view_dir_v.xyz + light_dir_v);
         let reflect_dir_v = reflect(light_dir_v, view_space_normal.xyz);
-        let specular_factor = clamp(dot(view_space_normal.xyz, half_dir_v), 0.0, 1.0);
+        var specular_factor = clamp(dot(view_space_normal.xyz, half_dir_v), 0.0, 1.0);
+        specular_factor = pow(specular_factor, 32.0);
         if specular_factor > 0.0 {
-            let s = pow(specular_factor, 32.0);
-            specular += shadow * 0.6 * s * lights.items[i].color.xyz;
+            let specular_intensity = 0.6;
+            total_light += shadow * specular_intensity * specular_factor * light_color;
         }
         let d = clamp(dot(view_space_normal.xyz, light_dir_v), 0.0, 1.0);
-        diffuse += shadow * d * lights.items[i].color.xyz;
+        total_light += shadow * d * light_color;
+        // total_light += ambient_color;
     }
-    let ao = textureSample(t_diffuse, s_diffuse, in.tex_coords).r;
-    return vec4(ao * (AMBIENT_LIGHT_FACTOR + diffuse) * albedo_spec.xyz + specular, albedo_spec.w);
+    // return vec4(ao * (AMBIENT_LIGHT_FACTOR + diffuse) * albedo_spec.xyz + specular, albedo_spec.w);
+    return vec4(albedo_spec.xyz * total_light.rgb, albedo_spec.w);
 }
 
 

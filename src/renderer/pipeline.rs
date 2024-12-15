@@ -205,13 +205,15 @@ impl<'a> PipelineBuilder<'a> {
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 buffers: &vertex_buffers,
+                compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 targets: &self.color_target_states,
+                compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -233,6 +235,7 @@ impl<'a> PipelineBuilder<'a> {
             // If the pipeline will be used with a multiview render pass, this
             // indicates how many array layers the attachments will have.
             multiview: None,
+            cache: None,
         });
         self.state.add_pipeline(self.key, pipeline)
     }

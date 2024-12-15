@@ -1,4 +1,4 @@
-use super::{RenderState, TextureRef};
+use super::TextureRef;
 
 #[derive(Debug, Clone, Copy)]
 pub enum RenderTarget<'a> {

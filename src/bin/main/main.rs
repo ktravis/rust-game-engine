@@ -1,20 +1,21 @@
 use std::borrow::Cow;
 use std::io::Read;
 
-use glam::{vec2, vec3, vec4, Mat4, Quat, Vec2, Vec3, Vec4, Vec4Swizzles};
+use glam::{vec2, vec3, vec4, Mat4, Vec2, Vec3, Vec4, Vec4Swizzles};
 use itertools::Itertools;
-use rust_game_engine::app::{AppState, Context};
+use rust_game_engine::app::{App, AppState, Context};
 use rust_game_engine::color::Color;
 use rust_game_engine::renderer::geometry::GeometryPass;
 use rust_game_engine::renderer::lighting::{Light, ShadowMappingPass, MAX_LIGHTS};
 use rust_game_engine::renderer::model::LoadModel;
 use rust_game_engine::renderer::state::BoundTexture;
-use rust_game_engine::renderer::{MeshRef, RenderTarget, UniformBindGroup, UniformData};
+use rust_game_engine::renderer::{
+    InstanceDataWithNormalMatrix, MeshRef, RenderTarget, UniformBindGroup,
+};
 use ttf_parser::Face;
 use wgpu::include_wgsl;
-use winit::dpi::{PhysicalSize, Size};
+use winit::dpi::PhysicalSize;
 use winit::event_loop::EventLoop;
-use winit::window::WindowBuilder;
 
 use controlset_derive::ControlSet;
 use rust_game_engine::assets::AssetManager;
@@ -81,23 +82,54 @@ struct GameAssets {
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 struct SSAOKernel {
-    items: [Vec4; 64],
+    items: [Vec4; SSAOKernel::SIZE],
     count: u32,
     radius: f32,
     bias: f32,
     noise_texture_scale: Vec2,
 }
 
+impl SSAOKernel {
+    const SIZE: usize = 64;
+    const DEFAULT_RADIUS: f32 = 0.3;
+    const DEFAULT_BIAS: f32 = 0.025;
+    fn generate(noise_texture_scale: Vec2) -> Self {
+        let items = std::array::from_fn(|i| {
+            let scale = i as f32 / Self::SIZE as f32;
+            let v = rand::random::<f32>()
+                * vec4(
+                    2.0 * rand::random::<f32>() - 1.0,
+                    2.0 * rand::random::<f32>() - 1.0,
+                    rand::random::<f32>(),
+                    0.0,
+                )
+                .normalize();
+            v * (0.1 + 0.9 * scale * scale)
+        });
+        Self {
+            items,
+            count: Self::SIZE as u32,
+            radius: Self::DEFAULT_RADIUS,
+            bias: Self::DEFAULT_BIAS,
+            noise_texture_scale,
+        }
+    }
+}
+
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 struct BlurUniforms {
     half_kernel_size: i32,
+    sharpness: f32,
+    step: Vec2,
 }
 
 impl Default for BlurUniforms {
     fn default() -> Self {
         Self {
             half_kernel_size: 2,
+            sharpness: 40.0,
+            step: Vec2::ZERO,
         }
     }
 }
@@ -113,8 +145,10 @@ struct State {
     offscreen_framebuffer: OffscreenFramebuffer,
     shadow_mapping_pass: ShadowMappingPass,
     geometry_pass: GeometryPass,
+    ssao_enabled: bool,
+    ssao_blur_enabled: bool,
     ssao_buffer: TextureRef,
-    ssao_buffer_2: TextureRef,
+    blurred_ssao_buffer: TextureRef,
     ssao_kernel: UniformBindGroup<SSAOKernel>,
     ssao_noise_texture_bgl: wgpu::BindGroupLayout,
     ssao_noise_texture: BoundTexture,
@@ -226,7 +260,10 @@ impl State {
                 format: wgpu::TextureFormat::R16Float,
                 write_mask: wgpu::ColorWrites::RED,
             })])
-            .with_extra_bind_group_layouts(vec![uniform_bgl])
+            .with_extra_bind_group_layouts(vec![
+                uniform_bgl,
+                self.geometry_pass.bind_group_layout(),
+            ])
             .with_depth_stencil_state(None)
             .build(
                 ctx.display.device(),
@@ -309,6 +346,7 @@ impl AppState for State {
         let model = ctx
             .display
             .device()
+            // .load_model("./res/models/jeep.obj")
             .load_model("./res/models/astronautB.obj")
             .unwrap();
 
@@ -333,30 +371,12 @@ impl AppState for State {
         };
         ctx.set_cursor_captured(true);
 
-        let lighting_pass = ShadowMappingPass::new(&mut ctx.render_state, &ctx.display);
+        let shadow_mapping_pass = ShadowMappingPass::new(&mut ctx.render_state, &ctx.display);
         let geometry_pass = GeometryPass::new(&mut ctx.render_state, &ctx.display, fb_size);
 
         let mut ssao_kernel = ctx.render_state.create_uniform_bind_group(
             ctx.display.device(),
-            SSAOKernel {
-                items: std::array::from_fn(|i| {
-                    let v = rand::random::<f32>()
-                        * vec4(
-                            2.0 * rand::random::<f32>() - 1.0,
-                            2.0 * rand::random::<f32>() - 1.0,
-                            0.85 * rand::random::<f32>() + 0.15,
-                            1.0,
-                        )
-                        .normalize();
-                    let scale = rand::random::<f32>() * i as f32 / 64.0;
-                    let scale = egui::lerp(0.05f32..=1.0f32, scale * scale);
-                    scale * v
-                }),
-                count: 64,
-                radius: 0.5,
-                bias: 0.025,
-                noise_texture_scale: fb_size.as_vec2() / 4.0,
-            },
+            SSAOKernel::generate(fb_size.as_vec2() / 4.0),
         );
         let u = *ssao_kernel.uniform();
         ssao_kernel.update(ctx.display.queue(), u);
@@ -372,10 +392,10 @@ impl AppState for State {
                 )
                 .build(ctx.display.device(), fb_size),
         );
-        let ssao_buffer_2 = ctx.render_state.load_texture(
+        let blurred_ssao_buffer = ctx.render_state.load_texture(
             &ctx.display,
             TextureBuilder::render_target()
-                .with_label("ssao")
+                .with_label("blurred_ssao")
                 .with_format(wgpu::TextureFormat::R16Float)
                 .with_usage(
                     wgpu::TextureUsages::TEXTURE_BINDING
@@ -459,10 +479,12 @@ impl AppState for State {
             //     proj: Mat4::orthographic_rh(-20.0, 20.0, -20.0, 20.0, 1.0, 24.0),
             //     view: Mat4::look_at_rh(vec3(0.0, 5.0, 0.0), Vec3::ZERO, Vec3::X),
             // }],
-            shadow_mapping_pass: lighting_pass,
+            shadow_mapping_pass,
             geometry_pass,
+            ssao_enabled: true,
+            ssao_blur_enabled: true,
             ssao_buffer,
-            ssao_buffer_2,
+            blurred_ssao_buffer,
             ssao_kernel,
             ssao_blur_settings,
             ssao_noise_texture,
@@ -486,6 +508,7 @@ impl AppState for State {
     fn update(&mut self, ctx: &mut Context<GameControls>) -> bool {
         if self.asset_manager.check_for_updates() {
             if self.asset_manager.shader_sources.dirty {
+                println!("shader sources updated");
                 self.asset_manager.shader_sources.dirty = false;
                 self.create_or_update_render_pipelines(ctx);
             }
@@ -537,40 +560,50 @@ impl AppState for State {
                 time: ctx.frame_timing.time(),
             },
         );
+        let view_proj = ViewProjectionUniforms::for_camera(&self.camera);
 
         let mut scene = vec![
             InstanceRenderData {
                 texture: Some(self.crate_texture),
                 mesh: self.cube_mesh,
-                instance: Default::default(),
+                instance: InstanceDataWithNormalMatrix::from_basic(
+                    Default::default(),
+                    view_proj.view,
+                ),
                 pipeline: None,
             },
             InstanceRenderData {
                 mesh: self.cube_mesh,
-                instance: BasicInstanceData {
-                    tint: vec4(1.0, 0.9, 0.9, 1.0).into(),
-                    transform: Transform3D {
-                        position: vec3(-1.0, 1.5, -0.4),
+                instance: InstanceDataWithNormalMatrix::from_basic(
+                    BasicInstanceData {
+                        tint: vec4(1.0, 0.9, 0.9, 1.0).into(),
+                        transform: Transform3D {
+                            position: vec3(-1.0, 1.5, -0.4),
+                            ..Default::default()
+                        }
+                        .as_mat4(),
                         ..Default::default()
-                    }
-                    .as_mat4(),
-                    ..Default::default()
-                },
+                    },
+                    view_proj.view,
+                ),
                 texture: None,
                 pipeline: None,
             },
             InstanceRenderData {
                 mesh: self.cube_mesh,
-                instance: BasicInstanceData {
-                    tint: vec4(0.88, 0.82, 0.8, 1.0).into(),
-                    transform: Transform3D {
-                        position: vec3(0.0, -1.5, 0.0),
-                        scale: vec3(30.0, 0.5, 30.0),
+                instance: InstanceDataWithNormalMatrix::from_basic(
+                    BasicInstanceData {
+                        tint: vec4(0.88, 0.82, 0.8, 1.0).into(),
+                        transform: Transform3D {
+                            position: vec3(0.0, -1.5, 0.0),
+                            scale: vec3(30.0, 0.5, 30.0),
+                            ..Default::default()
+                        }
+                        .as_mat4(),
                         ..Default::default()
-                    }
-                    .as_mat4(),
-                    ..Default::default()
-                },
+                    },
+                    view_proj.view,
+                ),
                 texture: None,
                 pipeline: None,
             },
@@ -578,78 +611,121 @@ impl AppState for State {
         for (mesh, mat) in &self.model_meshes {
             scene.push(InstanceRenderData {
                 mesh: *mesh,
-                instance: BasicInstanceData {
-                    tint: mat.as_ref().map(|m| m.diffuse.into()).unwrap_or_default(),
-                    transform: Transform3D {
-                        position: vec3(0.0, 2.0, 0.0),
+                instance: InstanceDataWithNormalMatrix::from_basic(
+                    BasicInstanceData {
+                        tint: mat.as_ref().map(|m| m.diffuse.into()).unwrap_or_default(),
+                        transform: Transform3D {
+                            position: vec3(0.0, 2.0, 0.0),
+                            // scale: vec3(0.01, 0.01, 0.01),
+                            ..Default::default()
+                        }
+                        .as_mat4(),
                         ..Default::default()
-                    }
-                    .as_mat4(),
-                    ..Default::default()
-                },
+                    },
+                    view_proj.view,
+                ),
                 texture: None,
                 pipeline: None,
             });
         }
 
-        self.geometry_pass.run(
-            &mut ctx.render_state,
-            &ctx.display,
-            &ViewProjectionUniforms::for_camera(&self.camera),
-            &scene,
-        );
+        // Populate G buffers
+        self.geometry_pass
+            .run(&mut ctx.render_state, &ctx.display, &view_proj, &scene);
 
         let quad = ctx.render_state.quad_mesh();
-        ctx.render_state
-            .render_pass(
-                &ctx.display,
-                "SSAO Pass",
-                &[RenderTarget::TextureRef(self.ssao_buffer)],
-                None,
-                &ViewProjectionUniforms::for_camera(&self.camera),
-                |r| {
-                    r.set_bind_group(3, self.geometry_pass.bind_group().clone());
-                    r.set_bind_group(4, self.ssao_kernel.bind_group().clone());
-                    r.set_bind_group(5, self.ssao_noise_texture.bind_group().clone());
-                    r.draw_instance(&InstanceRenderData {
-                        mesh: quad,
-                        instance: BasicInstanceData {
-                            ..Default::default()
-                        },
-                        texture: None,
-                        pipeline: Some(self.render_pipelines.ssao),
-                    });
-                },
-            )
-            .submit();
+        let default_texture = ctx.render_state.default_texture();
+        let occlusion_map = if self.ssao_enabled {
+            ctx.render_state
+                .render_pass(
+                    &ctx.display,
+                    "SSAO Pass",
+                    &[RenderTarget::TextureRef(self.ssao_buffer)],
+                    None,
+                    &view_proj,
+                    |r| {
+                        r.set_bind_group(3, self.geometry_pass.bind_group().clone());
+                        r.set_bind_group(4, self.ssao_kernel.bind_group().clone());
+                        r.set_bind_group(5, self.ssao_noise_texture.bind_group().clone());
+                        r.draw_instance(&InstanceRenderData {
+                            mesh: quad,
+                            instance: BasicInstanceData::default(),
+                            texture: None,
+                            pipeline: Some(self.render_pipelines.ssao),
+                        });
+                    },
+                )
+                .submit();
 
-        ctx.render_state
-            .render_pass(
-                &ctx.display,
-                "SSAO Blur Pass",
-                &[RenderTarget::TextureRef(self.ssao_buffer_2)],
-                None,
-                &ViewProjectionUniforms {
-                    // projection: display_view.orthographic_projection(),
-                    ..Default::default()
-                },
-                |r| {
-                    r.set_bind_group(3, self.ssao_blur_settings.bind_group().clone());
-                    r.draw_instance(&InstanceRenderData {
-                        mesh: quad,
-                        instance: BasicInstanceData {
+            if self.ssao_blur_enabled {
+                self.ssao_blur_settings
+                    .update_with(ctx.display.queue(), |s| {
+                        s.step = vec2(1.0 / self.fb_size.x as f32, 0.0);
+                    });
+                ctx.render_state
+                    .render_pass(
+                        &ctx.display,
+                        "SSAO Blur Pass - X",
+                        &[RenderTarget::TextureRef(self.blurred_ssao_buffer)],
+                        None,
+                        &ViewProjectionUniforms {
+                            // projection: display_view.orthographic_projection(),
                             ..Default::default()
                         },
-                        texture: Some(self.ssao_buffer),
-                        pipeline: Some(self.render_pipelines.ssao_blur),
+                        |r| {
+                            r.set_bind_group(3, self.ssao_blur_settings.bind_group().clone());
+                            r.set_bind_group(4, self.geometry_pass.bind_group().clone());
+                            r.draw_instance(&InstanceRenderData {
+                                mesh: quad,
+                                instance: BasicInstanceData {
+                                    ..Default::default()
+                                },
+                                texture: Some(self.ssao_buffer),
+                                pipeline: Some(self.render_pipelines.ssao_blur),
+                            });
+                        },
+                    )
+                    .submit();
+                self.ssao_blur_settings
+                    .update_with(ctx.display.queue(), |s| {
+                        s.step = vec2(0.0, 1.0 / self.fb_size.y as f32);
                     });
-                },
-            )
-            .submit();
+                ctx.render_state
+                    .render_pass(
+                        &ctx.display,
+                        "SSAO Blur Pass - Y",
+                        &[RenderTarget::TextureRef(self.ssao_buffer)],
+                        None,
+                        &ViewProjectionUniforms {
+                            // projection: display_view.orthographic_projection(),
+                            ..Default::default()
+                        },
+                        |r| {
+                            r.set_bind_group(3, self.ssao_blur_settings.bind_group().clone());
+                            r.set_bind_group(4, self.geometry_pass.bind_group().clone());
+                            r.draw_instance(&InstanceRenderData {
+                                mesh: quad,
+                                instance: BasicInstanceData {
+                                    ..Default::default()
+                                },
+                                texture: Some(self.blurred_ssao_buffer),
+                                pipeline: Some(self.render_pipelines.ssao_blur),
+                            });
+                        },
+                    )
+                    .submit();
+                self.ssao_buffer
+            } else {
+                self.ssao_buffer
+            }
+        } else {
+            default_texture
+        };
 
         self.shadow_mapping_pass
             .run(&mut ctx.render_state, &ctx.display, &self.lights, &scene);
 
+        // Deferred lighting pass
         ctx.render_state
             .render_pass(
                 &ctx.display,
@@ -658,20 +734,21 @@ impl AppState for State {
                 self.offscreen_framebuffer
                     .depth
                     .map(RenderTarget::TextureRef),
-                &ViewProjectionUniforms::for_camera(&self.camera),
+                &view_proj,
                 |r| {
                     r.set_bind_group(3, self.geometry_pass.bind_group().clone());
                     r.set_bind_group(4, self.shadow_mapping_pass.bind_group().clone());
                     r.draw_instance(&InstanceRenderData {
                         mesh: quad,
                         instance: Default::default(),
-                        texture: Some(self.ssao_buffer_2),
+                        texture: Some(occlusion_map),
                         pipeline: Some(self.render_pipelines.lighting),
                     });
                 },
             )
             .submit();
 
+        // Draw offscreen buffer, overlay with 2d elements
         let display_view = ctx.display.view()?;
         let mut enc = ctx
             .render_state
@@ -689,6 +766,7 @@ impl AppState for State {
                 |r| {
                     r.draw_quad(
                         self.offscreen_framebuffer.color,
+                        // self.geometry_pass.g_normal,
                         ScalingMode::Centered.view_matrix(
                             self.offscreen_framebuffer.size_pixels().as_vec2(),
                             ctx.display.size_pixels().as_vec2(),
@@ -721,6 +799,7 @@ impl AppState for State {
             )
             .encoder();
 
+        // Draw egui menu if debug is enabled
         if ctx.input.debug.on {
             ctx.egui.draw(
                 &ctx.display,
@@ -823,6 +902,8 @@ impl AppState for State {
 
                             ui.separator();
                             ui.label("SSAO");
+                            ui.add(egui::Checkbox::new(&mut self.ssao_enabled, "enabled"));
+
                             ui.add(
                                 egui::Slider::new(&mut self.ssao_kernel.radius, 0.0..=5.0)
                                     .text("radius"),
@@ -836,12 +917,20 @@ impl AppState for State {
 
                             ui.separator();
                             ui.label("Blur");
+                            ui.add(egui::Checkbox::new(&mut self.ssao_blur_enabled, "enabled"));
                             ui.add(
                                 egui::Slider::new(
                                     &mut self.ssao_blur_settings.half_kernel_size,
                                     0..=10,
                                 )
                                 .text("half kernel size"),
+                            );
+                            ui.add(
+                                egui::Slider::new(
+                                    &mut self.ssao_blur_settings.sharpness,
+                                    0.0..=100.0,
+                                )
+                                .text("edge sharpness"),
                             );
                             let u = *self.ssao_blur_settings.uniform();
                             self.ssao_blur_settings.update(ctx.display.queue(), u);
@@ -858,14 +947,8 @@ impl AppState for State {
 }
 
 fn main() {
-    pollster::block_on(async {
-        let event_loop = EventLoop::new()?;
-        let window = WindowBuilder::new()
-            .with_inner_size(Size::new(WINDOW_SIZE))
-            .build(&event_loop)?;
-
-        let display = Display::from_window(window).await;
-        State::create_app(display).run(event_loop)
-    })
-    .expect("game crashed");
+    env_logger::init();
+    let event_loop = EventLoop::new().unwrap();
+    let mut app = App::<State>::new(WINDOW_SIZE.into());
+    event_loop.run_app(&mut app).unwrap();
 }
