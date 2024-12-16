@@ -72,12 +72,12 @@ struct BlurUniforms {
     step: vec2<f32>,
 }
 
-@group(3) @binding(0)
+@group(4) @binding(0)
 var<uniform> blur_settings: BlurUniforms;
 
-@group(4) @binding(0)
+@group(3) @binding(0)
 var g_position: texture_2d<f32>;
-@group(4) @binding(1)
+@group(3) @binding(1)
 var g_position_sampler: sampler;
 
 fn blur_weight(radius: f32, center_depth: f32, sample_depth: f32) -> f32 {

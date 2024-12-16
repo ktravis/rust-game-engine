@@ -1,19 +1,16 @@
 use std::borrow::Cow;
 use std::io::Read;
 
-use glam::{vec2, vec3, vec4, Mat4, Vec2, Vec3, Vec4Swizzles};
+use glam::{vec2, vec3, vec4};
 use itertools::Itertools;
 use rust_game_engine::app::{App, AppState, Context};
-use rust_game_engine::color::Color;
 use rust_game_engine::renderer::geometry::GeometryPass;
+use rust_game_engine::renderer::lighting::{Light, LightingPass};
 use rust_game_engine::renderer::model::LoadModel;
-use rust_game_engine::renderer::shadow_mapping::{Light, ShadowMappingPass, MAX_LIGHTS};
+use rust_game_engine::renderer::shadow_mapping::ShadowMappingPass;
 use rust_game_engine::renderer::ssao::SSAOPass;
-use rust_game_engine::renderer::{
-    InstanceDataWithNormalMatrix, MeshRef, RenderTarget, UniformBindGroup,
-};
+use rust_game_engine::renderer::{InstanceDataWithNormalMatrix, MeshRef, RenderTarget};
 use ttf_parser::Face;
-use wgpu::include_wgsl;
 use winit::dpi::PhysicalSize;
 use winit::event_loop::EventLoop;
 
@@ -67,8 +64,8 @@ struct ShaderSource {
 #[derive(Default)]
 struct RenderPipelines {
     text: PipelineRef<BasicVertexData, BasicInstanceData>,
-    ssao_blur: PipelineRef<BasicVertexData, BasicInstanceData>,
-    lighting: PipelineRef<BasicVertexData, BasicInstanceData>,
+    // ssao_blur: PipelineRef<BasicVertexData, BasicInstanceData>,
+    // lighting: PipelineRef<BasicVertexData, BasicInstanceData>,
 }
 
 #[derive(Default)]
@@ -76,24 +73,6 @@ struct GameAssets {
     shader_sources: ShaderSource,
     font_atlas: FontAtlas,
     sprites: SpriteManager,
-}
-
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-#[repr(C)]
-struct BlurUniforms {
-    half_kernel_size: i32,
-    sharpness: f32,
-    step: Vec2,
-}
-
-impl Default for BlurUniforms {
-    fn default() -> Self {
-        Self {
-            half_kernel_size: 2,
-            sharpness: 40.0,
-            step: Vec2::ZERO,
-        }
-    }
 }
 
 struct State {
@@ -109,14 +88,7 @@ struct State {
     geometry_pass: GeometryPass,
     occlusion_pass: SSAOPass,
     ssao_enabled: bool,
-    ssao_blur_enabled: bool,
-    // ssao_buffer: TextureRef,
-    blurred_ssao_buffer: TextureRef,
-    // ssao_kernel: UniformBindGroup<SSAOKernel>,
-    // ssao_noise_texture_bgl: wgpu::BindGroupLayout,
-    // ssao_noise_texture: BoundTexture,
-    ssao_blur_settings: UniformBindGroup<BlurUniforms>,
-    fb_size: Point<u32>,
+    deferred_lighting_pass: LightingPass,
 
     // "game" state
     camera: Camera,
@@ -171,46 +143,6 @@ impl State {
                             &self.asset_manager.shader_sources.text,
                         )),
                     }),
-            );
-        let uniform_bgl = &ctx.render_state.bind_group_layout(
-            ctx.display.device(),
-            rust_game_engine::renderer::state::BindingType::Uniform,
-        );
-        self.render_pipelines.lighting = ctx
-            .render_state
-            .pipeline_builder()
-            .with_label("Lighting Render Pipeline")
-            .with_key(self.render_pipelines.lighting)
-            .with_extra_bind_group_layouts(vec![
-                self.geometry_pass.bind_group_layout(),
-                self.shadow_mapping_pass.bind_group_layout(),
-            ])
-            .build(
-                ctx.display.device(),
-                &ctx.display
-                    .device()
-                    .create_shader_module(include_wgsl!("../../../res/shaders/lighting.wgsl")),
-            );
-        self.render_pipelines.ssao_blur = ctx
-            .render_state
-            .pipeline_builder()
-            .with_label("SSAO Blur Pipeline")
-            .with_key(self.render_pipelines.ssao_blur)
-            .with_color_target_states(vec![Some(wgpu::ColorTargetState {
-                blend: None,
-                format: wgpu::TextureFormat::R16Float,
-                write_mask: wgpu::ColorWrites::ALL,
-            })])
-            .with_extra_bind_group_layouts(vec![
-                uniform_bgl,
-                self.geometry_pass.bind_group_layout(),
-            ])
-            .with_depth_stencil_state(None)
-            .build(
-                ctx.display.device(),
-                &ctx.display
-                    .device()
-                    .create_shader_module(include_wgsl!("../../../res/shaders/blur.wgsl")),
             );
     }
 }
@@ -315,23 +247,13 @@ impl AppState for State {
         let shadow_mapping_pass = ShadowMappingPass::new(&mut ctx.render_state, &ctx.display);
         let geometry_pass = GeometryPass::new(&mut ctx.render_state, &ctx.display, fb_size);
 
-        let blurred_ssao_buffer = ctx.render_state.load_texture(
+        let occlusion_pass = SSAOPass::new(
+            &mut ctx.render_state,
             &ctx.display,
-            TextureBuilder::render_target()
-                .with_label("blurred_ssao")
-                .with_format(wgpu::TextureFormat::R16Float)
-                .with_usage(
-                    wgpu::TextureUsages::TEXTURE_BINDING
-                        | wgpu::TextureUsages::COPY_DST
-                        | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                )
-                .build(ctx.display.device(), fb_size),
+            geometry_pass.bind_group_layout(),
         );
 
-        let ssao_blur_settings = ctx
-            .render_state
-            .create_uniform_bind_group(ctx.display.device(), Default::default());
-        let occlusion_pass = SSAOPass::new(
+        let deferred_lighting_pass = LightingPass::new(
             &mut ctx.render_state,
             &ctx.display,
             geometry_pass.bind_group_layout(),
@@ -355,15 +277,12 @@ impl AppState for State {
             geometry_pass,
             occlusion_pass,
             ssao_enabled: true,
-            ssao_blur_enabled: true,
-            blurred_ssao_buffer,
-            ssao_blur_settings,
             font_render_data: Default::default(),
             sprite_render_data,
             offscreen_framebuffer,
-            fb_size,
             render_pipelines: Default::default(),
             model_meshes,
+            deferred_lighting_pass,
         };
         state.create_or_update_render_pipelines(ctx);
         state.font_render_data = RenderData {
@@ -502,75 +421,14 @@ impl AppState for State {
         self.geometry_pass
             .run(&mut ctx.render_state, &ctx.display, &view_proj, &scene);
 
-        let quad = ctx.render_state.quad_mesh();
         let default_texture = ctx.render_state.default_texture();
         let occlusion_map = if self.ssao_enabled {
-            let occlusion_map = self.occlusion_pass.run(
+            self.occlusion_pass.run(
                 &mut ctx.render_state,
                 &ctx.display,
                 &view_proj,
                 self.geometry_pass.bind_group().clone(),
-            );
-
-            if self.ssao_blur_enabled {
-                self.ssao_blur_settings
-                    .update_with(ctx.display.queue(), |s| {
-                        s.step = vec2(1.0 / self.fb_size.x as f32, 0.0);
-                    });
-                ctx.render_state
-                    .render_pass(
-                        &ctx.display,
-                        "SSAO Blur Pass - X",
-                        &[RenderTarget::TextureRef(self.blurred_ssao_buffer)],
-                        None,
-                        &ViewProjectionUniforms {
-                            // projection: display_view.orthographic_projection(),
-                            ..Default::default()
-                        },
-                        |r| {
-                            r.set_bind_group(3, self.ssao_blur_settings.bind_group().clone());
-                            r.set_bind_group(4, self.geometry_pass.bind_group().clone());
-                            r.draw_instance(&InstanceRenderData {
-                                mesh: quad,
-                                instance: BasicInstanceData {
-                                    ..Default::default()
-                                },
-                                texture: Some(occlusion_map),
-                                pipeline: Some(self.render_pipelines.ssao_blur),
-                            });
-                        },
-                    )
-                    .submit();
-                self.ssao_blur_settings
-                    .update_with(ctx.display.queue(), |s| {
-                        s.step = vec2(0.0, 1.0 / self.fb_size.y as f32);
-                    });
-                ctx.render_state
-                    .render_pass(
-                        &ctx.display,
-                        "SSAO Blur Pass - Y",
-                        &[RenderTarget::TextureRef(occlusion_map)],
-                        None,
-                        &ViewProjectionUniforms {
-                            // projection: display_view.orthographic_projection(),
-                            ..Default::default()
-                        },
-                        |r| {
-                            r.set_bind_group(3, self.ssao_blur_settings.bind_group().clone());
-                            r.set_bind_group(4, self.geometry_pass.bind_group().clone());
-                            r.draw_instance(&InstanceRenderData {
-                                mesh: quad,
-                                instance: BasicInstanceData {
-                                    ..Default::default()
-                                },
-                                texture: Some(self.blurred_ssao_buffer),
-                                pipeline: Some(self.render_pipelines.ssao_blur),
-                            });
-                        },
-                    )
-                    .submit();
-            }
-            occlusion_map
+            )
         } else {
             default_texture
         };
@@ -579,27 +437,15 @@ impl AppState for State {
         //     .run(&mut ctx.render_state, &ctx.display, &self.lights, &scene);
 
         // Deferred lighting pass
-        ctx.render_state
-            .render_pass(
-                &ctx.display,
-                "Lighting Pass",
-                &[RenderTarget::TextureRef(self.offscreen_framebuffer.color)],
-                self.offscreen_framebuffer
-                    .depth
-                    .map(RenderTarget::TextureRef),
-                &view_proj,
-                |r| {
-                    r.set_bind_group(3, self.geometry_pass.bind_group().clone());
-                    r.set_bind_group(4, self.shadow_mapping_pass.bind_group().clone());
-                    r.draw_instance(&InstanceRenderData {
-                        mesh: quad,
-                        instance: Default::default(),
-                        texture: Some(occlusion_map),
-                        pipeline: Some(self.render_pipelines.lighting),
-                    });
-                },
-            )
-            .submit();
+        self.deferred_lighting_pass.run(
+            &mut ctx.render_state,
+            &ctx.display,
+            RenderTarget::TextureRef(self.offscreen_framebuffer.color),
+            &view_proj,
+            self.geometry_pass.bind_group().clone(),
+            occlusion_map,
+            &self.lights,
+        );
 
         // Draw offscreen buffer, overlay with 2d elements
         let display_view = ctx.display.view()?;
@@ -684,98 +530,12 @@ impl AppState for State {
                         .show(&ui, |ui| {
                             ui.spacing_mut().slider_width = 200.0;
                             ui.label("Lights");
-                            for mut i in 0..(self.lights.len() as usize) {
-                                if i > 0 {
-                                    ui.separator();
-                                }
-                                let removed = ui
-                                    .horizontal(|ui| {
-                                        ui.label(&format!("Light {}", i));
-                                        if ui.button("remove").clicked() {
-                                            self.lights.remove(i);
-                                            i = i.saturating_sub(1);
-                                            true
-                                        } else {
-                                            false
-                                        }
-                                    })
-                                    .inner;
-                                if removed {
-                                    continue;
-                                }
-                                let light = &mut self.lights[i];
-                                ui.add(
-                                    egui::Slider::new(&mut light.position.x, -20.0..=20.0)
-                                        .text("x"),
-                                );
-                                ui.add(
-                                    egui::Slider::new(&mut light.position.y, -20.0..=20.0)
-                                        .text("y"),
-                                );
-                                ui.add(
-                                    egui::Slider::new(&mut light.position.z, -20.0..=20.0)
-                                        .text("z"),
-                                );
-                                let mut c = egui::Rgba::from_rgba_premultiplied(
-                                    light.color.x,
-                                    light.color.y,
-                                    light.color.z,
-                                    light.color.w,
-                                );
-                                ui.horizontal(|ui| {
-                                    ui.label("Color: ");
-                                    egui::color_picker::color_edit_button_rgba(
-                                        ui,
-                                        &mut c,
-                                        egui::color_picker::Alpha::OnlyBlend,
-                                    );
-                                });
-                                light.color = c.to_array().into();
-                                light.view =
-                                    Mat4::look_at_rh(light.position.xyz(), Vec3::ZERO, Vec3::X);
-                            }
-
-                            if self.lights.len() < MAX_LIGHTS {
-                                if ui.add(egui::Button::new("Add Light")).clicked() {
-                                    self.lights.push(Light {
-                                        position: vec4(0.0, 5.0, 0.0, 1.0),
-                                        color: Color::WHITE.into(),
-                                        proj: Mat4::orthographic_rh(
-                                            -20.0, 20.0, -20.0, 20.0, 1.0, 24.0,
-                                        ),
-                                        view: Mat4::look_at_rh(
-                                            vec3(0.0, 5.0, 0.0),
-                                            Vec3::ZERO,
-                                            Vec3::X,
-                                        ),
-                                    });
-                                }
-                            }
+                            self.deferred_lighting_pass.debug_ui(ui);
 
                             ui.separator();
                             ui.label("SSAO");
                             ui.add(egui::Checkbox::new(&mut self.ssao_enabled, "enabled"));
-                            self.occlusion_pass.kernel_mut().debug_ui(&ctx.display, ui);
-
-                            ui.separator();
-                            ui.label("Blur");
-                            ui.add(egui::Checkbox::new(&mut self.ssao_blur_enabled, "enabled"));
-                            ui.add(
-                                egui::Slider::new(
-                                    &mut self.ssao_blur_settings.half_kernel_size,
-                                    0..=10,
-                                )
-                                .text("half kernel size"),
-                            );
-                            ui.add(
-                                egui::Slider::new(
-                                    &mut self.ssao_blur_settings.sharpness,
-                                    0.0..=100.0,
-                                )
-                                .text("edge sharpness"),
-                            );
-                            let u = *self.ssao_blur_settings.uniform();
-                            self.ssao_blur_settings.update(ctx.display.queue(), u);
+                            self.occlusion_pass.debug_ui(ui);
                         });
                 },
             );

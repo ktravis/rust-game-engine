@@ -90,9 +90,9 @@ struct Light {
 struct LightsUniform {
     items: array<Light, 8>,
     count: u32,
-    shadow_bias_minimum: f32,
-    shadow_bias_factor: f32,
-    shadow_blur_half_kernel_size: i32,
+    // shadow_bias_minimum: f32,
+    // shadow_bias_factor: f32,
+    // shadow_blur_half_kernel_size: i32,
 }
 
 @group(4) @binding(0)

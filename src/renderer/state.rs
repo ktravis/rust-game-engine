@@ -7,6 +7,7 @@ use std::{
 
 use glam::{Mat4, Vec3, Vec4};
 use slotmap::SlotMap;
+use wgpu::BindGroupLayout;
 
 use super::{
     display::Display,
@@ -161,33 +162,41 @@ impl BindingType {
                 },
                 count: None,
             }],
-            BindingType::Texture { format } => vec![
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: format
-                            .sample_type(Some(wgpu::TextureAspect::All), None)
-                            .expect(&format!(
-                                "non-sampleable texture format {:?} used in binding",
-                                format
-                            )),
+            BindingType::Texture { format } => {
+                let sample_type = format
+                    .sample_type(Some(wgpu::TextureAspect::All), None)
+                    .expect(&format!(
+                        "non-sampleable texture format {:?} used in binding",
+                        format
+                    ));
+                vec![
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(if format.has_depth_aspect() {
-                        wgpu::SamplerBindingType::Comparison
-                    } else {
-                        wgpu::SamplerBindingType::Filtering
-                    }),
-                    count: None,
-                },
-            ],
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(if format.has_depth_aspect() {
+                            wgpu::SamplerBindingType::Comparison
+                        } else {
+                            match sample_type {
+                                wgpu::TextureSampleType::Float { filterable: false } => {
+                                    wgpu::SamplerBindingType::NonFiltering
+                                }
+                                _ => wgpu::SamplerBindingType::Filtering,
+                            }
+                        }),
+                        count: None,
+                    },
+                ]
+            }
             BindingType::Direct(visibility, ty) => vec![wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility,
@@ -298,10 +307,10 @@ impl RenderState {
         &mut self,
         device: &wgpu::Device,
         uniform: U,
-    ) -> UniformBindGroup<U> {
+    ) -> (UniformBindGroup<U>, Arc<BindGroupLayout>) {
         let layout = self.bind_group_layout(device, BindingType::Uniform);
         let resource = UniformBuffer::new(device, uniform);
-        BindGroup::new(device, &layout, resource)
+        (BindGroup::new(device, &layout, resource), layout)
     }
 
     pub fn quad_mesh(&self) -> MeshRef<BasicVertexData> {
