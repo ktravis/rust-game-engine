@@ -5,14 +5,15 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use glam::{Mat4, Vec3, Vec4};
+use glam::{Mat4, Quat, Vec3, Vec4};
 use slotmap::SlotMap;
 use wgpu::BindGroupLayout;
 
 use super::{
     display::Display,
-    instance::{InstanceRenderer, InstanceStorage},
+    instance::{InstanceRenderData, InstanceStorage},
     mesh::{LoadMesh, Mesh, RawMeshRef, UntypedMesh},
+    text::{RenderableFont, TextDisplayOptions},
     texture::{Texture, TextureBuilder},
     BasicInstanceData, BindGroup, Bindable, InstanceData, MeshRef, OffscreenFramebuffer,
     PipelineBuilder, PipelineRef, RawPipelineRef, RenderTarget, TextureRef, UniformBindGroup,
@@ -20,7 +21,9 @@ use super::{
 };
 use crate::{
     camera::Camera,
-    geom::{BasicVertexData, Point, VertexData},
+    color::Color,
+    geom::{BasicVertexData, Point, Rect, VertexData},
+    transform::{Transform, Transform2D},
 };
 
 pub type BoundTexture = BindGroup<Texture>;
@@ -227,12 +230,17 @@ pub struct RenderState {
     // pub(crate) pipeline_cache: wgpu::PipelineCache,
     pipelines: SlotMap<RawPipelineRef, wgpu::RenderPipeline>,
     default_pipeline: PipelineRef<BasicVertexData, BasicInstanceData>,
+    text_pipeline: PipelineRef<BasicVertexData, BasicInstanceData>,
 }
 
 impl RenderState {
     const MAX_COLOR_ATTACHMENTS: usize = 8;
 
-    pub fn new(display: &Display, default_shader: &wgpu::ShaderModule) -> Self {
+    pub fn new(
+        display: &Display,
+        default_shader: &wgpu::ShaderModule,
+        text_shader: &wgpu::ShaderModule,
+    ) -> Self {
         let device = display.device();
 
         let global_uniforms = UniformBindGroup::new(
@@ -260,6 +268,7 @@ impl RenderState {
             quad_mesh: Default::default(),
             view_proj_bind_groups: Default::default(),
             default_pipeline: Default::default(),
+            text_pipeline: Default::default(),
             default_texture: Default::default(),
             // pipeline_cache,
         };
@@ -280,6 +289,10 @@ impl RenderState {
             .pipeline_builder()
             .with_label("Default Render Pipeline")
             .build(display.device(), &default_shader);
+        s.text_pipeline = s
+            .pipeline_builder()
+            .with_label("Text Render Pipeline")
+            .build(display.device(), &text_shader);
         s
     }
 
@@ -347,8 +360,9 @@ impl RenderState {
         color_targets: &[RenderTarget],
         depth_target: Option<RenderTarget>,
         view_projection: &ViewProjectionUniforms,
-        pass: impl FnOnce(&mut InstanceRenderer),
+        pass: impl FnOnce(&mut RenderPass<'_, '_>),
     ) -> PartialRenderPass<'a> {
+        self.instance_storage.clear();
         if color_targets.len() > Self::MAX_COLOR_ATTACHMENTS {
             panic!(
                 "too many color targets ({} > {})",
@@ -356,20 +370,14 @@ impl RenderState {
                 Self::MAX_COLOR_ATTACHMENTS
             );
         }
-        let alloc = BindGroupAllocator {
-            display,
-            layout: &self.bind_group_layout(display.device(), BindingType::Uniform),
-            bind_groups: &self.view_proj_bind_groups,
+        let bg = {
+            let alloc = BindGroupAllocator {
+                display,
+                layout: &self.bind_group_layout(display.device(), BindingType::Uniform),
+                bind_groups: &self.view_proj_bind_groups,
+            };
+            alloc.get(view_projection)
         };
-        let mut r = InstanceRenderer::new(
-            &alloc,
-            &mut self.instance_storage,
-            self.quad_mesh,
-            self.default_pipeline.raw(),
-        );
-        r.set_view_projection(view_projection);
-        pass(&mut r);
-        r.commit(display);
 
         let mut encoder = display.command_encoder();
         {
@@ -390,9 +398,6 @@ impl RenderState {
                     }
                 })
             });
-            // let color =
-            //     render_target.color_attachment(&self, wgpu::LoadOp::Clear(wgpu::Color::BLACK));
-            // let colors = [color];
             let mut raw_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(name),
                 color_attachments: &color_attachments[..color_targets.len()],
@@ -418,18 +423,19 @@ impl RenderState {
                 self.global_uniforms.bind_group().deref(),
                 &[],
             );
-            let mut pass = RenderPass {
-                raw_pass,
-                render_state: self,
-                active_mesh: None,
-                active_pipeline: None,
-            };
-            // pass.set_active_pipeline(self.default_pipeline);
-            pass.bind_texture(self.default_texture);
-            self.instance_storage.render_to(&mut pass);
+
+            raw_pass.set_bind_group(
+                RenderPass::VIEW_PROJECTION_UNIFORMS_BIND_GROUP_INDEX,
+                bg.deref(),
+                &[],
+            );
+            let default_texture = self.default_texture;
+            let mut render_pass = RenderPass::new(self, display, &mut raw_pass);
+            render_pass.bind_texture(default_texture);
+            pass(&mut render_pass);
+            render_pass.flush_draw_calls();
         }
         self.view_proj_bind_groups.lock().unwrap().reset();
-        self.instance_storage.clear();
         PartialRenderPass { display, encoder }
     }
 
@@ -568,31 +574,51 @@ impl RenderState {
     }
 }
 
-pub struct RenderPass<'a> {
-    pub render_state: &'a RenderState,
-    raw_pass: wgpu::RenderPass<'a>,
+pub struct RenderPass<'a, 'p> {
+    pub render_state: &'a mut RenderState,
+    display: &'p Display,
+    raw_pass: &'p mut wgpu::RenderPass<'p>,
+
     active_mesh: Option<RawMeshRef>,
     active_pipeline: Option<RawPipelineRef>,
+    active_texture: Option<TextureRef>,
+    current_draw_range: Range<u32>,
 }
 
-impl<'a> Deref for RenderPass<'a> {
-    type Target = wgpu::RenderPass<'a>;
+impl<'a, 'p> Deref for RenderPass<'a, 'p> {
+    type Target = wgpu::RenderPass<'p>;
 
     fn deref(&self) -> &Self::Target {
         &self.raw_pass
     }
 }
 
-impl<'a> DerefMut for RenderPass<'a> {
+impl<'a, 'p> DerefMut for RenderPass<'a, 'p> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.raw_pass
     }
 }
 
-impl<'a> RenderPass<'a> {
+impl<'a, 'p> RenderPass<'a, 'p> {
     const TEXTURE_BIND_GROUP_INDEX: u32 = 0;
     const GLOBAL_UNIFORMS_BIND_GROUP_INDEX: u32 = 1;
     pub const VIEW_PROJECTION_UNIFORMS_BIND_GROUP_INDEX: u32 = 2;
+
+    pub fn new(
+        render_state: &'a mut RenderState,
+        display: &'p Display,
+        raw_pass: &'p mut wgpu::RenderPass<'p>,
+    ) -> Self {
+        Self {
+            display,
+            render_state,
+            raw_pass,
+            active_mesh: None,
+            active_pipeline: None,
+            active_texture: None,
+            current_draw_range: 0..0,
+        }
+    }
 
     pub fn set_active_pipeline<V, I>(&mut self, pipeline: impl Into<Option<PipelineRef<V, I>>>) {
         self.set_active_pipeline_raw(pipeline.into().map(PipelineRef::raw));
@@ -602,12 +628,13 @@ impl<'a> RenderPass<'a> {
         if raw == self.active_pipeline {
             return;
         }
+
         let p = self
             .render_state
             .pipelines
             .get(raw.unwrap_or(self.render_state.default_pipeline.raw()))
             .unwrap();
-        self.set_pipeline(p);
+        self.raw_pass.set_pipeline(p);
         self.active_pipeline = raw;
     }
 
@@ -620,10 +647,17 @@ impl<'a> RenderPass<'a> {
     }
 
     pub fn bind_texture(&mut self, texture: impl Into<Option<TextureRef>>) {
-        self.bind_texture_data(self.render_state.get_texture(texture.into()))
+        self.raw_pass.set_bind_group(
+            Self::TEXTURE_BIND_GROUP_INDEX,
+            self.render_state
+                .get_texture(texture.into())
+                .bind_group()
+                .deref(),
+            &[],
+        );
     }
 
-    fn bind_texture_data(&mut self, texture_data: &'a BoundTexture) {
+    pub fn bind_texture_data(&mut self, texture_data: &BoundTexture) {
         self.raw_pass.set_bind_group(
             Self::TEXTURE_BIND_GROUP_INDEX,
             texture_data.bind_group().deref(),
@@ -654,12 +688,115 @@ impl<'a> RenderPass<'a> {
         self.draw_raw_mesh_ex(mesh.raw(), 0, None, 0..1)
     }
 
-    pub fn draw_active_mesh_instanced(&mut self, instances: Range<u32>) {
+    #[inline]
+    pub fn draw_instance<V: VertexData, I: InstanceData>(
+        &mut self,
+        instance: &InstanceRenderData<V, I>,
+    ) {
+        let pipeline = instance.pipeline.map(|p| p.raw());
+        if pipeline != self.active_pipeline {
+            self.flush_draw_calls();
+            self.set_active_pipeline_raw(pipeline);
+        }
+        let mesh = instance.mesh.raw();
+        if mesh != self.active_mesh.unwrap_or_default() {
+            self.flush_draw_calls();
+            self.set_active_mesh_raw(mesh);
+        }
+        if instance.texture != self.active_texture {
+            self.flush_draw_calls();
+            self.active_texture = instance.texture;
+            self.bind_texture(instance.texture);
+        }
+        self.current_draw_range.end += 1;
+        self.render_state.instance_storage.add(&instance.instance);
+    }
+
+    #[inline]
+    pub fn draw_quad(&mut self, texture: impl Into<Option<TextureRef>>, transform: impl Transform) {
+        self.draw_quad_ex(texture.into(), transform, Color::WHITE, Rect::default())
+    }
+
+    #[inline]
+    pub fn draw_quad_ex(
+        &mut self,
+        texture: Option<TextureRef>,
+        transform: impl Transform,
+        tint: Color,
+        subtexture: Rect,
+    ) {
+        let transform = transform.as_mat4();
+        self.draw_instance(&InstanceRenderData {
+            mesh: self.render_state.quad_mesh,
+            instance: BasicInstanceData {
+                transform,
+                tint,
+                subtexture,
+            },
+            texture,
+            pipeline: None,
+        });
+    }
+
+    #[inline]
+    pub fn draw_rect(&mut self, texture: impl Into<Option<TextureRef>>, rect: Rect) {
+        self.draw_quad(
+            texture,
+            Transform2D {
+                position: rect.pos,
+                scale: rect.dim,
+                rotation_rad: 0.0,
+            },
+        );
+    }
+
+    #[inline]
+    pub fn draw_text(
+        &mut self,
+        font: &RenderableFont,
+        s: impl AsRef<str>,
+        transform: impl Transform,
+        opts: TextDisplayOptions,
+    ) {
+        let m = transform.as_mat4();
+        for glyph_data in font.layout_text(s.as_ref(), opts.layout) {
+            let transform = m * Mat4::from_scale_rotation_translation(
+                glyph_data.bounds.dim.extend(1.0),
+                Quat::IDENTITY,
+                glyph_data.bounds.pos.extend(0.0),
+            );
+            self.draw_instance(&InstanceRenderData {
+                instance: BasicInstanceData {
+                    subtexture: glyph_data.subtexture,
+                    tint: opts.color,
+                    transform,
+                    ..Default::default()
+                },
+                mesh: self.render_state.quad_mesh,
+                texture: Some(font.texture()),
+                pipeline: Some(self.render_state.text_pipeline),
+            });
+        }
+    }
+
+    fn flush_draw_calls(&mut self) {
+        if self.current_draw_range.is_empty() {
+            return;
+        }
+        if self.active_pipeline.is_none() {
+            self.set_active_pipeline_raw(Some(self.render_state.default_pipeline.raw()));
+        }
+        self.render_state
+            .instance_storage
+            .update_buffer(self.display);
+        self.raw_pass
+            .set_vertex_buffer(1, self.render_state.instance_storage.buffer().slice(..));
         self.draw_raw_mesh_ex(
             self.active_mesh.expect("no active mesh"),
             0,
             None,
-            instances,
-        )
+            self.current_draw_range.clone(),
+        );
+        self.current_draw_range.start = self.current_draw_range.end
     }
 }

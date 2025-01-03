@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 
+use wgpu::include_wgsl;
 use winit::{
     application::ApplicationHandler,
     dpi::{PhysicalPosition, Size},
@@ -218,12 +219,10 @@ pub trait AppState {
             display,
             &display
                 .device()
-                .create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("instanced"),
-                    source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
-                        "../res/shaders/flat.wgsl"
-                    ))),
-                }),
+                .create_shader_module(include_wgsl!("../res/shaders/flat.wgsl")),
+            &display
+                .device()
+                .create_shader_module(include_wgsl!("../res/shaders/text.wgsl")),
         )
     }
 }

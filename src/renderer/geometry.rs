@@ -24,7 +24,7 @@ impl GeometryPass {
     pub fn new(state: &mut RenderState, display: &Display, size: Point<u32>) -> Self {
         let g_position = TextureBuilder::render_target()
             .with_label("g_position")
-            .with_format(wgpu::TextureFormat::Rgba16Float)
+            .with_format(wgpu::TextureFormat::Rgba32Float)
             .with_usage(TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING)
             .build(display.device(), size);
         let g_normal = TextureBuilder::render_target()
@@ -49,12 +49,12 @@ impl GeometryPass {
             .with_color_target_states(vec![
                 Some(wgpu::ColorTargetState {
                     format: g_position.format(),
-                    blend: Some(PipelineBuilder::DEFAULT_BLEND),
+                    blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 }),
                 Some(wgpu::ColorTargetState {
                     format: g_normal.format(),
-                    blend: Some(PipelineBuilder::DEFAULT_BLEND),
+                    blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 }),
                 Some(wgpu::ColorTargetState {
@@ -63,6 +63,13 @@ impl GeometryPass {
                     write_mask: wgpu::ColorWrites::ALL,
                 }),
             ])
+            .with_depth_stencil_state(Some(wgpu::DepthStencilState {
+                format: depth_target.format(),
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }))
             .build(
                 display.device(),
                 &display

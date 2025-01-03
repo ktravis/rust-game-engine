@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{ops::Deref, sync::Arc};
 
 use glam::{vec2, vec4, Vec2, Vec4};
 use wgpu::{include_wgsl, BindGroupLayout};
@@ -38,7 +38,7 @@ impl SSAOKernel {
                     0.0,
                 )
                 .normalize();
-            v * (0.1 + 0.9 * scale * scale)
+            v * (0.05 + 0.95 * scale * scale)
         })
     }
 
@@ -122,6 +122,7 @@ impl SSAOPass {
             TextureBuilder::render_target()
                 .with_label("ssao")
                 .with_format(wgpu::TextureFormat::R16Float)
+                .with_filter_mode(wgpu::FilterMode::Linear)
                 .with_usage(
                     wgpu::TextureUsages::TEXTURE_BINDING
                         | wgpu::TextureUsages::COPY_DST
@@ -170,6 +171,7 @@ impl SSAOPass {
             TextureBuilder::render_target()
                 .with_label("blurred_ssao")
                 .with_format(wgpu::TextureFormat::R16Float)
+                .with_filter_mode(wgpu::FilterMode::Linear)
                 .with_usage(
                     wgpu::TextureUsages::TEXTURE_BINDING
                         | wgpu::TextureUsages::COPY_DST
@@ -210,9 +212,9 @@ impl SSAOPass {
                 None,
                 view_projection,
                 |r| {
-                    r.set_bind_group(3, geometry_pass_bg.clone());
-                    r.set_bind_group(4, self.kernel.bind_group().clone());
-                    r.set_bind_group(5, self.noise_texture.bind_group().clone());
+                    r.set_bind_group(3, geometry_pass_bg.deref(), &[]);
+                    r.set_bind_group(4, self.kernel.bind_group().deref(), &[]);
+                    r.set_bind_group(5, self.noise_texture.bind_group().deref(), &[]);
                     r.draw_instance(&InstanceRenderData {
                         mesh: quad,
                         instance: BasicInstanceData::default(),
@@ -237,8 +239,8 @@ impl SSAOPass {
                         ..Default::default()
                     },
                     |r| {
-                        r.set_bind_group(3, geometry_pass_bg.clone());
-                        r.set_bind_group(4, self.blur_uniforms.bind_group().clone());
+                        r.set_bind_group(3, geometry_pass_bg.deref(), &[]);
+                        r.set_bind_group(4, self.blur_uniforms.bind_group().deref(), &[]);
                         r.draw_instance(&InstanceRenderData {
                             mesh: quad,
                             instance: BasicInstanceData {
@@ -264,8 +266,8 @@ impl SSAOPass {
                         ..Default::default()
                     },
                     |r| {
-                        r.set_bind_group(3, geometry_pass_bg);
-                        r.set_bind_group(4, self.blur_uniforms.bind_group().clone());
+                        r.set_bind_group(3, geometry_pass_bg.deref(), &[]);
+                        r.set_bind_group(4, self.blur_uniforms.bind_group().deref(), &[]);
                         r.draw_instance(&InstanceRenderData {
                             mesh: quad,
                             instance: BasicInstanceData {

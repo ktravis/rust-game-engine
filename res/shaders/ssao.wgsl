@@ -126,31 +126,9 @@ fn fs_main(in: VertexOutput) -> @location(0) f32 {
         if sample_depth >= sample.z + kernel.bias {
             occlusion += range_check;
         }
-
-        // if abs(view_space_pos.z - sample_depth) < kernel.radius {
-        //     if sample_depth <= sample.z {
-        //         occlusion += 1.0;
-        //     }
-        //     // occlusion += step(sample_depth, sample.z);
-        // }
-
-        // if sample_depth == 1.0 {
-        //     continue;
-        // }
-        // let range_check = smoothstep(0.0, 1.0, kernel.radius / abs(view_space_pos.z - sample_depth));
-
-        // var depth_check = 0.0;
-        // if (abs(Pos.z - sampleDepth) < gSampleRad) {
-        //     AO += step(sampleDepth,samplePos.z);
-        // }
-        // if sample_depth >= sample.z + kernel.bias {
-        //     depth_check = 1.0;
-        // }
-        // occlusion += depth_check * range_check;
     }
     occlusion = 1.0 - (occlusion / f32(kernel.count));
-    // occlusion = pow(occlusion, 2.0);
-    // return vec4(occlusion, occlusion, occlusion, 1.0);
+    occlusion = pow(occlusion, 2.0);
     return occlusion;
 }
 

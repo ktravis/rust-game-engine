@@ -1,37 +1,34 @@
-use std::borrow::Cow;
-use std::io::Read;
-
-use glam::{vec2, vec3, vec4};
+use glam::{vec2, vec3, vec4, Mat4, Vec3, Vec4Swizzles};
 use itertools::Itertools;
 use rust_game_engine::app::{App, AppState, Context};
+use rust_game_engine::color::Color;
 use rust_game_engine::renderer::geometry::GeometryPass;
-use rust_game_engine::renderer::lighting::{Light, LightingPass};
+use rust_game_engine::renderer::lighting::{self, Light, LightingPass};
 use rust_game_engine::renderer::model::LoadModel;
 use rust_game_engine::renderer::shadow_mapping::ShadowMappingPass;
 use rust_game_engine::renderer::ssao::SSAOPass;
+use rust_game_engine::renderer::text::RenderableFont;
 use rust_game_engine::renderer::{InstanceDataWithNormalMatrix, MeshRef, RenderTarget};
-use ttf_parser::Face;
 use winit::dpi::PhysicalSize;
 use winit::event_loop::EventLoop;
 
 use controlset_derive::ControlSet;
 use rust_game_engine::assets::AssetManager;
 use rust_game_engine::camera::Camera;
-use rust_game_engine::font::FontAtlas;
 use rust_game_engine::geom::{BasicVertexData, ModelVertexData, Point};
-use rust_game_engine::input::{Axis, Button, ControlSet, Key, Toggle};
+use rust_game_engine::input::{Axis, Button, Key, Toggle};
 use rust_game_engine::renderer::{
     instance::InstanceRenderData,
     mesh::LoadMesh,
     state::{GlobalUniforms, ViewProjectionUniforms},
     text::TextDisplayOptions,
-    BasicInstanceData, Display, OffscreenFramebuffer, PipelineRef, RenderData, ScalingMode,
-    TextureBuilder, TextureRef,
+    BasicInstanceData, Display, OffscreenFramebuffer, RenderData, ScalingMode, TextureBuilder,
+    TextureRef,
 };
 use rust_game_engine::sprite_manager::SpriteManager;
 use rust_game_engine::transform::{Transform, Transform2D, Transform3D};
 
-const WINDOW_SIZE: PhysicalSize<u32> = PhysicalSize::new(960, 720);
+const WINDOW_SIZE: PhysicalSize<u32> = PhysicalSize::new(1080, 720);
 const RENDER_SCALE: f32 = 1.0;
 
 #[derive(ControlSet)]
@@ -54,34 +51,17 @@ struct GameControls {
     debug: Toggle,
 }
 
-#[derive(Debug, Default, Clone)]
-struct ShaderSource {
-    dirty: bool,
-
-    text: String,
-}
-
-#[derive(Default)]
-struct RenderPipelines {
-    text: PipelineRef<BasicVertexData, BasicInstanceData>,
-    // ssao_blur: PipelineRef<BasicVertexData, BasicInstanceData>,
-    // lighting: PipelineRef<BasicVertexData, BasicInstanceData>,
-}
-
 #[derive(Default)]
 struct GameAssets {
-    shader_sources: ShaderSource,
-    font_atlas: FontAtlas,
     sprites: SpriteManager,
 }
 
 struct State {
     asset_manager: AssetManager<GameAssets>,
 
-    render_pipelines: RenderPipelines,
-
     // TODO: BitmapFontRenderer
-    font_render_data: RenderData<BasicVertexData, BasicInstanceData>,
+    default_font: RenderableFont,
+
     sprite_render_data: RenderData<BasicVertexData, BasicInstanceData>,
     offscreen_framebuffer: OffscreenFramebuffer,
     shadow_mapping_pass: ShadowMappingPass,
@@ -99,6 +79,7 @@ struct State {
     cube_mesh: MeshRef<ModelVertexData>,
 
     model_meshes: Vec<(MeshRef<ModelVertexData>, Option<tobj::Material>)>,
+    cubes: Vec<Transform3D>,
 }
 
 impl State {
@@ -123,27 +104,6 @@ impl State {
                 }),
             );
         }
-    }
-
-    fn create_or_update_render_pipelines<C: ControlSet>(&mut self, ctx: &mut Context<C>) {
-        // TODO: this should probably just move into the renderer, or maybe have a separate text
-        // renderer layer
-        self.render_pipelines.text = ctx
-            .render_state
-            .pipeline_builder()
-            .with_label("Text Render Pipeline")
-            .with_key(self.render_pipelines.text)
-            .build(
-                ctx.display.device(),
-                &ctx.display
-                    .device()
-                    .create_shader_module(wgpu::ShaderModuleDescriptor {
-                        label: Some("text"),
-                        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(
-                            &self.asset_manager.shader_sources.text,
-                        )),
-                    }),
-            );
     }
 }
 
@@ -188,39 +148,11 @@ impl AppState for State {
             ),
         );
 
-        // TODO: these callbacks should be able to return an error, optionally
-        asset_manager.track_file("./res/fonts/Ubuntu-M.ttf", |state, _, mut f| {
-            let mut b = vec![];
-            f.read_to_end(&mut b).unwrap();
-            let face = Face::parse(&b, 0).unwrap();
-            state.font_atlas = FontAtlas::new(face, Default::default()).unwrap();
-        });
-        let font_atlas_texture = ctx.render_state.load_texture(
-            &ctx.display,
-            TextureBuilder::labeled("font_atlas")
-                .with_filter_mode(wgpu::FilterMode::Linear)
-                .from_image(
-                    ctx.display.device(),
-                    ctx.display.queue(),
-                    asset_manager.font_atlas.image(),
-                ),
-        );
-
-        asset_manager.track_file("./res/shaders/text.wgsl", |state, _, f| {
-            state.shader_sources.dirty = true;
-            state.shader_sources.text = std::io::read_to_string(f).unwrap();
-        });
-
-        // asset_manager.track_file("./res/shaders/model.wgsl", |state, _, f| {
-        //     state.shader_sources.dirty = true;
-        //     state.shader_sources.model_with_normals = std::io::read_to_string(f).unwrap();
-        // });
-        //
         let model = ctx
             .display
             .device()
             // .load_model("./res/models/jeep.obj")
-            .load_model("./res/models/astronautB.obj")
+            .load_model("./res/models/jeep.obj")
             .unwrap();
 
         let model_meshes = model
@@ -228,6 +160,7 @@ impl AppState for State {
             .into_iter()
             .map(|m| (ctx.render_state.prepare_mesh(m.mesh), m.material))
             .collect();
+        // let model_meshes = vec![];
 
         let fb_size = Point::from((
             (WINDOW_SIZE.width as f32 / RENDER_SCALE) as u32,
@@ -259,11 +192,26 @@ impl AppState for State {
             geometry_pass.bind_group_layout(),
         );
 
-        let mut state = Self {
+        let mut cubes = vec![];
+        for x in 0..32 {
+            for z in 0..32 {
+                cubes.push(Transform3D {
+                    position: vec3(
+                        2.0 * (x as f32 - 16.0),
+                        rand::random::<f32>() * 1.5,
+                        2.0 * (z as f32 - 16.0),
+                    ),
+                    ..Default::default()
+                });
+            }
+        }
+
+        Self {
             asset_manager,
             crate_texture,
             cat_texture,
             cube_mesh,
+            default_font: RenderableFont::new(ctx),
             sprite_instances: vec![],
             camera: Camera::new(vec3(0.0, 2.3, 6.0), 960.0 / 720.0),
             lights: vec![],
@@ -277,29 +225,18 @@ impl AppState for State {
             geometry_pass,
             occlusion_pass,
             ssao_enabled: true,
-            font_render_data: Default::default(),
+            // font_render_data: Default::default(),
             sprite_render_data,
             offscreen_framebuffer,
-            render_pipelines: Default::default(),
+            // render_pipelines: Default::default(),
             model_meshes,
             deferred_lighting_pass,
-        };
-        state.create_or_update_render_pipelines(ctx);
-        state.font_render_data = RenderData {
-            pipeline: Some(state.render_pipelines.text),
-            texture: font_atlas_texture,
-            mesh: ctx.render_state.quad_mesh(),
-        };
-        state
+            cubes,
+        }
     }
 
     fn update(&mut self, ctx: &mut Context<GameControls>) -> bool {
         if self.asset_manager.check_for_updates() {
-            if self.asset_manager.shader_sources.dirty {
-                println!("shader sources updated");
-                self.asset_manager.shader_sources.dirty = false;
-                self.create_or_update_render_pipelines(ctx);
-            }
             if self.asset_manager.sprites.maybe_rebuild() {
                 ctx.render_state.replace_texture(
                     &ctx.display,
@@ -350,6 +287,7 @@ impl AppState for State {
         );
         let view_proj = ViewProjectionUniforms::for_camera(&self.camera);
 
+        // let mut scene = vec![];
         let mut scene = vec![
             InstanceRenderData {
                 texture: Some(self.crate_texture),
@@ -366,7 +304,11 @@ impl AppState for State {
                     BasicInstanceData {
                         tint: vec4(1.0, 0.9, 0.9, 1.0).into(),
                         transform: Transform3D {
-                            position: vec3(-1.0, 1.5, -0.4),
+                            position: vec3(
+                                -1.0 + f32::sin(ctx.frame_timing.time()) * 5.0,
+                                1.5,
+                                -0.4,
+                            ),
                             ..Default::default()
                         }
                         .as_mat4(),
@@ -403,8 +345,8 @@ impl AppState for State {
                     BasicInstanceData {
                         tint: mat.as_ref().map(|m| m.diffuse.into()).unwrap_or_default(),
                         transform: Transform3D {
-                            position: vec3(0.0, 2.0, 0.0),
-                            // scale: vec3(0.01, 0.01, 0.01),
+                            position: vec3(0.0, 3.0, -5.0),
+                            scale: vec3(0.02, 0.02, 0.02),
                             ..Default::default()
                         }
                         .as_mat4(),
@@ -416,12 +358,27 @@ impl AppState for State {
                 pipeline: None,
             });
         }
+        // let scene = self
+        //     .cubes
+        //     .iter()
+        //     .map(|t| InstanceRenderData {
+        //         mesh: self.cube_mesh,
+        //         instance: InstanceDataWithNormalMatrix::from_basic(
+        //             BasicInstanceData {
+        //                 transform: t.as_mat4(),
+        //                 ..Default::default()
+        //             },
+        //             view_proj.view,
+        //         ),
+        //         texture: None,
+        //         pipeline: None,
+        //     })
+        //     .collect::<Vec<_>>();
 
         // Populate G buffers
         self.geometry_pass
             .run(&mut ctx.render_state, &ctx.display, &view_proj, &scene);
 
-        let default_texture = ctx.render_state.default_texture();
         let occlusion_map = if self.ssao_enabled {
             self.occlusion_pass.run(
                 &mut ctx.render_state,
@@ -430,7 +387,7 @@ impl AppState for State {
                 self.geometry_pass.bind_group().clone(),
             )
         } else {
-            default_texture
+            ctx.render_state.default_texture()
         };
 
         // self.shadow_mapping_pass
@@ -484,9 +441,8 @@ impl AppState for State {
                         format!("{:.2}", ctx.frame_timing.fps())
                     };
                     r.draw_text(
+                        &self.default_font,
                         &text,
-                        &self.asset_manager.font_atlas,
-                        &self.font_render_data,
                         Transform2D {
                             position: vec2(20.0, 40.0),
                             ..Default::default()
@@ -531,6 +487,73 @@ impl AppState for State {
                             ui.spacing_mut().slider_width = 200.0;
                             ui.label("Lights");
                             self.deferred_lighting_pass.debug_ui(ui);
+
+                            for mut i in 0..(self.lights.len() as usize) {
+                                if i > 0 {
+                                    ui.separator();
+                                }
+                                let removed = ui
+                                    .horizontal(|ui| {
+                                        ui.label(&format!("Light {}", i));
+                                        if ui.button("remove").clicked() {
+                                            self.lights.remove(i);
+                                            i = i.saturating_sub(1);
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    })
+                                    .inner;
+                                if removed {
+                                    continue;
+                                }
+                                let light = &mut self.lights[i];
+                                ui.add(
+                                    egui::Slider::new(&mut light.position.x, -20.0..=20.0)
+                                        .text("x"),
+                                );
+                                ui.add(
+                                    egui::Slider::new(&mut light.position.y, -20.0..=20.0)
+                                        .text("y"),
+                                );
+                                ui.add(
+                                    egui::Slider::new(&mut light.position.z, -20.0..=20.0)
+                                        .text("z"),
+                                );
+                                let mut c = egui::Rgba::from_rgba_premultiplied(
+                                    light.color.x,
+                                    light.color.y,
+                                    light.color.z,
+                                    light.color.w,
+                                );
+                                ui.horizontal(|ui| {
+                                    ui.label("Color: ");
+                                    egui::color_picker::color_edit_button_rgba(
+                                        ui,
+                                        &mut c,
+                                        egui::color_picker::Alpha::OnlyBlend,
+                                    );
+                                });
+                                light.color = c.to_array().into();
+                                light.view =
+                                    Mat4::look_at_rh(light.position.xyz(), Vec3::ZERO, Vec3::X);
+                            }
+                            if self.lights.len() < lighting::MAX_LIGHTS {
+                                if ui.add(egui::Button::new("Add Light")).clicked() {
+                                    self.lights.push(Light {
+                                        position: vec4(0.0, 5.0, 0.0, 1.0),
+                                        color: Color::WHITE.into(),
+                                        proj: Mat4::orthographic_rh(
+                                            -20.0, 20.0, -20.0, 20.0, 1.0, 24.0,
+                                        ),
+                                        view: Mat4::look_at_rh(
+                                            vec3(0.0, 5.0, 0.0),
+                                            Vec3::ZERO,
+                                            Vec3::X,
+                                        ),
+                                    });
+                                }
+                            }
 
                             ui.separator();
                             ui.label("SSAO");

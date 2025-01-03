@@ -1,9 +1,9 @@
-use std::sync::Arc;
+use std::{ops::Deref, sync::Arc};
 
-use glam::{vec3, vec4, Mat4, Vec3, Vec4, Vec4Swizzles};
+use glam::{Mat4, Vec4};
 use wgpu::include_wgsl;
 
-use crate::{color::Color, geom::BasicVertexData};
+use crate::geom::BasicVertexData;
 
 use super::{
     instance::InstanceRenderData, state::ViewProjectionUniforms, BasicInstanceData, Display,
@@ -88,58 +88,47 @@ impl UniformData for LightsUniform {
 }
 
 impl LightsUniform {
-    fn debug_ui(&mut self, ui: &mut egui::Ui) {
-        for mut i in 0..(self.lights.len() as usize) {
-            if i > 0 {
-                ui.separator();
-            }
-            let removed = ui
-                .horizontal(|ui| {
-                    ui.label(&format!("Light {}", i));
-                    if ui.button("remove").clicked() {
-                        self.lights.remove(i);
-                        i = i.saturating_sub(1);
-                        true
-                    } else {
-                        false
-                    }
-                })
-                .inner;
-            if removed {
-                continue;
-            }
-            let light = &mut self.lights[i];
-            ui.add(egui::Slider::new(&mut light.position.x, -20.0..=20.0).text("x"));
-            ui.add(egui::Slider::new(&mut light.position.y, -20.0..=20.0).text("y"));
-            ui.add(egui::Slider::new(&mut light.position.z, -20.0..=20.0).text("z"));
-            let mut c = egui::Rgba::from_rgba_premultiplied(
-                light.color.x,
-                light.color.y,
-                light.color.z,
-                light.color.w,
-            );
-            ui.horizontal(|ui| {
-                ui.label("Color: ");
-                egui::color_picker::color_edit_button_rgba(
-                    ui,
-                    &mut c,
-                    egui::color_picker::Alpha::OnlyBlend,
-                );
-            });
-            light.color = c.to_array().into();
-            light.view = Mat4::look_at_rh(light.position.xyz(), Vec3::ZERO, Vec3::X);
-        }
-
-        if self.lights.len() < MAX_LIGHTS {
-            if ui.add(egui::Button::new("Add Light")).clicked() {
-                self.lights.push(Light {
-                    position: vec4(0.0, 5.0, 0.0, 1.0),
-                    color: Color::WHITE.into(),
-                    proj: Mat4::orthographic_rh(-20.0, 20.0, -20.0, 20.0, 1.0, 24.0),
-                    view: Mat4::look_at_rh(vec3(0.0, 5.0, 0.0), Vec3::ZERO, Vec3::X),
-                });
-            }
-        }
+    fn debug_ui(&mut self, _ui: &mut egui::Ui) {
+        // for mut i in 0..(self.lights.len() as usize) {
+        //     if i > 0 {
+        //         ui.separator();
+        //     }
+        //     let removed = ui
+        //         .horizontal(|ui| {
+        //             ui.label(&format!("Light {}", i));
+        //             if ui.button("remove").clicked() {
+        //                 self.lights.remove(i);
+        //                 i = i.saturating_sub(1);
+        //                 true
+        //             } else {
+        //                 false
+        //             }
+        //         })
+        //         .inner;
+        //     if removed {
+        //         continue;
+        //     }
+        //     let light = &mut self.lights[i];
+        //     ui.add(egui::Slider::new(&mut light.position.x, -20.0..=20.0).text("x"));
+        //     ui.add(egui::Slider::new(&mut light.position.y, -20.0..=20.0).text("y"));
+        //     ui.add(egui::Slider::new(&mut light.position.z, -20.0..=20.0).text("z"));
+        //     let mut c = egui::Rgba::from_rgba_premultiplied(
+        //         light.color.x,
+        //         light.color.y,
+        //         light.color.z,
+        //         light.color.w,
+        //     );
+        //     ui.horizontal(|ui| {
+        //         ui.label("Color: ");
+        //         egui::color_picker::color_edit_button_rgba(
+        //             ui,
+        //             &mut c,
+        //             egui::color_picker::Alpha::OnlyBlend,
+        //         );
+        //     });
+        //     light.color = c.to_array().into();
+        //     light.view = Mat4::look_at_rh(light.position.xyz(), Vec3::ZERO, Vec3::X);
+        // }
     }
 }
 
@@ -211,8 +200,8 @@ impl LightingPass {
                 None,
                 view_projection,
                 |r| {
-                    r.set_bind_group(3, geometry_pass_bg);
-                    r.set_bind_group(4, self.lights_uniform.bind_group().clone());
+                    r.set_bind_group(3, geometry_pass_bg.deref(), &[]);
+                    r.set_bind_group(4, self.lights_uniform.bind_group().deref(), &[]);
                     r.draw_instance(&InstanceRenderData {
                         mesh: quad,
                         instance: Default::default(),

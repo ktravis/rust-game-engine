@@ -2,7 +2,7 @@ use super::instance::InstanceRenderData;
 use super::state::BindingType;
 use super::{MeshRef, PipelineRef, TextureRef};
 use crate::{color::*, geom::*, transform::*};
-use glam::{Mat3, Mat4};
+use glam::Mat4;
 use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
@@ -295,7 +295,7 @@ impl<U: UniformData> UniformBuffer<U> {
     pub fn new(device: &wgpu::Device, uniform: U) -> Self {
         let n = std::mem::size_of::<U::Raw>();
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Uniform Buffer"),
+            label: Some(&format!("Uniform Buffer ({})", std::any::type_name::<U>())),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             // pad to 16 bytes, which will be required in the shader
             size: n.next_multiple_of(16) as u64,
