@@ -81,12 +81,3 @@ impl InstanceStorage {
         w.copy_from_slice(&self.raw_instance_bytes);
     }
 }
-
-// TODO: next parametrize this type with the vertex/instance data types
-//
-// pub struct Batch<'r> {
-//     instance_storage: &'r mut InstanceStorage,
-//     active_mesh: Option<RawMeshRef>,
-//     active_texture: Option<TextureRef>,
-//     active_pipeline: Option<RawPipelineRef>,
-// }

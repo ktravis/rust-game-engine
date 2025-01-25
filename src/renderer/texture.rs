@@ -39,7 +39,9 @@ impl<'a> TextureBuilder<'a> {
     }
 
     pub fn depth() -> Self {
-        Self::default().with_format(Self::DEFAULT_DEPTH_FORMAT)
+        let mut s = Self::default().with_format(Self::DEFAULT_DEPTH_FORMAT);
+        s.compare_func = Some(wgpu::CompareFunction::LessEqual);
+        s
     }
 
     pub fn render_target() -> Self {
@@ -90,6 +92,13 @@ impl<'a> TextureBuilder<'a> {
     pub fn with_layers(self, layers: u32) -> Self {
         Self {
             layers: Some(layers),
+            ..self
+        }
+    }
+
+    pub fn with_compare_func(self, compare_func: Option<wgpu::CompareFunction>) -> Self {
+        Self {
+            compare_func,
             ..self
         }
     }
@@ -154,8 +163,6 @@ impl<'a> TextureBuilder<'a> {
             self.mag_filter.get_or_insert(wgpu::FilterMode::Linear);
             self.min_filter.get_or_insert(wgpu::FilterMode::Linear);
             self.mipmap_filter.get_or_insert(wgpu::FilterMode::Nearest);
-            self.compare_func
-                .get_or_insert(wgpu::CompareFunction::LessEqual);
         } else {
             let other = if format.is_srgb() {
                 format.remove_srgb_suffix()

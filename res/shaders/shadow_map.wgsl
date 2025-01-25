@@ -11,6 +11,7 @@ struct ViewProjectionUniforms {
     view: mat4x4<f32>,
     projection: mat4x4<f32>,
     camera_pos: vec3<f32>,
+    inverse_view: mat4x4<f32>,
 }
 
 @group(2) @binding(0)
@@ -30,10 +31,10 @@ struct InstanceInput {
     @location(7) model_2: vec4<f32>,
     @location(8) model_3: vec4<f32>,
     @location(9) model_4: vec4<f32>,
-}
-
-struct VertexOutput {
-    @builtin(position) clip_position: vec4<f32>,
+    @location(10) normal_1: vec4<f32>,
+    @location(11) normal_2: vec4<f32>,
+    @location(12) normal_3: vec4<f32>,
+    @location(13) normal_4: vec4<f32>,
 }
 
 @vertex
@@ -55,7 +56,7 @@ fn vs_main(
 // Fragment shader
 
 @fragment
-fn fs_main() -> @location(0) vec4<f32> {
-    return vec4(0.0, 0.0, 0.0, 1.0);
+fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    return vec4(position.z, position.z, position.z, 1.0);
 }
 

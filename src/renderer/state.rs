@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use glam::{Mat4, Quat, Vec3, Vec4};
+use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use slotmap::SlotMap;
 use wgpu::BindGroupLayout;
 
@@ -32,6 +32,8 @@ pub type BoundTexture = BindGroup<Texture>;
 #[derive(Default, Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GlobalUniforms {
     pub time: f32,
+    pub _pad: f32,
+    pub screen_size: Vec2,
 }
 
 #[repr(C)]
@@ -61,7 +63,7 @@ impl ViewProjectionUniforms {
     }
 }
 
-struct CachePool<T> {
+pub struct CachePool<T> {
     items: Vec<Arc<T>>,
     in_use: usize,
 }
@@ -100,7 +102,7 @@ pub struct BindGroupAllocator<'a, U: UniformData> {
 }
 
 impl<'a, U: UniformData + Default> BindGroupAllocator<'a, U> {
-    pub fn get(&self, view_projection: &U) -> Arc<wgpu::BindGroup> {
+    pub fn get(&self, uniform: &U) -> Arc<wgpu::BindGroup> {
         let display = self.display;
         let mut x = self.bind_groups.lock().unwrap();
         let bg = x.get(|| {
@@ -112,7 +114,7 @@ impl<'a, U: UniformData + Default> BindGroupAllocator<'a, U> {
         });
         display
             .queue()
-            .write_buffer(bg.buffer(), 0, bytemuck::bytes_of(&view_projection.raw()));
+            .write_buffer(bg.buffer(), 0, bytemuck::bytes_of(&uniform.raw()));
         bg.bind_group().clone()
     }
 }
@@ -392,7 +394,7 @@ impl RenderState {
                         view,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
                             store: wgpu::StoreOp::Store,
                         },
                     }
@@ -435,76 +437,12 @@ impl RenderState {
             pass(&mut render_pass);
             render_pass.flush_draw_calls();
         }
-        self.view_proj_bind_groups.lock().unwrap().reset();
         PartialRenderPass { display, encoder }
     }
 
-    // #[must_use]
-    // pub fn direct_render_pass<'a>(
-    //     &mut self,
-    //     display: &'a Display,
-    //     name: &str,
-    //     render_target: &RenderTarget,
-    //     view_projection: &ViewProjectionUniforms,
-    //     pass_func: impl FnOnce(&mut RenderPass<'_>),
-    // ) -> PartialRenderPass<'a> {
-    //     let bind_group = {
-    //         let layout = self.bind_group_layout(display.device(), BindingType::Uniform);
-    //         let mut x = self.view_proj_bind_groups.lock().unwrap();
-    //         let bg = x.get(|| {
-    //             BindGroup::new(
-    //                 display.device(),
-    //                 &layout,
-    //                 UniformBuffer::<ViewProjectionUniforms>::new(
-    //                     display.device(),
-    //                     Default::default(),
-    //                 ),
-    //             )
-    //         });
-    //         display
-    //             .queue()
-    //             .write_buffer(bg.buffer(), 0, bytemuck::bytes_of(view_projection));
-    //         bg.bind_group().clone()
-    //     };
-    //
-    //     let mut encoder = display.command_encoder();
-    //     {
-    //         let color =
-    //             render_target.color_attachment(&self, wgpu::LoadOp::Clear(wgpu::Color::BLACK));
-    //         let colors = [color];
-    //         let mut raw_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-    //             label: Some(name),
-    //             color_attachments: if colors[0].is_some() { &colors } else { &[] },
-    //             depth_stencil_attachment: render_target.depth_stencil_attachment(
-    //                 &self,
-    //                 wgpu::LoadOp::Clear(1.0),
-    //                 None,
-    //             ),
-    //             ..Default::default()
-    //         });
-    //         raw_pass.set_bind_group(
-    //             RenderPass::GLOBAL_UNIFORMS_BIND_GROUP_INDEX,
-    //             self.global_uniforms.bind_group(),
-    //             &[],
-    //         );
-    //         raw_pass.set_bind_group(
-    //             RenderPass::VIEW_PROJECTION_UNIFORMS_BIND_GROUP_INDEX,
-    //             &bind_group,
-    //             &[],
-    //         );
-    //         let mut pass = RenderPass {
-    //             raw_pass,
-    //             render_state: self,
-    //             active_mesh: None,
-    //             active_pipeline: None,
-    //         };
-    //         pass.set_active_pipeline(self.default_pipeline);
-    //         pass.bind_texture(self.default_texture);
-    //         pass_func(&mut pass);
-    //     }
-    //     self.view_proj_bind_groups.lock().unwrap().reset();
-    //     PartialRenderPass { display, encoder }
-    // }
+    pub fn after_frame(&mut self) {
+        self.view_proj_bind_groups.lock().unwrap().reset();
+    }
 
     pub fn create_offscreen_framebuffer(
         &mut self,
@@ -722,7 +660,7 @@ impl<'a, 'p> RenderPass<'a, 'p> {
         &mut self,
         texture: Option<TextureRef>,
         transform: impl Transform,
-        tint: Color,
+        c: Color,
         subtexture: Rect,
     ) {
         let transform = transform.as_mat4();
@@ -730,7 +668,7 @@ impl<'a, 'p> RenderPass<'a, 'p> {
             mesh: self.render_state.quad_mesh,
             instance: BasicInstanceData {
                 transform,
-                tint,
+                tint: c,
                 subtexture,
             },
             texture,
@@ -739,14 +677,16 @@ impl<'a, 'p> RenderPass<'a, 'p> {
     }
 
     #[inline]
-    pub fn draw_rect(&mut self, texture: impl Into<Option<TextureRef>>, rect: Rect) {
-        self.draw_quad(
-            texture,
+    pub fn draw_rect(&mut self, rect: Rect, c: Color, texture: impl Into<Option<TextureRef>>) {
+        self.draw_quad_ex(
+            texture.into(),
             Transform2D {
                 position: rect.pos,
                 scale: rect.dim,
                 rotation_rad: 0.0,
             },
+            c,
+            Rect::new(0.0, 0.0, 0.0, 0.0),
         );
     }
 

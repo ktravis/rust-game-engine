@@ -83,6 +83,12 @@ impl From<(f32, f32, f32)> for Color {
     }
 }
 
+impl From<[f32; 4]> for Color {
+    fn from([r, g, b, a]: [f32; 4]) -> Self {
+        Self { r, g, b, a }
+    }
+}
+
 impl From<[f32; 3]> for Color {
     fn from([r, g, b]: [f32; 3]) -> Self {
         Self { r, g, b, a: 1.0 }
@@ -109,5 +115,11 @@ impl From<Color> for (f32, f32, f32, f32) {
 impl From<Color> for (f32, f32, f32) {
     fn from(Color { r, g, b, a: _ }: Color) -> Self {
         (r, g, b)
+    }
+}
+
+impl From<egui::Rgba> for Color {
+    fn from(rgba: egui::Rgba) -> Self {
+        rgba.to_array().into()
     }
 }

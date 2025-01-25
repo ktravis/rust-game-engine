@@ -133,6 +133,17 @@ impl InstanceDataWithNormalMatrix {
     ];
 }
 
+impl Default for InstanceDataWithNormalMatrix {
+    fn default() -> Self {
+        Self {
+            transform: Default::default(),
+            tint: Color::WHITE,
+            subtexture: Rect::new(0., 0., 1., 1.),
+            normal_matrix: Mat4::IDENTITY,
+        }
+    }
+}
+
 impl VertexLayout for InstanceDataWithNormalMatrix {
     fn vertex_layout() -> VertexBufferLayout<'static> {
         VertexBufferLayout {

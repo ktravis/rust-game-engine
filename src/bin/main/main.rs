@@ -1,12 +1,14 @@
-use glam::{vec2, vec3, vec4, Mat4, Vec3, Vec4Swizzles};
+use std::ops::{Deref, DerefMut};
+
+use glam::{vec2, vec3, vec4, Mat4, Quat, Vec2, Vec3, Vec4Swizzles};
 use itertools::Itertools;
 use rust_game_engine::app::{App, AppState, Context};
-use rust_game_engine::color::Color;
+use rust_game_engine::renderer::forward::ForwardGeometryPass;
 use rust_game_engine::renderer::geometry::GeometryPass;
-use rust_game_engine::renderer::lighting::{self, Light, LightingPass};
+use rust_game_engine::renderer::lighting::{Light, LightKind, LightingPass};
 use rust_game_engine::renderer::model::LoadModel;
 use rust_game_engine::renderer::shadow_mapping::ShadowMappingPass;
-use rust_game_engine::renderer::ssao::SSAOPass;
+use rust_game_engine::renderer::ssao_from_depth::SSAOPass;
 use rust_game_engine::renderer::text::RenderableFont;
 use rust_game_engine::renderer::{InstanceDataWithNormalMatrix, MeshRef, RenderTarget};
 use winit::dpi::PhysicalSize;
@@ -15,7 +17,7 @@ use winit::event_loop::EventLoop;
 use controlset_derive::ControlSet;
 use rust_game_engine::assets::AssetManager;
 use rust_game_engine::camera::Camera;
-use rust_game_engine::geom::{BasicVertexData, ModelVertexData, Point};
+use rust_game_engine::geom::{BasicVertexData, ModelVertexData, Point, Rect};
 use rust_game_engine::input::{Axis, Button, Key, Toggle};
 use rust_game_engine::renderer::{
     instance::InstanceRenderData,
@@ -68,7 +70,8 @@ struct State {
     geometry_pass: GeometryPass,
     occlusion_pass: SSAOPass,
     ssao_enabled: bool,
-    deferred_lighting_pass: LightingPass,
+    // deferred_lighting_pass: LightingPass,
+    forward_pass: ForwardGeometryPass,
 
     // "game" state
     camera: Camera,
@@ -80,6 +83,8 @@ struct State {
 
     model_meshes: Vec<(MeshRef<ModelVertexData>, Option<tobj::Material>)>,
     cubes: Vec<Transform3D>,
+
+    scene: Scene,
 }
 
 impl State {
@@ -107,11 +112,19 @@ impl State {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Scene {
+    Cubes,
+    Model,
+}
+
 impl AppState for State {
     type Controls = GameControls;
 
     fn new(ctx: &mut Context<Self::Controls>) -> Self {
         let mut asset_manager = AssetManager::new(GameAssets::default(), "./res/");
+
+        let camera = Camera::new(vec3(0.0, 2.3, 6.0), 960.0 / 720.0);
 
         let cube_mesh = ctx
             .render_state
@@ -152,7 +165,7 @@ impl AppState for State {
             .display
             .device()
             // .load_model("./res/models/jeep.obj")
-            .load_model("./res/models/jeep.obj")
+            .load_model("./res/models/room_thickwalls.obj")
             .unwrap();
 
         let model_meshes = model
@@ -160,7 +173,6 @@ impl AppState for State {
             .into_iter()
             .map(|m| (ctx.render_state.prepare_mesh(m.mesh), m.material))
             .collect();
-        // let model_meshes = vec![];
 
         let fb_size = Point::from((
             (WINDOW_SIZE.width as f32 / RENDER_SCALE) as u32,
@@ -178,19 +190,25 @@ impl AppState for State {
         ctx.set_cursor_captured(true);
 
         let shadow_mapping_pass = ShadowMappingPass::new(&mut ctx.render_state, &ctx.display);
+        let forward_pass = ForwardGeometryPass::new(
+            &mut ctx.render_state,
+            &ctx.display,
+            fb_size,
+            shadow_mapping_pass.bind_group_layout(),
+        );
         let geometry_pass = GeometryPass::new(&mut ctx.render_state, &ctx.display, fb_size);
-
         let occlusion_pass = SSAOPass::new(
             &mut ctx.render_state,
             &ctx.display,
-            geometry_pass.bind_group_layout(),
+            forward_pass.depth_buffer_bind_group_layout(),
+            &camera,
         );
 
-        let deferred_lighting_pass = LightingPass::new(
-            &mut ctx.render_state,
-            &ctx.display,
-            geometry_pass.bind_group_layout(),
-        );
+        // let deferred_lighting_pass = LightingPass::new(
+        //     &mut ctx.render_state,
+        //     &ctx.display,
+        //     geometry_pass.bind_group_layout(),
+        // );
 
         let mut cubes = vec![];
         for x in 0..32 {
@@ -213,16 +231,25 @@ impl AppState for State {
             cube_mesh,
             default_font: RenderableFont::new(ctx),
             sprite_instances: vec![],
-            camera: Camera::new(vec3(0.0, 2.3, 6.0), 960.0 / 720.0),
-            lights: vec![],
-            // lights: vec![Light {
-            //     position: vec4(5.0, 2.5, 7.0, 1.0),
-            //     color: Color::WHITE.into(),
-            //     proj: Mat4::orthographic_rh(-20.0, 20.0, -20.0, 20.0, 1.0, 24.0),
-            //     view: Mat4::look_at_rh(vec3(0.0, 5.0, 0.0), Vec3::ZERO, Vec3::X),
-            // }],
+            camera,
+            // lights: vec![],
+            lights: vec![
+                // LightKind::Directional {
+                //     theta: -65.0,
+                //     phi: -30.0,
+                // }
+                // .into(),
+                LightKind::Spot {
+                    position: vec3(0.0, 2.0, -10.0),
+                    direction: vec3(0.0, -1.0, 30.0),
+                    fov_degrees: 30.0,
+                    reach: 40.0,
+                }
+                .into(),
+            ],
             shadow_mapping_pass,
             geometry_pass,
+            forward_pass,
             occlusion_pass,
             ssao_enabled: true,
             // font_render_data: Default::default(),
@@ -230,8 +257,9 @@ impl AppState for State {
             offscreen_framebuffer,
             // render_pipelines: Default::default(),
             model_meshes,
-            deferred_lighting_pass,
+            // deferred_lighting_pass,
             cubes,
+            scene: Scene::Model,
         }
     }
 
@@ -283,6 +311,8 @@ impl AppState for State {
             ctx.display.queue(),
             GlobalUniforms {
                 time: ctx.frame_timing.time(),
+                _pad: 0.0,
+                screen_size: ctx.display.size_pixels().as_vec2(),
             },
         );
         let view_proj = ViewProjectionUniforms::for_camera(&self.camera);
@@ -323,7 +353,7 @@ impl AppState for State {
                 mesh: self.cube_mesh,
                 instance: InstanceDataWithNormalMatrix::from_basic(
                     BasicInstanceData {
-                        tint: vec4(0.88, 0.82, 0.8, 1.0).into(),
+                        // tint: vec4(0.88, 0.82, 0.8, 1.0).into(),
                         transform: Transform3D {
                             position: vec3(0.0, -1.5, 0.0),
                             scale: vec3(30.0, 0.5, 30.0),
@@ -338,18 +368,84 @@ impl AppState for State {
                 pipeline: None,
             },
         ];
-        for (mesh, mat) in &self.model_meshes {
+        match self.scene {
+            Scene::Cubes => {
+                scene.extend(self.cubes.iter().map(|t| InstanceRenderData {
+                    mesh: self.cube_mesh,
+                    instance: InstanceDataWithNormalMatrix::from_basic(
+                        BasicInstanceData {
+                            transform: t.as_mat4(),
+                            ..Default::default()
+                        },
+                        view_proj.view,
+                    ),
+                    texture: None,
+                    pipeline: None,
+                }));
+            }
+            Scene::Model => {
+                for (mesh, mat) in &self.model_meshes {
+                    scene.push(InstanceRenderData {
+                        mesh: *mesh,
+                        instance: InstanceDataWithNormalMatrix::from_basic(
+                            BasicInstanceData {
+                                tint: mat.as_ref().map(|m| m.diffuse.into()).unwrap_or_default(),
+                                transform: Transform3D {
+                                    position: vec3(0.0, 0.0, 5.0),
+                                    // scale: vec3(0.02, 0.02, 0.02),
+                                    ..Default::default()
+                                }
+                                .as_mat4(),
+                                ..Default::default()
+                            },
+                            view_proj.view,
+                        ),
+                        texture: None,
+                        pipeline: None,
+                    });
+                }
+            }
+        }
+
+        // Populate G buffers
+        // self.geometry_pass
+        //     .run(&mut ctx.render_state, &ctx.display, &view_proj, &scene);
+
+        self.forward_pass
+            .depth_prepass(&mut ctx.render_state, &ctx.display, &view_proj, &scene);
+
+        let occlusion_map = if self.ssao_enabled {
+            self.occlusion_pass.run(
+                &mut ctx.render_state,
+                &ctx.display,
+                &view_proj,
+                self.forward_pass.depth_buffer_bind_group(),
+            )
+        } else {
+            ctx.render_state.default_texture()
+        };
+
+        self.shadow_mapping_pass.run(
+            &mut ctx.render_state,
+            &ctx.display,
+            &self.camera.frustum(),
+            &self.lights,
+            &scene,
+        );
+
+        // if ctx.input.debug.on {
+        for light in &self.lights {
+            let pos = light.kind.position();
             scene.push(InstanceRenderData {
-                mesh: *mesh,
+                mesh: self.cube_mesh,
                 instance: InstanceDataWithNormalMatrix::from_basic(
                     BasicInstanceData {
-                        tint: mat.as_ref().map(|m| m.diffuse.into()).unwrap_or_default(),
-                        transform: Transform3D {
-                            position: vec3(0.0, 3.0, -5.0),
-                            scale: vec3(0.02, 0.02, 0.02),
-                            ..Default::default()
-                        }
-                        .as_mat4(),
+                        transform: Mat4::from_scale_rotation_translation(
+                            vec3(0.05, 2.5, 0.05),
+                            Quat::from_rotation_arc(Vec3::Y, pos.normalize()),
+                            Vec3::ZERO,
+                        ) * Mat4::from_translation(Vec3::Y),
+                        tint: light.color.into(),
                         ..Default::default()
                     },
                     view_proj.view,
@@ -357,51 +453,38 @@ impl AppState for State {
                 texture: None,
                 pipeline: None,
             });
+            // scene.push(InstanceRenderData {
+            //     mesh: self.cube_mesh,
+            //     instance: InstanceDataWithNormalMatrix::from_basic(
+            //         BasicInstanceData {
+            //             transform: light.view.inverse() * Mat4::from_scale(vec3(30.0, 40.0, 20.0)),
+            //             tint: light.color.into(),
+            //             ..Default::default()
+            //         },
+            //         view_proj.view,
+            //     ),
+            //     texture: None,
+            //     pipeline: None,
+            // });
         }
-        // let scene = self
-        //     .cubes
-        //     .iter()
-        //     .map(|t| InstanceRenderData {
-        //         mesh: self.cube_mesh,
-        //         instance: InstanceDataWithNormalMatrix::from_basic(
-        //             BasicInstanceData {
-        //                 transform: t.as_mat4(),
-        //                 ..Default::default()
-        //             },
-        //             view_proj.view,
-        //         ),
-        //         texture: None,
-        //         pipeline: None,
-        //     })
-        //     .collect::<Vec<_>>();
+        // }
 
-        // Populate G buffers
-        self.geometry_pass
-            .run(&mut ctx.render_state, &ctx.display, &view_proj, &scene);
-
-        let occlusion_map = if self.ssao_enabled {
-            self.occlusion_pass.run(
-                &mut ctx.render_state,
-                &ctx.display,
-                &view_proj,
-                self.geometry_pass.bind_group().clone(),
-            )
-        } else {
-            ctx.render_state.default_texture()
-        };
-
-        // self.shadow_mapping_pass
-        //     .run(&mut ctx.render_state, &ctx.display, &self.lights, &scene);
-
-        // Deferred lighting pass
-        self.deferred_lighting_pass.run(
+        // self.deferred_lighting_pass.run(
+        //     &mut ctx.render_state,
+        //     &ctx.display,
+        //     RenderTarget::TextureRef(self.offscreen_framebuffer.color),
+        //     &view_proj,
+        //     self.geometry_pass.bind_group().clone(),
+        //     occlusion_map,
+        //     &self.lights,
+        // );
+        self.forward_pass.run(
             &mut ctx.render_state,
             &ctx.display,
-            RenderTarget::TextureRef(self.offscreen_framebuffer.color),
             &view_proj,
-            self.geometry_pass.bind_group().clone(),
+            &scene,
+            &self.shadow_mapping_pass.bind_group().deref(),
             occlusion_map,
-            &self.lights,
         );
 
         // Draw offscreen buffer, overlay with 2d elements
@@ -421,7 +504,8 @@ impl AppState for State {
                 },
                 |r| {
                     r.draw_quad(
-                        self.offscreen_framebuffer.color,
+                        // self.offscreen_framebuffer.color,
+                        self.forward_pass.color_target,
                         ScalingMode::Centered.view_matrix(
                             self.offscreen_framebuffer.size_pixels().as_vec2(),
                             ctx.display.size_pixels().as_vec2(),
@@ -448,6 +532,25 @@ impl AppState for State {
                             ..Default::default()
                         },
                         TextDisplayOptions::default(),
+                    );
+                    // r.draw_text(
+                    //     &self.default_font,
+                    //     format!("{:?}", self.camera.frustum().aabb()),
+                    //     Transform2D {
+                    //         position: vec2(20.0, 80.0),
+                    //         ..Default::default()
+                    //     },
+                    //     TextDisplayOptions::default(),
+                    // );
+                    r.draw_quad(
+                        // self.shadow_mapping_pass.shadow_map_debug_textures[0],
+                        occlusion_map,
+                        Transform2D {
+                            position: vec2(ctx.display.size_pixels().x as f32 - 266.0, 10.0),
+                            // position: ctx.display.size_pixels().as_vec2() - vec2(256.0, 256.0),
+                            scale: Vec2::splat(256.0),
+                            ..Default::default()
+                        },
                     );
                 },
             )
@@ -485,8 +588,55 @@ impl AppState for State {
                         .anchor(egui::Align2::LEFT_TOP, [0.0, 0.0])
                         .show(&ui, |ui| {
                             ui.spacing_mut().slider_width = 200.0;
+
+                            egui::ComboBox::from_label("Scene")
+                                .selected_text(format!("{:?}", self.scene))
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.scene, Scene::Cubes, "cubes");
+                                    ui.selectable_value(&mut self.scene, Scene::Model, "model");
+                                });
+
+                            ui.separator();
                             ui.label("Lights");
-                            self.deferred_lighting_pass.debug_ui(ui);
+                            let lights_uniform =
+                                self.shadow_mapping_pass.shadow_mapping_uniform.deref_mut();
+                            ui.label("Bias min");
+                            ui.add(egui::Slider::new(
+                                &mut self.shadow_mapping_pass.depth_bias_state.constant,
+                                -10..=10,
+                            ));
+                            ui.label("Bias factor");
+                            ui.add(egui::Slider::new(
+                                &mut self.shadow_mapping_pass.depth_bias_state.slope_scale,
+                                -1.0..=5.0,
+                            ));
+                            ui.label("Bias factor");
+                            ui.add(egui::Slider::new(
+                                &mut self.shadow_mapping_pass.depth_bias_state.clamp,
+                                -1.0..=5.0,
+                            ));
+                            ui.label("Blur factor");
+                            ui.add(egui::Slider::new(
+                                &mut lights_uniform.shadow_blur_half_kernel_size,
+                                0..=10,
+                            ));
+                            {
+                                let mut c = egui::Rgba::from_rgba_premultiplied(
+                                    lights_uniform.ambient_color.r,
+                                    lights_uniform.ambient_color.g,
+                                    lights_uniform.ambient_color.b,
+                                    lights_uniform.ambient_color.a,
+                                );
+                                ui.horizontal(|ui| {
+                                    ui.label("Ambient Light");
+                                    egui::color_picker::color_edit_button_rgba(
+                                        ui,
+                                        &mut c,
+                                        egui::color_picker::Alpha::OnlyBlend,
+                                    );
+                                });
+                                lights_uniform.ambient_color = c.into();
+                            }
 
                             for mut i in 0..(self.lights.len() as usize) {
                                 if i > 0 {
@@ -508,57 +658,31 @@ impl AppState for State {
                                     continue;
                                 }
                                 let light = &mut self.lights[i];
-                                ui.add(
-                                    egui::Slider::new(&mut light.position.x, -20.0..=20.0)
-                                        .text("x"),
-                                );
-                                ui.add(
-                                    egui::Slider::new(&mut light.position.y, -20.0..=20.0)
-                                        .text("y"),
-                                );
-                                ui.add(
-                                    egui::Slider::new(&mut light.position.z, -20.0..=20.0)
-                                        .text("z"),
-                                );
-                                let mut c = egui::Rgba::from_rgba_premultiplied(
-                                    light.color.x,
-                                    light.color.y,
-                                    light.color.z,
-                                    light.color.w,
-                                );
-                                ui.horizontal(|ui| {
-                                    ui.label("Color: ");
-                                    egui::color_picker::color_edit_button_rgba(
-                                        ui,
-                                        &mut c,
-                                        egui::color_picker::Alpha::OnlyBlend,
-                                    );
-                                });
-                                light.color = c.to_array().into();
-                                light.view =
-                                    Mat4::look_at_rh(light.position.xyz(), Vec3::ZERO, Vec3::X);
+                                light.debug_ui(ui);
                             }
-                            if self.lights.len() < lighting::MAX_LIGHTS {
-                                if ui.add(egui::Button::new("Add Light")).clicked() {
-                                    self.lights.push(Light {
-                                        position: vec4(0.0, 5.0, 0.0, 1.0),
-                                        color: Color::WHITE.into(),
-                                        proj: Mat4::orthographic_rh(
-                                            -20.0, 20.0, -20.0, 20.0, 1.0, 24.0,
-                                        ),
-                                        view: Mat4::look_at_rh(
-                                            vec3(0.0, 5.0, 0.0),
-                                            Vec3::ZERO,
-                                            Vec3::X,
-                                        ),
-                                    });
-                                }
-                            }
+                            // if self.lights.len() < lighting::MAX_LIGHTS {
+                            //     if ui.add(egui::Button::new("Add Light")).clicked() {
+                            //         self.lights.push(Light {
+                            //             position: vec4(0.0, 5.0, 0.0, 1.0),
+                            //             color: Color::WHITE.into(),
+                            //             proj: Mat4::orthographic_rh(
+                            //                 -20.0, 20.0, -20.0, 20.0, 0.01, 100.0,
+                            //             ),
+                            //             view: Mat4::look_at_rh(
+                            //                 vec3(0.0, 5.0, 0.0),
+                            //                 Vec3::ZERO,
+                            //                 Vec3::X,
+                            //             ),
+                            //         });
+                            //     }
+                            // }
 
                             ui.separator();
                             ui.label("SSAO");
                             ui.add(egui::Checkbox::new(&mut self.ssao_enabled, "enabled"));
-                            self.occlusion_pass.debug_ui(ui);
+                            if self.ssao_enabled {
+                                self.occlusion_pass.debug_ui(ui);
+                            }
                         });
                 },
             );

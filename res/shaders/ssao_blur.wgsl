@@ -76,9 +76,9 @@ struct BlurUniforms {
 var<uniform> blur_settings: BlurUniforms;
 
 @group(3) @binding(0)
-var g_position: texture_2d<f32>;
+var depth_buffer: texture_depth_2d;
 @group(3) @binding(1)
-var g_position_sampler: sampler;
+var depth_buffer_sampler: sampler;
 
 fn blur_weight(radius: f32, center_depth: f32, sample_depth: f32) -> f32 {
     let blur_sigma = (f32(blur_settings.half_kernel_size) + 1.0) * 0.5;
@@ -93,24 +93,24 @@ fn fs_main(in: VertexOutput) -> @location(0) f32 {
     let texelSize = vec2<f32>(1.0, 1.0) / vec2<f32>(textureDimensions(t_diffuse, 0));
 
     var result = textureSample(t_diffuse, s_diffuse, in.tex_coords).r;
-    var center_depth = textureSample(g_position, g_position_sampler, in.tex_coords).z;
+    var center_depth = textureSample(depth_buffer, depth_buffer_sampler, in.tex_coords);
     var weight = 1.0;
 
-    for (var i = 1; i <= blur_settings.half_kernel_size * 2; i++) {
+    for (var i = 1; i <= blur_settings.half_kernel_size; i++) {
         let r = f32(i);
         let uv = in.tex_coords + r * blur_settings.step;
         let sample_color = textureSample(t_diffuse, s_diffuse, uv).r;
-        let sample_depth = textureSample(g_position, g_position_sampler, in.tex_coords).z;
+        let sample_depth = textureSample(depth_buffer, depth_buffer_sampler, in.tex_coords);
         let w = blur_weight(r, center_depth, sample_depth);
         weight += w;
         result += sample_color * w;
     }
 
-    for (var i = 1; i <= blur_settings.half_kernel_size * 2; i++) {
+    for (var i = 1; i <= blur_settings.half_kernel_size; i++) {
         let r = f32(i);
         let uv = in.tex_coords - r * blur_settings.step;
         let sample_color = textureSample(t_diffuse, s_diffuse, uv).r;
-        let sample_depth = textureSample(g_position, g_position_sampler, uv).z;
+        let sample_depth = textureSample(depth_buffer, depth_buffer_sampler, in.tex_coords);
         let w = blur_weight(r, center_depth, sample_depth);
         weight += w;
         result += sample_color * w;

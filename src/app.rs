@@ -199,6 +199,7 @@ impl<A: AppState> ApplicationHandler for App<A> {
                     }
                     Err(wgpu::SurfaceError::Timeout) => log::warn!("Surface timeout"),
                 }
+                ctx.render_state.after_frame();
                 ctx.display.window().request_redraw();
             }
             _ => {}
