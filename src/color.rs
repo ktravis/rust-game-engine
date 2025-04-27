@@ -50,24 +50,15 @@ impl Color {
 }
 
 impl From<glam::Vec4> for Color {
-    fn from(glam::Vec4 { x, y, z, w }: glam::Vec4) -> Self {
-        Self {
-            r: x,
-            g: y,
-            b: z,
-            a: w,
-        }
+    fn from(v: glam::Vec4) -> Self {
+        let [r, g, b, a] = v.to_array();
+        Self { r, g, b, a }
     }
 }
 
 impl From<Color> for glam::Vec4 {
     fn from(Color { r, g, b, a }: Color) -> Self {
-        Self {
-            x: r,
-            y: g,
-            z: b,
-            w: a,
-        }
+        Self::from_array([r, g, b, a])
     }
 }
 

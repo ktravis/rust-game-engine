@@ -1,28 +1,19 @@
-use std::{ops::Deref, sync::Arc};
+use bytemuck::Zeroable;
+use glam::{vec3, Mat4, Quat, Vec3, Vec4, Vec4Swizzles};
 
-use glam::{vec3, vec4, Mat4, Quat, Vec3, Vec4, Vec4Swizzles};
-use wgpu::include_wgsl;
+use crate::{camera::Frustum, color::Color};
 
-use crate::{camera::Frustum, color::Color, geom::BasicVertexData};
+use super::{shaders, state::ViewProjectionUniforms, UniformData};
 
-use super::{
-    instance::InstanceRenderData, state::ViewProjectionUniforms, BasicInstanceData, Display,
-    PipelineRef, RenderState, RenderTarget, TextureRef, UniformBindGroup, UniformData,
-};
+pub type LightRaw = shaders::forward::types::Light;
 
-pub const MAX_LIGHTS: usize = 8;
-
-#[derive(Copy, Clone, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
-#[repr(C)]
-struct LightRaw {
-    direction: Vec3, // TODO: pack this better?
-    kind: u32,       // 0 = directional, 1 = spot, 2 = point
-    color: Vec4,
-    view_proj: Mat4,
-    position: Vec3,
-    radius: f32,
-    reach: f32,
-    _pad: [f32; 3],
+impl Default for LightRaw {
+    fn default() -> Self {
+        Self {
+            view_proj: Mat4::IDENTITY,
+            ..Zeroable::zeroed()
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -94,8 +85,8 @@ pub struct Light {
 
 impl Light {
     pub fn view_proj_uniforms(&self, view_frustum: &Frustum) -> ViewProjectionUniforms {
-        let pos = self.kind.position();
-        let view = self.kind.view_matrix_from_position(pos);
+        let camera_pos = self.kind.position();
+        let view = self.kind.view_matrix_from_position(camera_pos);
         let inverse_view = view.inverse();
 
         let projection = match self.kind {
@@ -118,8 +109,9 @@ impl Light {
         ViewProjectionUniforms {
             view,
             projection,
-            pos,
+            camera_pos,
             inverse_view,
+            ..Default::default()
         }
     }
 
@@ -186,9 +178,7 @@ impl Light {
                     view_proj: projection * view,
                     position,
                     direction: -position.normalize(),
-                    radius: 0.0,
-                    reach: 0.0,
-                    _pad: [0.0, 0.0, 0.0],
+                    ..Default::default()
                 }
             }
             LightKind::Spot {
@@ -207,7 +197,7 @@ impl Light {
                     direction: direction.normalize(),
                     radius: (fov_radians / 2.0).cos(),
                     reach,
-                    _pad: [0.0, 0.0, 0.0],
+                    ..Default::default()
                 }
             }
         }
@@ -223,16 +213,7 @@ impl From<LightKind> for Light {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
-#[repr(C)]
-pub struct LightingUniformsRaw {
-    items: [LightRaw; MAX_LIGHTS],
-    count: u32,
-    shadow_bias_minimum: f32,
-    shadow_bias_factor: f32,
-    shadow_blur_half_kernel_size: i32,
-    ambient_color: Vec4,
-}
+pub type LightingUniformsRaw = shaders::forward::types::LightsUniform;
 
 #[derive(Clone, Debug)]
 pub struct LightsUniform {
@@ -275,87 +256,5 @@ impl UniformData for LightsUniform {
             shadow_blur_half_kernel_size: self.shadow_blur_half_kernel_size,
             ambient_color: self.ambient_color.into(),
         }
-    }
-}
-
-pub struct LightingPass {
-    pipeline: PipelineRef<BasicVertexData, BasicInstanceData>,
-    lights_uniform: UniformBindGroup<LightsUniform>,
-}
-
-impl LightingPass {
-    pub fn new(
-        state: &mut RenderState,
-        display: &Display,
-        geometry_pass_bgl: &wgpu::BindGroupLayout,
-    ) -> Self {
-        let (lights_uniform, uniform_bgl) =
-            state.create_uniform_bind_group(display.device(), LightsUniform::default());
-        let pipeline = state
-            .pipeline_builder()
-            .with_label("Lighting Render Pipeline")
-            .with_extra_bind_group_layouts(vec![geometry_pass_bgl, &uniform_bgl])
-            .with_depth_stencil_state(None)
-            .build(
-                display.device(),
-                &display
-                    .device()
-                    .create_shader_module(include_wgsl!("../../res/shaders/lighting.wgsl")),
-            );
-        Self {
-            pipeline,
-            lights_uniform,
-        }
-    }
-
-    // pub fn bind_group(&self) -> &Arc<wgpu::BindGroup> {
-    //     &self.bind_group
-    // }
-    //
-    // pub fn bind_group_layout(&self) -> &wgpu::BindGroupLayout {
-    //     &self.bind_group_layout
-    // }
-    //
-    // pub fn shadow_map_texture(&self) -> &Texture {
-    //     &self.shadow_map
-    // }
-
-    pub fn run(
-        &mut self,
-        state: &mut RenderState,
-        display: &Display,
-        destination: RenderTarget,
-        view_projection: &ViewProjectionUniforms,
-        geometry_pass_bg: Arc<wgpu::BindGroup>,
-        occlusion_map: TextureRef,
-        lights: &[Light],
-    ) {
-        self.lights_uniform.update(
-            display.queue(),
-            LightsUniform {
-                lights: lights.to_vec(),
-                ..Default::default()
-            },
-        );
-        let quad = state.quad_mesh();
-        state
-            .render_pass(
-                display,
-                "Lighting Pass",
-                &[destination],
-                None,
-                view_projection,
-                |r| {
-                    r.set_bind_group(3, geometry_pass_bg.deref(), &[]);
-                    r.set_bind_group(4, self.lights_uniform.bind_group().deref(), &[]);
-                    r.draw_instance(&InstanceRenderData {
-                        mesh: quad,
-                        instance: Default::default(),
-                        texture: Some(occlusion_map),
-                        pipeline: Some(self.pipeline),
-                    });
-                },
-            )
-            .submit();
     }
 }

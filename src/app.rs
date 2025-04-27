@@ -1,5 +1,3 @@
-use std::borrow::Cow;
-
 use wgpu::include_wgsl;
 use winit::{
     application::ApplicationHandler,

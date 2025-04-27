@@ -211,12 +211,17 @@ impl ControlSetData {
 
 fn titlecase_ident(ident: &Ident) -> Ident {
     let s = ident.to_string();
-    let mut chars = s.chars();
-    let name = chars
-        .next()
-        .unwrap()
-        .to_uppercase()
-        .chain(chars)
+    let name = s
+        .split("_")
+        .map(|s| {
+            let mut chars = s.chars();
+            chars
+                .next()
+                .unwrap()
+                .to_uppercase()
+                .chain(chars)
+                .collect::<String>()
+        })
         .collect::<String>();
     Ident::new(&name, Span::call_site())
 }

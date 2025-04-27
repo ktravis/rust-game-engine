@@ -1,4 +1,4 @@
-use crate::renderer::VertexLayout;
+use crate::renderer::{shaders, VertexLayout};
 use glam::{vec2, Vec2};
 use wgpu::{vertex_attr_array, VertexAttribute, VertexBufferLayout};
 
@@ -33,30 +33,22 @@ impl BasicVertexData {
 
 impl VertexData for BasicVertexData {}
 
-#[repr(C)]
-#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct ModelVertexData {
-    pub pos: [f32; 4],
-    pub uv: [f32; 2],
-    pub normal: [f32; 3],
-}
+pub type ModelVertexData = shaders::global::types::ModelVertexData;
 
-impl VertexLayout for ModelVertexData {
-    fn vertex_layout() -> VertexBufferLayout<'static> {
-        VertexBufferLayout {
-            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &Self::ATTRIBUTES,
+impl Default for ModelVertexData {
+    fn default() -> Self {
+        Self {
+            position: Default::default(),
+            tex_coords: Default::default(),
+            normal: Default::default(),
         }
     }
 }
 
-impl ModelVertexData {
-    const ATTRIBUTES: [VertexAttribute; 3] = vertex_attr_array![
-        0 => Float32x4,
-        1 => Float32x2,
-        2 => Float32x3,
-    ];
+impl VertexLayout for ModelVertexData {
+    fn vertex_layout() -> VertexBufferLayout<'static> {
+        Self::vertex_buffer_layout()
+    }
 }
 
 impl VertexData for ModelVertexData {}
@@ -220,8 +212,21 @@ pub mod quad {
     pub const INDICES: &[u16] = &[0, 1, 2, 0, 2, 3];
 }
 
+#[cfg(test)]
+mod tests {
+    use crate::geom::ModelVertexData;
+
+    #[test]
+    fn test_align() {
+        dbg!(std::mem::offset_of!(ModelVertexData, tex_coords));
+        dbg!(std::mem::offset_of!(ModelVertexData, normal));
+        dbg!(std::mem::size_of::<ModelVertexData>());
+        assert!(false);
+    }
+}
+
 pub mod cube {
-    use glam::Vec3;
+    use glam::{vec3, vec4, Vec3};
     const FORWARD: [f32; 3] = Vec3::NEG_Z.to_array();
     const BACK: [f32; 3] = Vec3::Z.to_array();
     const LEFT: [f32; 3] = Vec3::NEG_X.to_array();
@@ -236,11 +241,16 @@ pub mod cube {
 
     use super::*;
 
-    const fn v(pos: [f32; 3], uv: [f32; 2], normal: [f32; 3]) -> ModelVertexData {
+    const fn v([x, y, z]: [f32; 3], [s, t]: [f32; 2], [nx, ny, nz]: [f32; 3]) -> ModelVertexData {
         ModelVertexData {
-            pos: [pos[0], pos[1], pos[2], 1.0],
-            uv,
-            normal,
+            position: vec4(x, y, z, 1.0),
+            tex_coords: vec2(s, t),
+            normal: vec3(nx, ny, nz),
+            // position: vec4(x, y, z, 1.0).into(),
+            // tex_coords: vec2(s, t).into(),
+            // normal: vec3(nx, ny, nz).into(),
+            // _pad: [0; 4],
+            // _pad_tex_coords: [0; 8],
         }
     }
 

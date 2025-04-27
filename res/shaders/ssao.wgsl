@@ -1,18 +1,12 @@
-// Vertex shader
+#import global.wgsl::{GlobalUniforms, ViewProjectionUniforms}
 
-struct GlobalUniforms {
-    time: f32,
-}
+@group(0) @binding(0)
+var t_diffuse: texture_2d<f32>;
+@group(0) @binding(1)
+var s_diffuse: sampler;
 
 @group(1) @binding(0)
 var<uniform> global_uniforms: GlobalUniforms;
-
-struct ViewProjectionUniforms {
-    view: mat4x4<f32>,
-    projection: mat4x4<f32>,
-    camera_pos: vec3<f32>,
-    inverse_view: mat4x4<f32>,
-}
 
 @group(2) @binding(0)
 var<uniform> view_proj_uniforms: ViewProjectionUniforms;
@@ -60,13 +54,6 @@ fn vs_main(
     return out;
 }
 
-// Fragment shader
-
-@group(0) @binding(0)
-var t_diffuse: texture_2d<f32>;
-@group(0) @binding(1)
-var s_diffuse: sampler;
-
 @group(3) @binding(0)
 var g_position: texture_2d<f32>;
 @group(3) @binding(1)
@@ -80,6 +67,7 @@ var g_albedo_spec: texture_2d<f32>;
 @group(3) @binding(5)
 var g_albedo_spec_sampler: sampler;
 
+@export
 struct Kernel {
     items: array<vec4<f32>, 64>,
     count: u32,

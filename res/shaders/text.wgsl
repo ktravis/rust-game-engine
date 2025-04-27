@@ -1,4 +1,7 @@
-// Vertex shader
+@group(0) @binding(0)
+var t_diffuse: texture_2d<f32>;
+@group(0) @binding(1)
+var s_diffuse: sampler;
 
 struct GlobalUniforms {
     time: f32,
@@ -57,13 +60,6 @@ fn vs_main(
     out.tint_color = instance.tint;
     return out;
 }
-
-// Fragment shader
-
-@group(0) @binding(0)
-var t_diffuse: texture_2d<f32>;
-@group(0) @binding(1)
-var s_diffuse: sampler;
 
 fn median(r: f32, g: f32, b: f32) -> f32 {
     return max(min(r, g), min(max(r, g), b));

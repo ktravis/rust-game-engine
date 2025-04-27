@@ -1,11 +1,12 @@
-use std::ops::{Deref, DerefMut};
+use std::ops::DerefMut;
 
-use glam::{vec2, vec3, vec4, Mat4, Quat, Vec2, Vec3, Vec4Swizzles};
+use bytemuck::Zeroable;
+use glam::{vec2, vec3, vec4, Mat4, Quat, Vec2, Vec3};
 use itertools::Itertools;
 use rust_game_engine::app::{App, AppState, Context};
 use rust_game_engine::renderer::forward::ForwardGeometryPass;
 use rust_game_engine::renderer::geometry::GeometryPass;
-use rust_game_engine::renderer::lighting::{Light, LightKind, LightingPass};
+use rust_game_engine::renderer::lighting::{Light, LightKind};
 use rust_game_engine::renderer::model::LoadModel;
 use rust_game_engine::renderer::shadow_mapping::ShadowMappingPass;
 use rust_game_engine::renderer::ssao_from_depth::SSAOPass;
@@ -17,7 +18,7 @@ use winit::event_loop::EventLoop;
 use controlset_derive::ControlSet;
 use rust_game_engine::assets::AssetManager;
 use rust_game_engine::camera::Camera;
-use rust_game_engine::geom::{BasicVertexData, ModelVertexData, Point, Rect};
+use rust_game_engine::geom::{BasicVertexData, ModelVertexData, Point};
 use rust_game_engine::input::{Axis, Button, Key, Toggle};
 use rust_game_engine::renderer::{
     instance::InstanceRenderData,
@@ -194,21 +195,16 @@ impl AppState for State {
             &mut ctx.render_state,
             &ctx.display,
             fb_size,
-            shadow_mapping_pass.bind_group_layout(),
+            &shadow_mapping_pass.shadow_map_texture(),
         );
         let geometry_pass = GeometryPass::new(&mut ctx.render_state, &ctx.display, fb_size);
         let occlusion_pass = SSAOPass::new(
             &mut ctx.render_state,
             &ctx.display,
-            forward_pass.depth_buffer_bind_group_layout(),
+            fb_size,
+            &forward_pass.depth_target,
             &camera,
         );
-
-        // let deferred_lighting_pass = LightingPass::new(
-        //     &mut ctx.render_state,
-        //     &ctx.display,
-        //     geometry_pass.bind_group_layout(),
-        // );
 
         let mut cubes = vec![];
         for x in 0..32 {
@@ -311,8 +307,8 @@ impl AppState for State {
             ctx.display.queue(),
             GlobalUniforms {
                 time: ctx.frame_timing.time(),
-                _pad: 0.0,
-                screen_size: ctx.display.size_pixels().as_vec2(),
+                screen_size: ctx.display.size_pixels().as_vec2() / RENDER_SCALE,
+                ..Zeroable::zeroed()
             },
         );
         let view_proj = ViewProjectionUniforms::for_camera(&self.camera);
@@ -415,21 +411,23 @@ impl AppState for State {
             .depth_prepass(&mut ctx.render_state, &ctx.display, &view_proj, &scene);
 
         let occlusion_map = if self.ssao_enabled {
-            self.occlusion_pass.run(
-                &mut ctx.render_state,
-                &ctx.display,
-                &view_proj,
-                self.forward_pass.depth_buffer_bind_group(),
-            )
+            self.occlusion_pass
+                .run(&mut ctx.render_state, &ctx.display, &view_proj)
         } else {
             ctx.render_state.default_texture()
         };
 
+        self.forward_pass
+            .lights_uniform
+            .update_with(ctx.display.queue(), |u| {
+                u.lights = self.lights.clone();
+                u.view_frustum = self.camera.frustum();
+            });
+
         self.shadow_mapping_pass.run(
             &mut ctx.render_state,
             &ctx.display,
-            &self.camera.frustum(),
-            &self.lights,
+            &self.forward_pass.lights_uniform,
             &scene,
         );
 
@@ -469,21 +467,11 @@ impl AppState for State {
         }
         // }
 
-        // self.deferred_lighting_pass.run(
-        //     &mut ctx.render_state,
-        //     &ctx.display,
-        //     RenderTarget::TextureRef(self.offscreen_framebuffer.color),
-        //     &view_proj,
-        //     self.geometry_pass.bind_group().clone(),
-        //     occlusion_map,
-        //     &self.lights,
-        // );
         self.forward_pass.run(
             &mut ctx.render_state,
             &ctx.display,
             &view_proj,
             &scene,
-            &self.shadow_mapping_pass.bind_group().deref(),
             occlusion_map,
         );
 
@@ -598,8 +586,7 @@ impl AppState for State {
 
                             ui.separator();
                             ui.label("Lights");
-                            let lights_uniform =
-                                self.shadow_mapping_pass.shadow_mapping_uniform.deref_mut();
+                            let lights_uniform = self.forward_pass.lights_uniform.deref_mut();
                             ui.label("Bias min");
                             ui.add(egui::Slider::new(
                                 &mut self.shadow_mapping_pass.depth_bias_state.constant,

@@ -66,9 +66,10 @@ impl LoadModel for wgpu::Device {
                         }),
                 )
                 .map(|((pos, uv), normal)| ModelVertexData {
-                    pos: pos.into(),
-                    uv: uv.into(),
+                    position: pos.into(),
+                    tex_coords: uv.into(),
                     normal: normal.into(),
+                    ..Default::default()
                 })
                 .collect::<Vec<_>>();
             let indices = raw_mesh

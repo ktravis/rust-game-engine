@@ -5,7 +5,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
+use bytemuck::Zeroable;
+use glam::{Mat4, Quat, Vec4};
 use slotmap::SlotMap;
 use wgpu::BindGroupLayout;
 
@@ -13,6 +14,7 @@ use super::{
     display::Display,
     instance::{InstanceRenderData, InstanceStorage},
     mesh::{LoadMesh, Mesh, RawMeshRef, UntypedMesh},
+    shaders,
     text::{RenderableFont, TextDisplayOptions},
     texture::{Texture, TextureBuilder},
     BasicInstanceData, BindGroup, Bindable, InstanceData, MeshRef, OffscreenFramebuffer,
@@ -28,22 +30,9 @@ use crate::{
 
 pub type BoundTexture = BindGroup<Texture>;
 
-#[repr(C)]
-#[derive(Default, Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct GlobalUniforms {
-    pub time: f32,
-    pub _pad: f32,
-    pub screen_size: Vec2,
-}
+pub type GlobalUniforms = shaders::global::types::GlobalUniforms;
 
-#[repr(C)]
-#[derive(Default, Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct ViewProjectionUniforms {
-    pub view: Mat4,
-    pub projection: Mat4,
-    pub pos: Vec3,
-    pub inverse_view: Mat4,
-}
+pub type ViewProjectionUniforms = shaders::global::types::ViewProjectionUniforms;
 
 impl ViewProjectionUniforms {
     pub fn for_camera(camera: &Camera) -> Self {
@@ -58,7 +47,20 @@ impl ViewProjectionUniforms {
             view,
             inverse_view: view.inverse(),
             projection: camera.perspective_matrix(),
-            pos: camera.position(),
+            camera_pos: camera.position(),
+            ..Default::default()
+        }
+    }
+}
+
+impl Default for ViewProjectionUniforms {
+    fn default() -> Self {
+        Self {
+            view: Default::default(),
+            projection: Default::default(),
+            camera_pos: Default::default(),
+            inverse_view: Default::default(),
+            ..Zeroable::zeroed()
         }
     }
 }
@@ -248,7 +250,7 @@ impl RenderState {
         let global_uniforms = UniformBindGroup::new(
             device,
             &BindingType::Uniform.create_layout(device, "global uniform"),
-            UniformBuffer::new(device, Default::default()),
+            UniformBuffer::new(device, Zeroable::zeroed()),
         );
         let mesh_manager = SlotMap::with_key();
         let instance_storage = InstanceStorage::new(display, 1024);

@@ -1,24 +1,12 @@
-// Vertex shader
+#import global.wgsl::{GlobalUniforms, ViewProjectionUniforms};
 
 @group(0) @binding(0)
 var t_diffuse: texture_2d<f32>;
 @group(0) @binding(1)
 var s_diffuse: sampler;
 
-struct GlobalUniforms {
-    time: f32,
-    screen_size: vec2<f32>,
-}
-
 @group(1) @binding(0)
 var<uniform> global_uniforms: GlobalUniforms;
-
-struct ViewProjectionUniforms {
-    view: mat4x4<f32>,
-    projection: mat4x4<f32>,
-    camera_pos: vec3<f32>,
-    inverse_view: mat4x4<f32>,
-}
 
 @group(2) @binding(0)
 var<uniform> view_proj_uniforms: ViewProjectionUniforms;
@@ -28,9 +16,11 @@ var depth_buffer: texture_depth_2d;
 @group(3) @binding(1)
 var depth_buffer_sampler: sampler;
 
+const KERNEL_SIZE: u32 = 64;
+
+@export
 struct Kernel {
-    items: array<vec4<f32>, 64>,
-    count: u32,
+    items: array<vec4<f32>, KERNEL_SIZE>,
     radius: f32,
     bias: f32,
     noise_texture_scale: vec2<f32>,
@@ -117,8 +107,6 @@ fn normalFromDepth(center: vec3<f32>, coords: vec2<f32>) -> vec3<f32> {
 }
 
 
-// Fragment shader
-
 @group(5) @binding(0)
 var ssao_noise: texture_2d<f32>;
 @group(5) @binding(1)
@@ -136,7 +124,7 @@ fn fs_main(in: VertexOutput) -> @location(0) f32 {
     let TBN = mat3x3<f32>(tangent, bitangent, view_space_normal);
 
     var occlusion = 0.0;
-    for (var i = 0; i < i32(kernel.count); i += 1) {
+    for (var i = 0; i < i32(KERNEL_SIZE); i += 1) {
         var sample = view_pos.xyz + kernel.radius * TBN * kernel.items[i].xyz;
         var offset = view_proj_uniforms.projection * vec4<f32>(sample, 1.0);
         // perspective scale for projected offset
@@ -155,7 +143,7 @@ fn fs_main(in: VertexOutput) -> @location(0) f32 {
             occlusion += range_check * range_check;
         }
     }
-    occlusion = 1.0 - (occlusion / f32(kernel.count));
+    occlusion = 1.0 - (occlusion / f32(KERNEL_SIZE));
     occlusion = pow(occlusion, 2.0);
     return occlusion;
 }

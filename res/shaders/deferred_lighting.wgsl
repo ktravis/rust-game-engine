@@ -1,4 +1,8 @@
-// Vertex shader
+// TODO: remove
+@group(0) @binding(0)
+var t_diffuse: texture_2d<f32>;
+@group(0) @binding(1)
+var s_diffuse: sampler;
 
 struct GlobalUniforms {
     time: f32,
@@ -60,14 +64,6 @@ fn vs_main(
     return out;
 }
 
-// Fragment shader
-
-// TODO: remove
-@group(0) @binding(0)
-var t_diffuse: texture_2d<f32>;
-@group(0) @binding(1)
-var s_diffuse: sampler;
-
 @group(3) @binding(0)
 var g_position: texture_2d<f32>;
 @group(3) @binding(1)
@@ -81,12 +77,14 @@ var g_albedo_spec: texture_2d<f32>;
 @group(3) @binding(5)
 var g_albedo_spec_sampler: sampler;
 
+@export
 struct Light {
     position: vec4<f32>,
     color: vec4<f32>,
     view_proj: mat4x4<f32>,
 }
 
+@export
 struct LightsUniform {
     items: array<Light, 8>,
     count: u32,
@@ -167,6 +165,3 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // return vec4(ao * (AMBIENT_LIGHT_FACTOR + diffuse) * albedo_spec.xyz + specular, albedo_spec.w);
     return vec4(albedo_spec.xyz * total_light.rgb, albedo_spec.w);
 }
-
-
-

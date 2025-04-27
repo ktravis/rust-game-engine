@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use wgpu::{include_wgsl, TextureUsages};
+use wgpu::TextureUsages;
 
 use crate::geom::{ModelVertexData, Point};
 
 use super::{
-    instance::InstanceRenderData, state::ViewProjectionUniforms, Display,
+    instance::InstanceRenderData, shaders, state::ViewProjectionUniforms, Display,
     InstanceDataWithNormalMatrix, PipelineBuilder, PipelineRef, RenderState, RenderTarget, Texture,
     TextureBuilder, TextureRef,
 };
@@ -74,7 +74,7 @@ impl GeometryPass {
                 display.device(),
                 &display
                     .device()
-                    .create_shader_module(include_wgsl!("../../res/shaders/geometry.wgsl")),
+                    .create_shader_module(shaders::geometry::DESCRIPTOR),
             );
         let bind_group_layout =
             display
@@ -133,22 +133,22 @@ impl GeometryPass {
                             count: None,
                         },
                         // g_depth
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 6,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                multisampled: false,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                sample_type: wgpu::TextureSampleType::Depth,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 7,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-                            count: None,
-                        },
+                        // wgpu::BindGroupLayoutEntry {
+                        //     binding: 6,
+                        //     visibility: wgpu::ShaderStages::FRAGMENT,
+                        //     ty: wgpu::BindingType::Texture {
+                        //         multisampled: false,
+                        //         view_dimension: wgpu::TextureViewDimension::D2,
+                        //         sample_type: wgpu::TextureSampleType::Depth,
+                        //     },
+                        //     count: None,
+                        // },
+                        // wgpu::BindGroupLayoutEntry {
+                        //     binding: 7,
+                        //     visibility: wgpu::ShaderStages::FRAGMENT,
+                        //     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                        //     count: None,
+                        // },
                     ],
                     label: Some("geometry bind group layout"),
                 });
@@ -182,14 +182,14 @@ impl GeometryPass {
                         binding: 5,
                         resource: wgpu::BindingResource::Sampler(&g_albedo_specular.sampler),
                     },
-                    wgpu::BindGroupEntry {
-                        binding: 6,
-                        resource: wgpu::BindingResource::TextureView(&depth_target.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 7,
-                        resource: wgpu::BindingResource::Sampler(&depth_target.sampler),
-                    },
+                    // wgpu::BindGroupEntry {
+                    //     binding: 6,
+                    //     resource: wgpu::BindingResource::TextureView(&depth_target.view),
+                    // },
+                    // wgpu::BindGroupEntry {
+                    //     binding: 7,
+                    //     resource: wgpu::BindingResource::Sampler(&depth_target.sampler),
+                    // },
                 ],
             })
             .into();

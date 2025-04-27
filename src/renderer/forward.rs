@@ -1,15 +1,17 @@
 use std::ops::Deref;
 
-use wgpu::{include_wgsl, TextureUsages};
+use wgpu::TextureUsages;
 
 use crate::geom::{ModelVertexData, Point};
 
 use super::{
     instance::InstanceRenderData,
+    lighting::LightsUniform,
+    shaders::{self, forward as shader},
     ssao_from_depth,
-    state::{BoundTexture, ViewProjectionUniforms},
+    state::{BindingType, ViewProjectionUniforms},
     Display, InstanceDataWithNormalMatrix, PipelineBuilder, PipelineRef, RenderState, RenderTarget,
-    Texture, TextureBuilder, TextureRef, UniformBindGroup,
+    Texture, TextureBuilder, TextureRef, UniformBuffer,
 };
 
 pub struct ForwardGeometryPass {
@@ -17,8 +19,8 @@ pub struct ForwardGeometryPass {
     depth_only_pipeline: PipelineRef<ModelVertexData, InstanceDataWithNormalMatrix>,
     pub color_target: TextureRef,
     pub depth_target: Texture,
-    depth_target_bind_group: wgpu::BindGroup,
-    depth_target_bgl: wgpu::BindGroupLayout,
+    pub lights_uniform: UniformBuffer<LightsUniform>,
+    lights_bind_group: wgpu::BindGroup,
 }
 
 impl ForwardGeometryPass {
@@ -26,7 +28,7 @@ impl ForwardGeometryPass {
         state: &mut RenderState,
         display: &Display,
         size: Point<u32>,
-        lights_uniform_bgl: &wgpu::BindGroupLayout,
+        shadow_map: &Texture,
     ) -> Self {
         let color_target = TextureBuilder::render_target()
             .with_label("color_target")
@@ -56,14 +58,38 @@ impl ForwardGeometryPass {
                 display.device(),
                 &display
                     .device()
-                    .create_shader_module(include_wgsl!("../../res/shaders/depth_only.wgsl")),
+                    .create_shader_module(shaders::depth_only::DESCRIPTOR.clone()),
             );
         let texture_bgl = state.bind_group_layout(
             display.device(),
-            super::state::BindingType::Texture {
+            BindingType::Texture {
                 format: ssao_from_depth::SSAOPass::OCCLUSION_MAP_FORMAT,
             },
         );
+        let lights_uniform_bgl = display
+            .device()
+            .create_bind_group_layout(&shader::globals::group3::layout());
+        let lights_uniform = UniformBuffer::new(display.device(), LightsUniform::default());
+        let lights_bind_group = display
+            .device()
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("lighting bind group"),
+                layout: &lights_uniform_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: lights_uniform.buffer().as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&shadow_map.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&shadow_map.sampler),
+                    },
+                ],
+            });
         let pipeline = state
             .pipeline_builder()
             .with_label("Forward Rendering")
@@ -78,66 +104,17 @@ impl ForwardGeometryPass {
                 display.device(),
                 &display
                     .device()
-                    .create_shader_module(include_wgsl!("../../res/shaders/forward.wgsl")),
+                    .create_shader_module(shader::DESCRIPTOR.clone()),
             );
         let color_target = state.load_texture(display, color_target);
-        let depth_target_bgl =
-            display
-                .device()
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("forward pass depth target bgl"),
-                    entries: &[
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                multisampled: false,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                sample_type: wgpu::TextureSampleType::Depth,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                            count: None,
-                        },
-                    ],
-                });
-        let depth_target_bind_group =
-            display
-                .device()
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("forward pass depth target"),
-                    layout: &depth_target_bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&depth_target.view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&depth_target.sampler),
-                        },
-                    ],
-                });
         Self {
             pipeline,
             depth_only_pipeline,
             color_target,
             depth_target,
-            depth_target_bgl,
-            depth_target_bind_group,
+            lights_uniform,
+            lights_bind_group,
         }
-    }
-
-    pub fn depth_buffer_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
-        &self.depth_target_bgl
-    }
-
-    pub fn depth_buffer_bind_group(&self) -> &wgpu::BindGroup {
-        &self.depth_target_bind_group
     }
 
     pub fn depth_prepass(
@@ -172,7 +149,6 @@ impl ForwardGeometryPass {
         display: &Display,
         view_projection: &ViewProjectionUniforms,
         scene: &[InstanceRenderData<ModelVertexData, InstanceDataWithNormalMatrix>],
-        lights_uniform_bg: &wgpu::BindGroup,
         occlusion_map: TextureRef,
     ) {
         let t = state.get_texture(occlusion_map).bind_group().clone();
@@ -184,8 +160,9 @@ impl ForwardGeometryPass {
                 Some(RenderTarget::TextureView(&self.depth_target.view)),
                 view_projection,
                 |r| {
-                    r.set_bind_group(3, lights_uniform_bg, &[]);
-                    r.set_bind_group(4, t.deref(), &[]);
+                    use shader::globals::*;
+                    r.set_bind_group(lights::GROUP, &self.lights_bind_group, &[]);
+                    r.set_bind_group(occlusion_map::GROUP, t.deref(), &[]);
                     for render_data in scene {
                         r.draw_instance(&InstanceRenderData {
                             pipeline: Some(self.pipeline),

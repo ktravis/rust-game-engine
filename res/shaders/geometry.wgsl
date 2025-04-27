@@ -1,18 +1,12 @@
-// Vertex shader
+#import global.wgsl::{GlobalUniforms, ViewProjectionUniforms}
 
-struct GlobalUniforms {
-    time: f32,
-}
+@group(0) @binding(0)
+var t_diffuse: texture_2d<f32>;
+@group(0) @binding(1)
+var s_diffuse: sampler;
 
 @group(1) @binding(0)
 var<uniform> global_uniforms: GlobalUniforms;
-
-struct ViewProjectionUniforms {
-    view: mat4x4<f32>,
-    projection: mat4x4<f32>,
-    camera_pos: vec3<f32>,
-    inverse_view: mat4x4<f32>,
-}
 
 @group(2) @binding(0)
 var<uniform> view_proj_uniforms: ViewProjectionUniforms;
@@ -72,13 +66,6 @@ fn vs_main(
     out.tint_color = instance.tint;
     return out;
 }
-
-// Fragment shader
-
-@group(0) @binding(0)
-var t_diffuse: texture_2d<f32>;
-@group(0) @binding(1)
-var s_diffuse: sampler;
 
 struct FragmentOutput {
     @location(0)

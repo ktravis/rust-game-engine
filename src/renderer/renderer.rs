@@ -1,6 +1,6 @@
 use super::instance::InstanceRenderData;
 use super::state::BindingType;
-use super::{MeshRef, PipelineRef, TextureRef};
+use super::{shaders, MeshRef, PipelineRef, TextureRef};
 use crate::{color::*, geom::*, transform::*};
 use glam::Mat4;
 use std::fmt::{Debug, Formatter};
@@ -100,6 +100,8 @@ impl Default for BasicInstanceData {
         }
     }
 }
+
+// pub type InstanceDataWithNormalMatrix = shaders::inputs::types::InstanceInput;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]

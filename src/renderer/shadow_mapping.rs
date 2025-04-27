@@ -1,19 +1,9 @@
-use std::sync::Arc;
-
-use glam::{Mat4, Vec3, Vec4, Vec4Swizzles};
-use wgpu::include_wgsl;
-
-use crate::{
-    camera::Frustum,
-    geom::{ModelVertexData, Point},
-};
+use crate::geom::{ModelVertexData, Point};
 
 use super::{
-    instance::InstanceRenderData,
-    lighting::{Light, LightsUniform},
-    state::ViewProjectionUniforms,
-    Display, InstanceDataWithNormalMatrix, PipelineRef, RenderState, RenderTarget, Texture,
-    TextureBuilder, TextureRef, UniformBuffer, UniformData,
+    instance::InstanceRenderData, lighting::LightsUniform, shaders, Display,
+    InstanceDataWithNormalMatrix, PipelineRef, RenderState, RenderTarget, Texture, TextureBuilder,
+    TextureRef,
 };
 
 pub const MAX_LIGHTS: usize = 8;
@@ -21,52 +11,14 @@ pub const MAX_LIGHTS: usize = 8;
 pub struct ShadowMappingPass {
     shadow_map_pipeline: PipelineRef<ModelVertexData, InstanceDataWithNormalMatrix>,
     shadow_map: Texture,
-    bind_group: Arc<wgpu::BindGroup>,
-    bind_group_layout: wgpu::BindGroupLayout,
     shadow_map_target_views: [wgpu::TextureView; MAX_LIGHTS],
     pub shadow_map_debug_textures: [TextureRef; MAX_LIGHTS],
-    pub shadow_mapping_uniform: UniformBuffer<LightsUniform>,
     pub depth_bias_state: wgpu::DepthBiasState,
     last_depth_bias_state: wgpu::DepthBiasState,
 }
 
 impl ShadowMappingPass {
     pub fn new(state: &mut RenderState, display: &Display) -> Self {
-        let shadow_mapping_uniform = UniformBuffer::new(display.device(), LightsUniform::default());
-        let bind_group_layout =
-            display
-                .device()
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    entries: &[
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Uniform,
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                multisampled: false,
-                                view_dimension: wgpu::TextureViewDimension::D2Array,
-                                sample_type: wgpu::TextureSampleType::Depth,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 2,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-                            count: None,
-                        },
-                    ],
-                    label: Some("lighting bind group layout"),
-                });
         let shadow_map = TextureBuilder::depth()
             .with_layers(MAX_LIGHTS as u32)
             .with_address_mode(wgpu::AddressMode::ClampToBorder)
@@ -76,27 +28,6 @@ impl ShadowMappingPass {
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             )
             .build(display.device(), Point::new(2048, 2048));
-        let bind_group = display
-            .device()
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("lighting bind group"),
-                layout: &bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: shadow_mapping_uniform.buffer().as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&shadow_map.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::Sampler(&shadow_map.sampler),
-                    },
-                ],
-            })
-            .into();
         let shadow_map_target_views = std::array::from_fn(|i| {
             shadow_map
                 .texture
@@ -122,10 +53,7 @@ impl ShadowMappingPass {
         Self {
             shadow_map_pipeline: Default::default(),
             shadow_map,
-            bind_group,
-            bind_group_layout,
             shadow_map_target_views,
-            shadow_mapping_uniform,
             depth_bias_state: wgpu::DepthBiasState {
                 constant: 1,
                 slope_scale: 0.025,
@@ -158,16 +86,8 @@ impl ShadowMappingPass {
                 display.device(),
                 &display
                     .device()
-                    .create_shader_module(include_wgsl!("../../res/shaders/shadow_map.wgsl")),
+                    .create_shader_module(shaders::shadow_map::DESCRIPTOR),
             );
-    }
-
-    pub fn bind_group(&self) -> &Arc<wgpu::BindGroup> {
-        &self.bind_group
-    }
-
-    pub fn bind_group_layout(&self) -> &wgpu::BindGroupLayout {
-        &self.bind_group_layout
     }
 
     pub fn shadow_map_texture(&self) -> &Texture {
@@ -178,29 +98,22 @@ impl ShadowMappingPass {
         &mut self,
         state: &mut RenderState,
         display: &Display,
-        view_frustum: &Frustum,
-        lights: &[Light],
+        lights_uniform: &LightsUniform,
         scene: &[InstanceRenderData<ModelVertexData, InstanceDataWithNormalMatrix>],
     ) {
         if self.depth_bias_state != self.last_depth_bias_state {
             self.build_shadow_map_pipeline(state, display);
             self.last_depth_bias_state = self.depth_bias_state;
         }
-        self.shadow_mapping_uniform
-            .update_with(display.queue(), |u| {
-                u.lights = lights.to_vec();
-                u.view_frustum = *view_frustum;
-            });
 
-        let mut bufs = vec![];
-        for (i, light) in lights.iter().enumerate() {
-            let buf = state
+        let command_buffers = lights_uniform.lights.iter().enumerate().map(|(i, light)| {
+            state
                 .render_pass(
                     &display,
                     "Shadow Mapping Pass",
                     &[RenderTarget::TextureRef(self.shadow_map_debug_textures[i])],
                     Some(RenderTarget::TextureView(&self.shadow_map_target_views[i])),
-                    &light.view_proj_uniforms(&view_frustum),
+                    &light.view_proj_uniforms(&lights_uniform.view_frustum),
                     |r| {
                         for render_data in scene {
                             r.draw_instance(&InstanceRenderData {
@@ -210,9 +123,8 @@ impl ShadowMappingPass {
                         }
                     },
                 )
-                .command_buffer();
-            bufs.push(buf);
-        }
-        display.queue().submit(bufs);
+                .command_buffer()
+        });
+        display.queue().submit(command_buffers);
     }
 }

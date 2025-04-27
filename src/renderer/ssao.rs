@@ -1,26 +1,20 @@
 use std::{ops::Deref, sync::Arc};
 
+use bytemuck::Zeroable;
 use glam::{vec2, vec4, Vec2, Vec4};
-use wgpu::{include_wgsl, BindGroupLayout};
+use wgpu::BindGroupLayout;
 
 use crate::geom::{BasicVertexData, Point};
 
 use super::{
     instance::InstanceRenderData,
+    shaders,
     state::{BoundTexture, ViewProjectionUniforms},
     BasicInstanceData, Bindable, Display, PipelineRef, RenderState, RenderTarget, TextureBuilder,
     TextureRef, UniformBindGroup,
 };
 
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-#[repr(C)]
-pub struct SSAOKernel {
-    items: [Vec4; SSAOKernel::SIZE],
-    count: u32,
-    radius: f32,
-    bias: f32,
-    noise_texture_scale: Vec2,
-}
+pub type SSAOKernel = shaders::ssao::types::Kernel;
 
 impl SSAOKernel {
     const SIZE: usize = 64;
@@ -50,6 +44,7 @@ impl SSAOKernel {
             radius: Self::DEFAULT_RADIUS,
             bias: Self::DEFAULT_BIAS,
             noise_texture_scale,
+            ..Zeroable::zeroed()
         }
     }
 }
@@ -148,7 +143,7 @@ impl SSAOPass {
                 display.device(),
                 &display
                     .device()
-                    .create_shader_module(include_wgsl!("../../res/shaders/ssao.wgsl")),
+                    .create_shader_module(shaders::ssao::DESCRIPTOR),
             );
         let blur_pipeline = state
             .pipeline_builder()
@@ -164,7 +159,7 @@ impl SSAOPass {
                 display.device(),
                 &display
                     .device()
-                    .create_shader_module(include_wgsl!("../../res/shaders/ssao_blur.wgsl")),
+                    .create_shader_module(shaders::ssao_blur::DESCRIPTOR),
             );
         let blur_temp_buffer = state.load_texture(
             display,
