@@ -9,6 +9,7 @@ pub mod mesh;
 pub mod model;
 pub mod pipeline;
 pub mod render_target;
+pub mod shader_type;
 pub mod shaders;
 pub mod shadow_mapping;
 pub mod ssao;

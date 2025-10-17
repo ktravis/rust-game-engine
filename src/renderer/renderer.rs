@@ -1,6 +1,6 @@
 use super::instance::InstanceRenderData;
 use super::state::BindingType;
-use super::{shaders, MeshRef, PipelineRef, TextureRef};
+use super::{MeshRef, PipelineRef, TextureRef};
 use crate::{color::*, geom::*, transform::*};
 use glam::Mat4;
 use std::fmt::{Debug, Formatter};
@@ -162,6 +162,7 @@ impl InstanceDataWithNormalMatrix {
             transform: other.transform,
             tint: other.tint,
             subtexture: other.subtexture,
+            // TODO: this is the big performance killer, we need to not do this every frame
             normal_matrix: (view_matrix * other.transform).inverse().transpose(),
         }
     }

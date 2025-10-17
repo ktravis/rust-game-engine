@@ -1,13 +1,15 @@
 use std::ops::DerefMut;
 
 use bytemuck::Zeroable;
-use glam::{vec2, vec3, vec4, Mat4, Quat, Vec2, Vec3};
+use glam::{vec2, vec3, vec4, Mat3, Mat4, Quat, Vec2, Vec3};
 use itertools::Itertools;
 use rust_game_engine::app::{App, AppState, Context};
+use rust_game_engine::color::Color;
 use rust_game_engine::renderer::forward::ForwardGeometryPass;
 use rust_game_engine::renderer::geometry::GeometryPass;
 use rust_game_engine::renderer::lighting::{Light, LightKind};
 use rust_game_engine::renderer::model::LoadModel;
+use rust_game_engine::renderer::shader_type::GlobalUniforms;
 use rust_game_engine::renderer::shadow_mapping::ShadowMappingPass;
 use rust_game_engine::renderer::ssao_from_depth::SSAOPass;
 use rust_game_engine::renderer::text::RenderableFont;
@@ -21,12 +23,9 @@ use rust_game_engine::camera::Camera;
 use rust_game_engine::geom::{BasicVertexData, ModelVertexData, Point};
 use rust_game_engine::input::{Axis, Button, Key, Toggle};
 use rust_game_engine::renderer::{
-    instance::InstanceRenderData,
-    mesh::LoadMesh,
-    state::{GlobalUniforms, ViewProjectionUniforms},
-    text::TextDisplayOptions,
-    BasicInstanceData, Display, OffscreenFramebuffer, RenderData, ScalingMode, TextureBuilder,
-    TextureRef,
+    instance::InstanceRenderData, mesh::LoadMesh, state::ViewProjectionUniforms,
+    text::TextDisplayOptions, BasicInstanceData, Display, OffscreenFramebuffer, RenderData,
+    ScalingMode, TextureBuilder, TextureRef,
 };
 use rust_game_engine::sprite_manager::SpriteManager;
 use rust_game_engine::transform::{Transform, Transform2D, Transform3D};
@@ -209,12 +208,12 @@ impl AppState for State {
         let mut cubes = vec![];
         for x in 0..32 {
             for z in 0..32 {
+                let dx = x as f32 - 16.0;
+                let dz = z as f32 - 16.0;
+                let dr = (dx * dx + dz * dz) / (24.0 * 24.0);
                 cubes.push(Transform3D {
-                    position: vec3(
-                        2.0 * (x as f32 - 16.0),
-                        rand::random::<f32>() * 1.5,
-                        2.0 * (z as f32 - 16.0),
-                    ),
+                    position: vec3(2.0 * dx, rand::random::<f32>() * 1.5, 2.0 * dz),
+                    scale: vec3(1.0, 1.0 + 20.0 * dr, 1.0),
                     ..Default::default()
                 });
             }
@@ -236,12 +235,30 @@ impl AppState for State {
                 // }
                 // .into(),
                 LightKind::Spot {
-                    position: vec3(0.0, 2.0, -10.0),
-                    direction: vec3(0.0, -1.0, 30.0),
-                    fov_degrees: 30.0,
+                    position: vec3(0.0, 5.0, 0.0),
+                    direction: vec3(0.0, -8.0, 30.0),
+                    fov_degrees: 60.0,
                     reach: 40.0,
                 }
                 .into(),
+                Light {
+                    color: Color::RED,
+                    kind: LightKind::Spot {
+                        position: vec3(0.0, 5.0, 0.0),
+                        direction: vec3(0.0, -8.0, 30.0),
+                        fov_degrees: 60.0,
+                        reach: 40.0,
+                    },
+                },
+                Light {
+                    color: Color::GREEN,
+                    kind: LightKind::Spot {
+                        position: vec3(0.0, 5.0, 0.0),
+                        direction: vec3(0.0, -8.0, 30.0),
+                        fov_degrees: 60.0,
+                        reach: 40.0,
+                    },
+                },
             ],
             shadow_mapping_pass,
             geometry_pass,
@@ -255,7 +272,7 @@ impl AppState for State {
             model_meshes,
             // deferred_lighting_pass,
             cubes,
-            scene: Scene::Model,
+            scene: Scene::Cubes,
         }
     }
 
@@ -315,54 +332,54 @@ impl AppState for State {
 
         // let mut scene = vec![];
         let mut scene = vec![
-            InstanceRenderData {
-                texture: Some(self.crate_texture),
-                mesh: self.cube_mesh,
-                instance: InstanceDataWithNormalMatrix::from_basic(
-                    Default::default(),
-                    view_proj.view,
-                ),
-                pipeline: None,
-            },
-            InstanceRenderData {
-                mesh: self.cube_mesh,
-                instance: InstanceDataWithNormalMatrix::from_basic(
-                    BasicInstanceData {
-                        tint: vec4(1.0, 0.9, 0.9, 1.0).into(),
-                        transform: Transform3D {
-                            position: vec3(
-                                -1.0 + f32::sin(ctx.frame_timing.time()) * 5.0,
-                                1.5,
-                                -0.4,
-                            ),
-                            ..Default::default()
-                        }
-                        .as_mat4(),
-                        ..Default::default()
-                    },
-                    view_proj.view,
-                ),
-                texture: None,
-                pipeline: None,
-            },
-            InstanceRenderData {
-                mesh: self.cube_mesh,
-                instance: InstanceDataWithNormalMatrix::from_basic(
-                    BasicInstanceData {
-                        // tint: vec4(0.88, 0.82, 0.8, 1.0).into(),
-                        transform: Transform3D {
-                            position: vec3(0.0, -1.5, 0.0),
-                            scale: vec3(30.0, 0.5, 30.0),
-                            ..Default::default()
-                        }
-                        .as_mat4(),
-                        ..Default::default()
-                    },
-                    view_proj.view,
-                ),
-                texture: None,
-                pipeline: None,
-            },
+            // InstanceRenderData {
+            //     texture: Some(self.crate_texture),
+            //     mesh: self.cube_mesh,
+            //     instance: InstanceDataWithNormalMatrix::from_basic(
+            //         Default::default(),
+            //         view_proj.view,
+            //     ),
+            //     pipeline: None,
+            // },
+            // InstanceRenderData {
+            //     mesh: self.cube_mesh,
+            //     instance: InstanceDataWithNormalMatrix::from_basic(
+            //         BasicInstanceData {
+            //             tint: vec4(1.0, 0.9, 0.9, 1.0).into(),
+            //             transform: Transform3D {
+            //                 position: vec3(
+            //                     -1.0 + f32::sin(ctx.frame_timing.time()) * 5.0,
+            //                     1.5,
+            //                     -0.4,
+            //                 ),
+            //                 ..Default::default()
+            //             }
+            //             .as_mat4(),
+            //             ..Default::default()
+            //         },
+            //         view_proj.view,
+            //     ),
+            //     texture: None,
+            //     pipeline: None,
+            // },
+            // InstanceRenderData {
+            //     mesh: self.cube_mesh,
+            //     instance: InstanceDataWithNormalMatrix::from_basic(
+            //         BasicInstanceData {
+            //             // tint: vec4(0.88, 0.82, 0.8, 1.0).into(),
+            //             transform: Transform3D {
+            //                 position: vec3(0.0, -1.5, 0.0),
+            //                 scale: vec3(30.0, 0.5, 30.0),
+            //                 ..Default::default()
+            //             }
+            //             .as_mat4(),
+            //             ..Default::default()
+            //         },
+            //         view_proj.view,
+            //     ),
+            //     texture: None,
+            //     pipeline: None,
+            // },
         ];
         match self.scene {
             Scene::Cubes => {
@@ -417,6 +434,16 @@ impl AppState for State {
             ctx.render_state.default_texture()
         };
 
+        self.lights
+            .iter_mut()
+            .enumerate()
+            .for_each(|(i, light)| match &mut light.kind {
+                LightKind::Directional { .. } => todo!(),
+                LightKind::Spot { direction, .. } => {
+                    *direction = Mat3::from_rotation_y((i as f32 + 0.5) * 0.01) * *direction;
+                }
+            });
+
         self.forward_pass
             .lights_uniform
             .update_with(ctx.display.queue(), |u| {
@@ -431,41 +458,42 @@ impl AppState for State {
             &scene,
         );
 
-        // if ctx.input.debug.on {
-        for light in &self.lights {
-            let pos = light.kind.position();
-            scene.push(InstanceRenderData {
-                mesh: self.cube_mesh,
-                instance: InstanceDataWithNormalMatrix::from_basic(
-                    BasicInstanceData {
-                        transform: Mat4::from_scale_rotation_translation(
-                            vec3(0.05, 2.5, 0.05),
-                            Quat::from_rotation_arc(Vec3::Y, pos.normalize()),
-                            Vec3::ZERO,
-                        ) * Mat4::from_translation(Vec3::Y),
-                        tint: light.color.into(),
-                        ..Default::default()
-                    },
-                    view_proj.view,
-                ),
-                texture: None,
-                pipeline: None,
-            });
-            // scene.push(InstanceRenderData {
-            //     mesh: self.cube_mesh,
-            //     instance: InstanceDataWithNormalMatrix::from_basic(
-            //         BasicInstanceData {
-            //             transform: light.view.inverse() * Mat4::from_scale(vec3(30.0, 40.0, 20.0)),
-            //             tint: light.color.into(),
-            //             ..Default::default()
-            //         },
-            //         view_proj.view,
-            //     ),
-            //     texture: None,
-            //     pipeline: None,
-            // });
+        if ctx.input.debug.on {
+            for light in &self.lights {
+                let pos = light.kind.position();
+                scene.push(InstanceRenderData {
+                    mesh: self.cube_mesh,
+                    instance: InstanceDataWithNormalMatrix::from_basic(
+                        BasicInstanceData {
+                            transform: Mat4::from_scale_rotation_translation(
+                                vec3(0.05, 2.5, 0.05),
+                                Quat::from_rotation_arc(Vec3::Y, pos.normalize()),
+                                Vec3::ZERO,
+                            ) * Mat4::from_translation(Vec3::Y),
+                            tint: light.color.into(),
+                            ..Default::default()
+                        },
+                        view_proj.view,
+                    ),
+                    texture: None,
+                    pipeline: None,
+                });
+
+                // scene.push(InstanceRenderData {
+                //     mesh: self.cube_mesh,
+                //     instance: InstanceDataWithNormalMatrix::from_basic(
+                //         BasicInstanceData {
+                //             transform: light.view.inverse() * Mat4::from_scale(vec3(30.0, 40.0, 20.0)),
+                //             tint: light.color.into(),
+                //             ..Default::default()
+                //         },
+                //         view_proj.view,
+                //     ),
+                //     texture: None,
+                //     pipeline: None,
+                // });
+            }
         }
-        // }
 
         self.forward_pass.run(
             &mut ctx.render_state,
@@ -521,25 +549,17 @@ impl AppState for State {
                         },
                         TextDisplayOptions::default(),
                     );
-                    // r.draw_text(
-                    //     &self.default_font,
-                    //     format!("{:?}", self.camera.frustum().aabb()),
+
+                    // r.draw_quad(
+                    //     // self.shadow_mapping_pass.shadow_map_debug_textures[0],
+                    //     occlusion_map,
                     //     Transform2D {
-                    //         position: vec2(20.0, 80.0),
+                    //         position: vec2(ctx.display.size_pixels().x as f32 - 266.0, 10.0),
+                    //         // position: ctx.display.size_pixels().as_vec2() - vec2(256.0, 256.0),
+                    //         scale: Vec2::splat(256.0),
                     //         ..Default::default()
                     //     },
-                    //     TextDisplayOptions::default(),
                     // );
-                    r.draw_quad(
-                        // self.shadow_mapping_pass.shadow_map_debug_textures[0],
-                        occlusion_map,
-                        Transform2D {
-                            position: vec2(ctx.display.size_pixels().x as f32 - 266.0, 10.0),
-                            // position: ctx.display.size_pixels().as_vec2() - vec2(256.0, 256.0),
-                            scale: Vec2::splat(256.0),
-                            ..Default::default()
-                        },
-                    );
                 },
             )
             .encoder();
@@ -567,10 +587,10 @@ impl AppState for State {
                 }),
                 |ui| {
                     egui::Window::new("Debug")
-                        // .vscroll(true)
+                        .vscroll(true)
                         .default_open(true)
                         // .max_width(2000.0)
-                        // .max_height(1200.0)
+                        .max_height(ctx.display.size_pixels().y as f32)
                         // .default_width(1000.0)
                         .resizable(true)
                         .anchor(egui::Align2::LEFT_TOP, [0.0, 0.0])
@@ -626,6 +646,9 @@ impl AppState for State {
                             }
 
                             for mut i in 0..(self.lights.len() as usize) {
+                                if i >= self.lights.len() {
+                                    break;
+                                }
                                 if i > 0 {
                                     ui.separator();
                                 }

@@ -13,3 +13,5 @@ pub mod transform;
 
 #[macro_use]
 pub mod input;
+
+extern crate self as rust_game_engine;

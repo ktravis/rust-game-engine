@@ -14,6 +14,7 @@ use super::{
     display::Display,
     instance::{InstanceRenderData, InstanceStorage},
     mesh::{LoadMesh, Mesh, RawMeshRef, UntypedMesh},
+    shader_type::GlobalUniforms,
     shaders,
     text::{RenderableFont, TextDisplayOptions},
     texture::{Texture, TextureBuilder},
@@ -29,8 +30,6 @@ use crate::{
 };
 
 pub type BoundTexture = BindGroup<Texture>;
-
-pub type GlobalUniforms = shaders::global::types::GlobalUniforms;
 
 pub type ViewProjectionUniforms = shaders::global::types::ViewProjectionUniforms;
 
@@ -396,7 +395,7 @@ impl RenderState {
                         view,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                             store: wgpu::StoreOp::Store,
                         },
                     }
