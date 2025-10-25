@@ -76,7 +76,7 @@ impl Display {
         let window = Arc::new(window);
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            backends: wgpu::Backends::VULKAN,
             flags: wgpu::InstanceFlags::from_build_config(),
             dx12_shader_compiler: Default::default(),
             gles_minor_version: wgpu::Gles3MinorVersion::Automatic,
@@ -200,7 +200,7 @@ impl Display {
         &self.depth_texture
     }
 
-    pub fn view(&self) -> Result<DisplayView, wgpu::SurfaceError> {
+    pub fn view(&self) -> Result<DisplayView<'_>, wgpu::SurfaceError> {
         let output_texture = self.output_texture()?;
         let view = output_texture
             .texture

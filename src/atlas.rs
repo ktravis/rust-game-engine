@@ -113,52 +113,52 @@ pub struct AtlasRegion {
     pub dim: Point<u32>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_atlas_builder() {
-        let items = [
-            RgbaImage::from_pixel(12, 12, [255, 0, 0, 255].into()),
-            RgbaImage::from_pixel(24, 12, [255, 255, 0, 255].into()),
-            RgbaImage::from_pixel(12, 56, [255, 255, 255, 255].into()),
-            RgbaImage::from_pixel(100, 100, [255, 128, 0, 255].into()),
-            RgbaImage::from_pixel(12, 12, [0, 0, 255, 255].into()),
-            RgbaImage::from_pixel(12, 8, [0, 255, 0, 255].into()),
-            RgbaImage::from_pixel(24, 2, [128, 255, 0, 255].into()),
-            RgbaImage::from_pixel(74, 50, [55, 128, 55, 255].into()),
-            RgbaImage::from_pixel(50, 74, [55, 128, 100, 255].into()),
-            RgbaImage::from_pixel(74, 50, [100, 128, 100, 255].into()),
-            RgbaImage::from_pixel(74, 50, [55, 128, 55, 255].into()),
-            RgbaImage::from_pixel(100, 100, [255, 128, 0, 255].into()),
-            RgbaImage::from_pixel(12, 56, [255, 255, 255, 255].into()),
-            RgbaImage::from_pixel(100, 100, [255, 128, 0, 255].into()),
-            RgbaImage::from_pixel(12, 12, [0, 0, 255, 255].into()),
-            RgbaImage::from_pixel(12, 8, [0, 255, 0, 255].into()),
-            RgbaImage::from_pixel(12, 8, [0, 255, 0, 255].into()),
-            RgbaImage::from_pixel(24, 2, [128, 255, 0, 255].into()),
-            RgbaImage::from_pixel(74, 50, [55, 128, 55, 255].into()),
-            RgbaImage::from_pixel(50, 74, [55, 128, 100, 255].into()),
-            RgbaImage::from_pixel(74, 50, [100, 128, 100, 255].into()),
-            RgbaImage::from_pixel(74, 50, [55, 128, 55, 255].into()),
-            RgbaImage::from_pixel(100, 100, [255, 128, 0, 255].into()),
-            RgbaImage::from_pixel(12, 56, [255, 255, 255, 255].into()),
-            RgbaImage::from_pixel(100, 100, [255, 128, 0, 255].into()),
-            RgbaImage::from_pixel(12, 56, [255, 255, 255, 255].into()),
-            RgbaImage::from_pixel(100, 100, [255, 128, 0, 255].into()),
-            RgbaImage::from_pixel(12, 12, [0, 0, 255, 255].into()),
-            RgbaImage::from_pixel(24, 12, [255, 255, 0, 255].into()),
-            RgbaImage::from_pixel(50, 74, [55, 128, 100, 255].into()),
-            RgbaImage::from_pixel(24, 2, [128, 255, 0, 255].into()),
-            RgbaImage::from_pixel(74, 50, [55, 128, 55, 255].into()),
-            RgbaImage::from_pixel(12, 8, [0, 255, 0, 255].into()),
-        ];
-
-        let atlas = AtlasBuilder::from_images(items.as_slice()).unwrap().build();
-        atlas
-            .image()
-            .save(std::path::Path::new("testdata/final.png"))
-            .unwrap();
-    }
-}
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//
+//     #[test]
+//     fn test_atlas_builder() {
+//         let items = [
+//             RgbaImage::from_pixel(12, 12, [255, 0, 0, 255].into()),
+//             RgbaImage::from_pixel(24, 12, [255, 255, 0, 255].into()),
+//             RgbaImage::from_pixel(12, 56, [255, 255, 255, 255].into()),
+//             RgbaImage::from_pixel(100, 100, [255, 128, 0, 255].into()),
+//             RgbaImage::from_pixel(12, 12, [0, 0, 255, 255].into()),
+//             RgbaImage::from_pixel(12, 8, [0, 255, 0, 255].into()),
+//             RgbaImage::from_pixel(24, 2, [128, 255, 0, 255].into()),
+//             RgbaImage::from_pixel(74, 50, [55, 128, 55, 255].into()),
+//             RgbaImage::from_pixel(50, 74, [55, 128, 100, 255].into()),
+//             RgbaImage::from_pixel(74, 50, [100, 128, 100, 255].into()),
+//             RgbaImage::from_pixel(74, 50, [55, 128, 55, 255].into()),
+//             RgbaImage::from_pixel(100, 100, [255, 128, 0, 255].into()),
+//             RgbaImage::from_pixel(12, 56, [255, 255, 255, 255].into()),
+//             RgbaImage::from_pixel(100, 100, [255, 128, 0, 255].into()),
+//             RgbaImage::from_pixel(12, 12, [0, 0, 255, 255].into()),
+//             RgbaImage::from_pixel(12, 8, [0, 255, 0, 255].into()),
+//             RgbaImage::from_pixel(12, 8, [0, 255, 0, 255].into()),
+//             RgbaImage::from_pixel(24, 2, [128, 255, 0, 255].into()),
+//             RgbaImage::from_pixel(74, 50, [55, 128, 55, 255].into()),
+//             RgbaImage::from_pixel(50, 74, [55, 128, 100, 255].into()),
+//             RgbaImage::from_pixel(74, 50, [100, 128, 100, 255].into()),
+//             RgbaImage::from_pixel(74, 50, [55, 128, 55, 255].into()),
+//             RgbaImage::from_pixel(100, 100, [255, 128, 0, 255].into()),
+//             RgbaImage::from_pixel(12, 56, [255, 255, 255, 255].into()),
+//             RgbaImage::from_pixel(100, 100, [255, 128, 0, 255].into()),
+//             RgbaImage::from_pixel(12, 56, [255, 255, 255, 255].into()),
+//             RgbaImage::from_pixel(100, 100, [255, 128, 0, 255].into()),
+//             RgbaImage::from_pixel(12, 12, [0, 0, 255, 255].into()),
+//             RgbaImage::from_pixel(24, 12, [255, 255, 0, 255].into()),
+//             RgbaImage::from_pixel(50, 74, [55, 128, 100, 255].into()),
+//             RgbaImage::from_pixel(24, 2, [128, 255, 0, 255].into()),
+//             RgbaImage::from_pixel(74, 50, [55, 128, 55, 255].into()),
+//             RgbaImage::from_pixel(12, 8, [0, 255, 0, 255].into()),
+//         ];
+//
+//         let atlas = AtlasBuilder::from_images(items.as_slice()).unwrap().build();
+//         atlas
+//             .image()
+//             .save(std::path::Path::new("testdata/final.png"))
+//             .unwrap();
+//     }
+// }

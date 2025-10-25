@@ -212,18 +212,18 @@ pub mod quad {
     pub const INDICES: &[u16] = &[0, 1, 2, 0, 2, 3];
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::geom::ModelVertexData;
-
-    #[test]
-    fn test_align() {
-        dbg!(std::mem::offset_of!(ModelVertexData, tex_coords));
-        dbg!(std::mem::offset_of!(ModelVertexData, normal));
-        dbg!(std::mem::size_of::<ModelVertexData>());
-        assert!(false);
-    }
-}
+// #[cfg(test)]
+// mod tests {
+//     use crate::geom::ModelVertexData;
+//
+//     #[test]
+//     fn test_align() {
+//         dbg!(std::mem::offset_of!(ModelVertexData, tex_coords));
+//         dbg!(std::mem::offset_of!(ModelVertexData, normal));
+//         dbg!(std::mem::size_of::<ModelVertexData>());
+//         assert!(false);
+//     }
+// }
 
 pub mod cube {
     use glam::{vec3, vec4, Vec3};

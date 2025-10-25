@@ -1,6 +1,6 @@
 use super::instance::InstanceRenderData;
 use super::state::BindingType;
-use super::{shaders, MeshRef, PipelineRef, TextureRef};
+use super::{MeshRef, PipelineRef, TextureRef};
 use crate::{color::*, geom::*, transform::*};
 use glam::Mat4;
 use std::fmt::{Debug, Formatter};
@@ -162,6 +162,7 @@ impl InstanceDataWithNormalMatrix {
             transform: other.transform,
             tint: other.tint,
             subtexture: other.subtexture,
+            // TODO: this is the big performance killer, we need to not do this every frame
             normal_matrix: (view_matrix * other.transform).inverse().transpose(),
         }
     }
@@ -220,7 +221,7 @@ impl_vertex_layouts_tuple!(V1, V2, V3, V4, V5);
 impl_vertex_layouts_tuple!(V1, V2, V3, V4, V5, V6);
 
 pub trait Bindable {
-    fn entries(&self) -> Vec<wgpu::BindGroupEntry>;
+    fn entries(&self) -> Vec<wgpu::BindGroupEntry<'_>>;
     fn binding_type(&self) -> BindingType;
 }
 
@@ -356,7 +357,7 @@ impl<U: UniformData> UniformBuffer<U> {
 }
 
 impl<U: UniformData> Bindable for UniformBuffer<U> {
-    fn entries(&self) -> Vec<wgpu::BindGroupEntry> {
+    fn entries(&self) -> Vec<wgpu::BindGroupEntry<'_>> {
         vec![wgpu::BindGroupEntry {
             binding: 0,
             resource: self.buffer.as_entire_binding(),

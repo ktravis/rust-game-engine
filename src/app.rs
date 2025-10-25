@@ -131,13 +131,18 @@ impl<A: AppState> App<A> {
 impl<A: AppState> ApplicationHandler for App<A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_none() {
+            println!("creating window");
             let window = event_loop
                 .create_window(Window::default_attributes().with_inner_size(self.size))
                 .unwrap();
+            println!("created window");
 
             let display = pollster::block_on(Display::from_window(window));
+            println!("initializing render state");
             let render_state = A::init_render_state(&display);
+            println!("creating context");
             let mut ctx = Context::new(display, render_state);
+            println!("app state");
             let app_state = A::new(&mut ctx);
             self.state = Some((ctx, app_state));
         }

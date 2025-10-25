@@ -237,7 +237,7 @@ impl Texture {
 }
 
 impl Bindable for Texture {
-    fn entries(&self) -> Vec<wgpu::BindGroupEntry> {
+    fn entries(&self) -> Vec<wgpu::BindGroupEntry<'_>> {
         vec![
             wgpu::BindGroupEntry {
                 binding: 0,
