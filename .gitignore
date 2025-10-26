@@ -12,3 +12,5 @@ Cargo.lock
 *.data
 *.svg
 testdata/
+.direnv/
+.envrc
