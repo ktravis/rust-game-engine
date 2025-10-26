@@ -572,11 +572,12 @@ impl AppState for State {
                 &mut enc,
                 wgpu::RenderPassColorAttachment {
                     view: display_view.view(),
-                    resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     },
+                    resolve_target: None,
+                    depth_slice: None,
                 },
                 Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &display_view.display().depth_texture().view,

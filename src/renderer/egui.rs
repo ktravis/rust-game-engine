@@ -1,5 +1,6 @@
 use egui::Context;
 use egui_wgpu::Renderer;
+use egui_wgpu::RendererOptions;
 use egui_wgpu::ScreenDescriptor;
 use egui_winit::State;
 use wgpu::CommandEncoder;
@@ -29,9 +30,12 @@ impl EguiRenderer {
         let egui_renderer = Renderer::new(
             display.device(),
             display.format(),
-            Some(display.depth_format()),
-            msaa_samples,
-            false,
+            RendererOptions {
+                msaa_samples,
+                depth_stencil_format: Some(display.depth_format()),
+                dithering: false,
+                predictable_texture_filtering: false,
+            },
         );
 
         EguiRenderer {

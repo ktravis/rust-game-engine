@@ -19,14 +19,13 @@ pub struct ShadowMappingPass {
 
 impl ShadowMappingPass {
     pub fn new(state: &mut RenderState, display: &Display) -> Self {
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
         let shadow_map = TextureBuilder::depth()
             .with_layers(MAX_LIGHTS as u32)
             .with_address_mode(wgpu::AddressMode::ClampToBorder)
             .with_border_color(wgpu::SamplerBorderColor::OpaqueWhite)
             .with_filter_mode(wgpu::FilterMode::Linear)
-            .with_usage(
-                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            )
+            .with_usage(usage)
             .build(display.device(), Point::new(2048, 2048));
         let shadow_map_target_views = std::array::from_fn(|i| {
             shadow_map
@@ -40,6 +39,7 @@ impl ShadowMappingPass {
                     mip_level_count: None,
                     base_array_layer: i as u32,
                     array_layer_count: Some(1),
+                    usage: Some(usage),
                 })
         });
         let shadow_map_debug_textures = std::array::from_fn(|i| {

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use glam::{vec2, Vec2};
-use image::{Pixel, Rgba, RgbaImage};
+use image::{Rgba, RgbaImage};
 use msdfgen::{Bitmap, Bound, FillRule, FontExt, Framing, MsdfGeneratorConfig, Range};
 
 use crate::{
@@ -152,7 +152,7 @@ impl FontAtlas {
                 .pixels()
                 .iter()
                 .zip(img.pixels_mut())
-                .for_each(|(src, dst)| *dst = Rgba::from_channels(src.r, src.g, src.b, src.a));
+                .for_each(|(src, dst)| *dst = Rgba([src.r, src.g, src.b, src.a]));
             atlas_builder.add(&img)?;
         }
         let atlas = atlas_builder.build();

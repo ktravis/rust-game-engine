@@ -393,11 +393,12 @@ impl RenderState {
                     };
                     wgpu::RenderPassColorAttachment {
                         view,
-                        resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                             store: wgpu::StoreOp::Store,
                         },
+                        resolve_target: None,
+                        depth_slice: None,
                     }
                 })
             });
@@ -433,7 +434,7 @@ impl RenderState {
                 &[],
             );
             let default_texture = self.default_texture;
-            let mut render_pass = RenderPass::new(self, display, &mut raw_pass);
+            let mut render_pass = RenderPass::new(self, display, raw_pass);
             render_pass.bind_texture(default_texture);
             pass(&mut render_pass);
             render_pass.flush_draw_calls();
@@ -516,7 +517,7 @@ impl RenderState {
 pub struct RenderPass<'a, 'p> {
     pub render_state: &'a mut RenderState,
     display: &'p Display,
-    raw_pass: &'p mut wgpu::RenderPass<'p>,
+    raw_pass: wgpu::RenderPass<'p>,
 
     active_mesh: Option<RawMeshRef>,
     active_pipeline: Option<RawPipelineRef>,
@@ -546,7 +547,7 @@ impl<'a, 'p> RenderPass<'a, 'p> {
     pub fn new(
         render_state: &'a mut RenderState,
         display: &'p Display,
-        raw_pass: &'p mut wgpu::RenderPass<'p>,
+        raw_pass: wgpu::RenderPass<'p>,
     ) -> Self {
         Self {
             display,

@@ -128,7 +128,7 @@ impl<'a> TextureBuilder<'a> {
         queue.write_texture(
             texture.texture.as_image_copy(),
             bytes,
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(bytes_per_pixel * size.x),
                 rows_per_image: Some(size.y),

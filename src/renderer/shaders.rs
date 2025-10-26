@@ -363,39 +363,6 @@ pub mod ssao_from_depth {
             pub const GROUP: u32 = 5u32;
             pub const BINDING: u32 = 1u32;
         }
-        ///Contains the following bindings: t_diffuse, s_diffuse
-        pub mod group0 {
-            #[allow(unused)]
-            use super::*;
-            pub const GROUP: u32 = 0u32;
-            pub fn layout() -> ::wgpu::BindGroupLayoutDescriptor<'static> {
-                ::wgpu::BindGroupLayoutDescriptor {
-                    label: Some("group0"),
-                    entries: &[
-                        ::wgpu::BindGroupLayoutEntry {
-                            binding: 0u32,
-                            visibility: ::wgpu::ShaderStages::VERTEX_FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                multisampled: false,
-                                view_dimension: ::wgpu::TextureViewDimension::D2,
-                                sample_type: ::wgpu::TextureSampleType::Float {
-                                    filterable: true,
-                                },
-                            },
-                            count: None,
-                        },
-                        ::wgpu::BindGroupLayoutEntry {
-                            binding: 1u32,
-                            visibility: ::wgpu::ShaderStages::VERTEX_FRAGMENT,
-                            ty: ::wgpu::BindingType::Sampler(
-                                ::wgpu::SamplerBindingType::Filtering,
-                            ),
-                            count: None,
-                        },
-                    ],
-                }
-            }
-        }
         ///Contains the following bindings: depth_buffer, depth_buffer_sampler
         pub mod group3 {
             #[allow(unused)]
@@ -435,6 +402,39 @@ pub mod ssao_from_depth {
             pub fn layout() -> ::wgpu::BindGroupLayoutDescriptor<'static> {
                 ::wgpu::BindGroupLayoutDescriptor {
                     label: Some("group5"),
+                    entries: &[
+                        ::wgpu::BindGroupLayoutEntry {
+                            binding: 0u32,
+                            visibility: ::wgpu::ShaderStages::VERTEX_FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                multisampled: false,
+                                view_dimension: ::wgpu::TextureViewDimension::D2,
+                                sample_type: ::wgpu::TextureSampleType::Float {
+                                    filterable: true,
+                                },
+                            },
+                            count: None,
+                        },
+                        ::wgpu::BindGroupLayoutEntry {
+                            binding: 1u32,
+                            visibility: ::wgpu::ShaderStages::VERTEX_FRAGMENT,
+                            ty: ::wgpu::BindingType::Sampler(
+                                ::wgpu::SamplerBindingType::Filtering,
+                            ),
+                            count: None,
+                        },
+                    ],
+                }
+            }
+        }
+        ///Contains the following bindings: t_diffuse, s_diffuse
+        pub mod group0 {
+            #[allow(unused)]
+            use super::*;
+            pub const GROUP: u32 = 0u32;
+            pub fn layout() -> ::wgpu::BindGroupLayoutDescriptor<'static> {
+                ::wgpu::BindGroupLayoutDescriptor {
+                    label: Some("group0"),
                     entries: &[
                         ::wgpu::BindGroupLayoutEntry {
                             binding: 0u32,
@@ -682,39 +682,6 @@ pub mod ssao {
             pub const GROUP: u32 = 5u32;
             pub const BINDING: u32 = 1u32;
         }
-        ///Contains the following bindings: t_diffuse, s_diffuse
-        pub mod group0 {
-            #[allow(unused)]
-            use super::*;
-            pub const GROUP: u32 = 0u32;
-            pub fn layout() -> ::wgpu::BindGroupLayoutDescriptor<'static> {
-                ::wgpu::BindGroupLayoutDescriptor {
-                    label: Some("group0"),
-                    entries: &[
-                        ::wgpu::BindGroupLayoutEntry {
-                            binding: 0u32,
-                            visibility: ::wgpu::ShaderStages::VERTEX_FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                multisampled: false,
-                                view_dimension: ::wgpu::TextureViewDimension::D2,
-                                sample_type: ::wgpu::TextureSampleType::Float {
-                                    filterable: true,
-                                },
-                            },
-                            count: None,
-                        },
-                        ::wgpu::BindGroupLayoutEntry {
-                            binding: 1u32,
-                            visibility: ::wgpu::ShaderStages::VERTEX_FRAGMENT,
-                            ty: ::wgpu::BindingType::Sampler(
-                                ::wgpu::SamplerBindingType::Filtering,
-                            ),
-                            count: None,
-                        },
-                    ],
-                }
-            }
-        }
         ///Contains the following bindings: ssao_noise, ssao_noise_sampler
         pub mod group5 {
             #[allow(unused)]
@@ -811,6 +778,39 @@ pub mod ssao {
                         },
                         ::wgpu::BindGroupLayoutEntry {
                             binding: 5u32,
+                            visibility: ::wgpu::ShaderStages::VERTEX_FRAGMENT,
+                            ty: ::wgpu::BindingType::Sampler(
+                                ::wgpu::SamplerBindingType::Filtering,
+                            ),
+                            count: None,
+                        },
+                    ],
+                }
+            }
+        }
+        ///Contains the following bindings: t_diffuse, s_diffuse
+        pub mod group0 {
+            #[allow(unused)]
+            use super::*;
+            pub const GROUP: u32 = 0u32;
+            pub fn layout() -> ::wgpu::BindGroupLayoutDescriptor<'static> {
+                ::wgpu::BindGroupLayoutDescriptor {
+                    label: Some("group0"),
+                    entries: &[
+                        ::wgpu::BindGroupLayoutEntry {
+                            binding: 0u32,
+                            visibility: ::wgpu::ShaderStages::VERTEX_FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                multisampled: false,
+                                view_dimension: ::wgpu::TextureViewDimension::D2,
+                                sample_type: ::wgpu::TextureSampleType::Float {
+                                    filterable: true,
+                                },
+                            },
+                            count: None,
+                        },
+                        ::wgpu::BindGroupLayoutEntry {
+                            binding: 1u32,
                             visibility: ::wgpu::ShaderStages::VERTEX_FRAGMENT,
                             ty: ::wgpu::BindingType::Sampler(
                                 ::wgpu::SamplerBindingType::Filtering,
@@ -986,37 +986,6 @@ pub mod ssao_blur {
             pub const GROUP: u32 = 3u32;
             pub const BINDING: u32 = 1u32;
         }
-        ///Contains the following bindings: depth_buffer, depth_buffer_sampler
-        pub mod group3 {
-            #[allow(unused)]
-            use super::*;
-            pub const GROUP: u32 = 3u32;
-            pub fn layout() -> ::wgpu::BindGroupLayoutDescriptor<'static> {
-                ::wgpu::BindGroupLayoutDescriptor {
-                    label: Some("group3"),
-                    entries: &[
-                        ::wgpu::BindGroupLayoutEntry {
-                            binding: 0u32,
-                            visibility: ::wgpu::ShaderStages::VERTEX_FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                multisampled: false,
-                                view_dimension: ::wgpu::TextureViewDimension::D2,
-                                sample_type: ::wgpu::TextureSampleType::Depth,
-                            },
-                            count: None,
-                        },
-                        ::wgpu::BindGroupLayoutEntry {
-                            binding: 1u32,
-                            visibility: ::wgpu::ShaderStages::VERTEX_FRAGMENT,
-                            ty: ::wgpu::BindingType::Sampler(
-                                ::wgpu::SamplerBindingType::Filtering,
-                            ),
-                            count: None,
-                        },
-                    ],
-                }
-            }
-        }
         ///Contains the following bindings: t_diffuse, s_diffuse
         pub mod group0 {
             #[allow(unused)]
@@ -1035,6 +1004,37 @@ pub mod ssao_blur {
                                 sample_type: ::wgpu::TextureSampleType::Float {
                                     filterable: true,
                                 },
+                            },
+                            count: None,
+                        },
+                        ::wgpu::BindGroupLayoutEntry {
+                            binding: 1u32,
+                            visibility: ::wgpu::ShaderStages::VERTEX_FRAGMENT,
+                            ty: ::wgpu::BindingType::Sampler(
+                                ::wgpu::SamplerBindingType::Filtering,
+                            ),
+                            count: None,
+                        },
+                    ],
+                }
+            }
+        }
+        ///Contains the following bindings: depth_buffer, depth_buffer_sampler
+        pub mod group3 {
+            #[allow(unused)]
+            use super::*;
+            pub const GROUP: u32 = 3u32;
+            pub fn layout() -> ::wgpu::BindGroupLayoutDescriptor<'static> {
+                ::wgpu::BindGroupLayoutDescriptor {
+                    label: Some("group3"),
+                    entries: &[
+                        ::wgpu::BindGroupLayoutEntry {
+                            binding: 0u32,
+                            visibility: ::wgpu::ShaderStages::VERTEX_FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                multisampled: false,
+                                view_dimension: ::wgpu::TextureViewDimension::D2,
+                                sample_type: ::wgpu::TextureSampleType::Depth,
                             },
                             count: None,
                         },
@@ -2420,14 +2420,14 @@ pub mod forward {
             pub const GROUP: u32 = 4u32;
             pub const BINDING: u32 = 1u32;
         }
-        ///Contains the following bindings: occlusion_map, occlusion_map_sampler
-        pub mod group4 {
+        ///Contains the following bindings: t_diffuse, s_diffuse
+        pub mod group0 {
             #[allow(unused)]
             use super::*;
-            pub const GROUP: u32 = 4u32;
+            pub const GROUP: u32 = 0u32;
             pub fn layout() -> ::wgpu::BindGroupLayoutDescriptor<'static> {
                 ::wgpu::BindGroupLayoutDescriptor {
-                    label: Some("group4"),
+                    label: Some("group0"),
                     entries: &[
                         ::wgpu::BindGroupLayoutEntry {
                             binding: 0u32,
@@ -2453,14 +2453,14 @@ pub mod forward {
                 }
             }
         }
-        ///Contains the following bindings: t_diffuse, s_diffuse
-        pub mod group0 {
+        ///Contains the following bindings: occlusion_map, occlusion_map_sampler
+        pub mod group4 {
             #[allow(unused)]
             use super::*;
-            pub const GROUP: u32 = 0u32;
+            pub const GROUP: u32 = 4u32;
             pub fn layout() -> ::wgpu::BindGroupLayoutDescriptor<'static> {
                 ::wgpu::BindGroupLayoutDescriptor {
-                    label: Some("group0"),
+                    label: Some("group4"),
                     entries: &[
                         ::wgpu::BindGroupLayoutEntry {
                             binding: 0u32,

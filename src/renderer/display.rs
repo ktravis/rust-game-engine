@@ -44,12 +44,12 @@ impl Drop for BufferUnmapper<'_> {
 }
 
 pub struct MappedBufferView<'a> {
-    buffer_view: wgpu::BufferView<'a>,
+    buffer_view: wgpu::BufferView,
     _buffer: BufferUnmapper<'a>,
 }
 
 impl<'a> Deref for MappedBufferView<'a> {
-    type Target = wgpu::BufferView<'a>;
+    type Target = wgpu::BufferView;
 
     fn deref(&self) -> &Self::Target {
         &self.buffer_view
@@ -75,11 +75,11 @@ impl Display {
         let size = window.inner_size();
         let window = Arc::new(window);
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN,
-            flags: wgpu::InstanceFlags::from_build_config(),
-            dx12_shader_compiler: Default::default(),
-            gles_minor_version: wgpu::Gles3MinorVersion::Automatic,
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::from_env().unwrap_or(wgpu::Backends::VULKAN),
+            flags: wgpu::InstanceFlags::from_env_or_default(),
+            memory_budget_thresholds: Default::default(),
+            backend_options: Default::default(),
         });
 
         // The surface needs to live as long as the window that created it.
@@ -96,26 +96,25 @@ impl Display {
             .unwrap();
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: None,
-                    required_features: wgpu::Features::POLYGON_MODE_LINE
-                        | wgpu::Features::CLEAR_TEXTURE
-                        | wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER,
-                    // WebGL doesn't support all of wgpu's features, so if
-                    // we're building for the web we'll have to disable some.
-                    required_limits: if cfg!(target_arch = "wasm32") {
-                        wgpu::Limits::downlevel_webgl2_defaults()
-                    } else {
-                        wgpu::Limits {
-                            max_bind_groups: 6,
-                            ..wgpu::Limits::default()
-                        }
-                    },
-                    memory_hints: wgpu::MemoryHints::Performance,
+            .request_device(&wgpu::DeviceDescriptor {
+                label: None,
+                required_features: wgpu::Features::POLYGON_MODE_LINE
+                    | wgpu::Features::CLEAR_TEXTURE
+                    | wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER,
+                // WebGL doesn't support all of wgpu's features, so if
+                // we're building for the web we'll have to disable some.
+                required_limits: if cfg!(target_arch = "wasm32") {
+                    wgpu::Limits::downlevel_webgl2_defaults()
+                } else {
+                    wgpu::Limits {
+                        max_bind_groups: 6,
+                        ..wgpu::Limits::default()
+                    }
                 },
-                None,
-            )
+                memory_hints: wgpu::MemoryHints::Performance,
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                trace: wgpu::Trace::Off,
+            })
             .await
             .unwrap();
 
@@ -245,9 +244,9 @@ impl Display {
         let mut enc = self.device.create_command_encoder(&Default::default());
         enc.copy_texture_to_buffer(
             texture.texture.as_image_copy(),
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer,
-                layout: wgpu::ImageDataLayout {
+                layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(bytes_per_row),
                     rows_per_image: Some(dim.y),
@@ -258,7 +257,9 @@ impl Display {
         self.queue.submit([enc.finish()]);
         let slice = buffer.slice(..);
         slice.map_async(wgpu::MapMode::Read, |res| res.expect("buffer map failed"));
-        self.device.poll(wgpu::Maintain::wait()).panic_on_timeout();
+        if let Err(e) = self.device.poll(wgpu::PollType::wait_indefinitely()) {
+            panic!("device poll failed: {:?}", e);
+        }
         MappedBufferView {
             _buffer: BufferUnmapper(buffer),
             buffer_view: slice.get_mapped_range(),
