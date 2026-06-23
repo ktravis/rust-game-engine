@@ -10,7 +10,9 @@ pub fn derive_shader_type(ts: proc_macro::TokenStream) -> proc_macro::TokenStrea
     let name = ident.to_string();
     quote_spanned! {ast.span()=>
         impl ::rust_game_engine::renderer::shader_type::ShaderType for #ident {
-            const NAME: &'static str = #name;
+            fn wgsl_name() -> String {
+                #name.into()
+            }
         }
     }
     .into()
@@ -66,6 +68,7 @@ pub fn derive_vertex_input_type(ts: proc_macro::TokenStream) -> proc_macro::Toke
     let maude = quote!(::rust_game_engine::renderer::shader_type);
     let mut subsequent_loc = quote!(0);
     let mut errors = vec![];
+    let mut attrs = vec![];
     let fields = data.fields.iter().map(|f| {
         let loc = 'loc: {
             for attr in &f.attrs {
@@ -97,6 +100,9 @@ pub fn derive_vertex_input_type(ts: proc_macro::TokenStream) -> proc_macro::Toke
         };
         let ty = &f.ty;
         subsequent_loc = quote_spanned!(f.span()=> #loc + <#ty as #maude::VertexDataType>::N);
+        attrs.push(quote_spanned!{ty.span()=> 
+            (#loc, <#ty as #maude::VertexDataType>::vertex_formats())
+        });
         quote_spanned!(ty.span()=> (#checked, <#ty as #maude::VertexDataType>::wgsl_fields(#name)))
     }).collect::<Vec<_>>();
     if errors.len() > 0 {
@@ -106,22 +112,20 @@ pub fn derive_vertex_input_type(ts: proc_macro::TokenStream) -> proc_macro::Toke
         .into();
     }
     let string_name = struct_ident.to_string();
-
     quote_spanned! {input.span()=>
+        unsafe impl ::bytemuck::Zeroable for #struct_ident { }
+        unsafe impl ::bytemuck::Pod for #struct_ident { }
         impl #maude::VertexInput for #struct_ident {
-            fn definition() -> String {
-                let struct_fields = [
+            fn definition(location_offset: u32) -> String {
+                #maude::define_wgsl_struct(#string_name, [
                     #(#fields,)*
-                ].map(|(loc, f)| {
-                    f
-                        .iter()
-                        .enumerate()
-                        .map(|(i, s)| {
-                            format!("  @location({}) {},\n", loc+i, s)
-                        })
-                        .collect::<String>()
-                }).concat();
-                format!("struct {} {{\n{}}}", #string_name, struct_fields)
+                ], location_offset)
+            }
+
+            fn vertex_attributes() -> Vec<::wgpu::VertexAttribute> {
+                #maude::expand_vertex_attributes([
+                    #(#attrs,)*
+                ])
             }
         }
     }
@@ -137,6 +141,7 @@ pub fn shader_uniform_type(
     let mut input = syn::parse_macro_input!(input as ItemStruct);
     let struct_ident = input.ident.clone();
     let maude = quote!(::rust_game_engine::renderer::shader_type);
+    let mut aligns = vec![];
     let (asserts, sb): (Vec<_>, Vec<_>) = input.fields.iter_mut().filter_map(|f| {
         for (i, attr) in  f.attrs.iter_mut().enumerate() {
             if attr.path().is_ident("skip") {
@@ -150,6 +155,7 @@ pub fn shader_uniform_type(
             .expect("Field did not have a name");
         let name = id.to_string();
         let ty = &f.ty;
+        aligns.push(quote_spanned!(ty.span()=> <#ty as #maude::ShaderTypeAligned>::ALIGNMENT));
         Some((
             quote_spanned! {id.span()=>
                 const _: () = {
@@ -158,12 +164,11 @@ pub fn shader_uniform_type(
                     const DIFF: usize = OFFSET % EXPECTED_ALIGN;
                     ::const_panic::concat_assert!{
                         DIFF == 0,
-                        "Field ", #name, " had offset ", OFFSET, " not matching expected alignment for ", <#ty as #maude::ShaderType>::NAME, " (", EXPECTED_ALIGN, ")."
-                    }
+                        "Field ", #name, " had offset ", OFFSET, " not matching expected alignment for ", stringify!(#ty), " (", EXPECTED_ALIGN, ")." }
                 }
             },
             quote_spanned! {ty.span()=>
-                format!("  {}: {};", #name, <#ty as #maude::ShaderType>::NAME)
+                format!("  {}: {},", #name, <#ty as #maude::ShaderType>::wgsl_name())
             }
         ))
     }).unzip();
@@ -176,9 +181,29 @@ pub fn shader_uniform_type(
 
         #(#asserts;)*
 
+        impl #maude::ShaderTypeAligned for #struct_ident {
+            const ALIGNMENT: usize = {
+                let aligns = &[
+                    #(#aligns,)*
+                ];
+                let mut i = 0;
+                let mut max = 0;
+                while i < aligns.len() {
+                    if aligns[i] > max {
+                        max = aligns[i];
+                    }
+                    i += 1;
+                }
+                max
+            };
+        }
         impl #maude::ShaderUniformType for #struct_ident {
+            type Raw = Self;
             fn definition() -> String {
                 format!("struct {} {{\n{}\n}}\n", #name, [#(#sb,)*].join("\n"))
+            }
+            fn raw<'a>(&'a self) -> &'a Self::Raw {
+                self
             }
         }
     }

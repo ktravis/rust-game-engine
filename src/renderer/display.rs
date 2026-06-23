@@ -5,7 +5,7 @@ use crate::geom::Point;
 
 use glam::{vec3, Mat4, Quat, Vec2};
 use image::ImageResult;
-use winit::{dpi::PhysicalSize, window::Window};
+use winit::{dpi::PhysicalSize, event_loop::OwnedDisplayHandle, window::Window};
 
 #[derive(Debug, Clone, Copy)]
 pub enum ScalingMode {
@@ -56,12 +56,21 @@ impl<'a> Deref for MappedBufferView<'a> {
     }
 }
 
+#[derive(Debug)]
+pub struct DisplaySurfaceError(wgpu::CurrentSurfaceTexture);
+
+impl DisplaySurfaceError {
+    pub fn inner(self) -> wgpu::CurrentSurfaceTexture {
+        self.0
+    }
+}
+
 pub struct Display {
     config: wgpu::SurfaceConfiguration,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    depth_texture: Texture,
+    depth_texture_view: wgpu::TextureView,
     // The window must be declared after the surface so
     // it gets dropped after it as the surface contains
     // unsafe references to the window's resources.
@@ -71,15 +80,16 @@ pub struct Display {
 }
 
 impl Display {
-    pub async fn from_window(window: Window) -> Self {
+    pub async fn from_window(window: Window, display_handle: OwnedDisplayHandle) -> Self {
         let size = window.inner_size();
         let window = Arc::new(window);
 
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::from_env().unwrap_or(wgpu::Backends::VULKAN),
             flags: wgpu::InstanceFlags::from_env_or_default(),
             memory_budget_thresholds: Default::default(),
             backend_options: Default::default(),
+            display: Some(Box::new(display_handle)),
         });
 
         // The surface needs to live as long as the window that created it.
@@ -100,7 +110,8 @@ impl Display {
                 label: None,
                 required_features: wgpu::Features::POLYGON_MODE_LINE
                     | wgpu::Features::CLEAR_TEXTURE
-                    | wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER,
+                    | wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER
+                    | wgpu::Features::DEPTH_CLIP_CONTROL,
                 // WebGL doesn't support all of wgpu's features, so if
                 // we're building for the web we'll have to disable some.
                 required_limits: if cfg!(target_arch = "wasm32") {
@@ -144,7 +155,7 @@ impl Display {
             surface,
             device,
             queue,
-            depth_texture,
+            depth_texture_view: depth_texture.view.clone(),
             window,
             staging_buffer: None,
         }
@@ -162,9 +173,10 @@ impl Display {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
-            self.depth_texture = TextureBuilder::depth()
+            let t = TextureBuilder::depth()
                 .with_label("display_depth_texture")
                 .build(self.device(), Point::new(new_size.width, new_size.height));
+            self.depth_texture_view = t.view;
         }
     }
 
@@ -184,8 +196,15 @@ impl Display {
         self.config.format
     }
 
-    fn output_texture(&self) -> Result<wgpu::SurfaceTexture, wgpu::SurfaceError> {
-        self.surface.get_current_texture()
+    fn output_texture(&self) -> Result<wgpu::SurfaceTexture, DisplaySurfaceError> {
+        match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t) => Ok(t),
+            wgpu::CurrentSurfaceTexture::Suboptimal(t) => {
+                self.surface.configure(&self.device, &self.config);
+                Ok(t)
+            }
+            e => Err(DisplaySurfaceError(e)),
+        }
     }
 
     pub fn size_pixels(&self) -> Point<u32> {
@@ -195,11 +214,11 @@ impl Display {
         }
     }
 
-    pub fn depth_texture(&self) -> &Texture {
-        &self.depth_texture
+    pub fn depth_texture_view(&self) -> &wgpu::TextureView {
+        &self.depth_texture_view
     }
 
-    pub fn view(&self) -> Result<DisplayView<'_>, wgpu::SurfaceError> {
+    pub fn view(&self) -> Result<DisplayView<'_>, DisplaySurfaceError> {
         let output_texture = self.output_texture()?;
         let view = output_texture
             .texture
@@ -222,11 +241,11 @@ impl Display {
         TextureBuilder::DEFAULT_DEPTH_FORMAT
     }
 
-    pub fn read_texture_data<'a>(&'a mut self, texture: &Texture) -> MappedBufferView<'a> {
-        let dim = texture.size_pixels();
+    pub fn read_texture_data<'a>(&'a mut self, texture: &wgpu::Texture) -> MappedBufferView<'a> {
+        let dim = texture.size();
         let block_size = texture.format().block_copy_size(None).unwrap();
-        let bytes_per_row = dim.x * block_size;
-        let total_size = (dim.y * bytes_per_row) as u64;
+        let bytes_per_row = dim.width * block_size;
+        let total_size = (dim.height * bytes_per_row) as u64;
 
         if let Some(buf) = &self.staging_buffer {
             if buf.size() < total_size {
@@ -243,16 +262,16 @@ impl Display {
         });
         let mut enc = self.device.create_command_encoder(&Default::default());
         enc.copy_texture_to_buffer(
-            texture.texture.as_image_copy(),
+            texture.as_image_copy(),
             wgpu::TexelCopyBufferInfo {
                 buffer,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(bytes_per_row),
-                    rows_per_image: Some(dim.y),
+                    rows_per_image: Some(dim.height),
                 },
             },
-            texture.texture.size(),
+            texture.size(),
         );
         self.queue.submit([enc.finish()]);
         let slice = buffer.slice(..);

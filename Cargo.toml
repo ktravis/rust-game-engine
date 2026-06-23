@@ -32,18 +32,18 @@ tobj = { version = "3.2", features = ["log"] }
 msdfgen = "0.2.1"
 ttf-parser = "0.18"
 log = "0.4.19"
-wgpu = "27"
-winit = {  version = "0.30.5", features = ["rwh_05"] }
+wgpu = "29"
+winit = {  version = "0.30.13", features = ["rwh_05"] }
 slotmap = "1.0.7"
 
 controlset-derive = { path = "./controlset-derive" }
 shadertype-derive = { path = "./shadertype-derive" }
-egui = "0.33.0"
-egui-wgpu = "0.33.0"
-egui-winit = "0.33.0"
+egui = "0.34"
+egui-wgpu = "0.34"
+egui-winit = "0.34"
 konst = { version = "0.3", features = ["alloc"] }
 const_panic = "0.2"
-# const_format = "0.2.34"
+const_format = "0.2.34"
 
 
 [dependencies.image]

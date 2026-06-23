@@ -114,3 +114,16 @@ impl From<egui::Rgba> for Color {
         rgba.to_array().into()
     }
 }
+
+impl std::ops::Mul for Color {
+    type Output = Self;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        Self {
+            r: self.r * rhs.r,
+            g: self.g * rhs.g,
+            b: self.b * rhs.b,
+            a: self.a * rhs.a,
+        }
+    }
+}

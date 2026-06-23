@@ -1,11 +1,23 @@
 use bytemuck::Zeroable;
 use glam::{vec3, Mat4, Quat, Vec3, Vec4, Vec4Swizzles};
+use shadertype_derive::shader_uniform_type;
 
-use crate::{camera::Frustum, color::Color};
+use crate::{camera::Frustum, color::Color, renderer::bindings::UniformData};
 
-use super::{shaders, state::ViewProjectionUniforms, UniformData};
+use super::state::ViewProjectionUniforms;
 
-pub type LightRaw = shaders::forward::types::Light;
+#[shader_uniform_type]
+pub struct LightRaw {
+    pub direction: glam::f32::Vec3,
+    pub kind: u32,
+    pub color: glam::f32::Vec4,
+    pub view_proj: glam::f32::Mat4,
+    pub position: glam::f32::Vec3,
+    pub radius: f32,
+    pub reach: f32,
+    #[skip]
+    pub _pad: [u8; 12u32 as usize],
+}
 
 impl Default for LightRaw {
     fn default() -> Self {
@@ -89,9 +101,30 @@ impl Light {
         let view = self.kind.view_matrix_from_position(camera_pos);
         let inverse_view = view.inverse();
 
-        let projection = match self.kind {
+        let projection = self.projection(&view, view_frustum);
+        ViewProjectionUniforms {
+            view,
+            projection,
+            camera_pos,
+            inverse_view,
+            ..Default::default()
+        }
+    }
+
+    pub fn debug_transform(&self, view_frustum: &Frustum) -> Mat4 {
+        let mut flip_x = Mat4::IDENTITY;
+        // I don't know why but the perspective matrix makes the cube inside out when inverted
+        flip_x.x_axis[0] *= -1.0;
+        self.kind
+            .view_matrix_from_position(self.kind.position())
+            .inverse()
+            * (flip_x * self.projection(&Mat4::IDENTITY, view_frustum)).inverse()
+    }
+
+    pub fn projection(&self, view: &Mat4, view_frustum: &Frustum) -> Mat4 {
+        match self.kind {
             LightKind::Directional { .. } => {
-                let light_view_frustum = view_frustum.mul(view);
+                let light_view_frustum = view_frustum.mul(*view);
                 let (bounds_min, bounds_max) = light_view_frustum.aabb();
                 Mat4::orthographic_rh(
                     bounds_min.x,
@@ -105,13 +138,6 @@ impl Light {
             LightKind::Spot {
                 fov_degrees, reach, ..
             } => Mat4::perspective_rh(fov_degrees.to_radians(), 1.0, 0.1, reach),
-        };
-        ViewProjectionUniforms {
-            view,
-            projection,
-            camera_pos,
-            inverse_view,
-            ..Default::default()
         }
     }
 
@@ -162,20 +188,20 @@ impl Light {
 
         match self.kind {
             LightKind::Directional { .. } => {
-                let light_view_frustum = view_frustum.mul(view);
-                let (bounds_min, bounds_max) = light_view_frustum.aabb();
-                let projection = Mat4::orthographic_rh(
-                    bounds_min.x,
-                    bounds_max.x,
-                    bounds_min.y,
-                    bounds_max.y,
-                    -bounds_max.z,
-                    -bounds_min.z,
-                );
+                // let light_view_frustum = view_frustum.mul(view);
+                // let (bounds_min, bounds_max) = light_view_frustum.aabb();
+                // let projection = Mat4::orthographic_rh(
+                //     bounds_min.x,
+                //     bounds_max.x,
+                //     bounds_min.y,
+                //     bounds_max.y,
+                //     -bounds_max.z,
+                //     -bounds_min.z,
+                // );
                 LightRaw {
                     kind: 0,
                     color: self.color.into(),
-                    view_proj: projection * view,
+                    view_proj: self.projection(&view, view_frustum) * view,
                     position,
                     direction: -position.normalize(),
                     ..Default::default()
@@ -187,8 +213,9 @@ impl Light {
                 direction,
                 ..
             } => {
+                let projection = self.projection(&view, view_frustum);
                 let fov_radians = fov_degrees.to_radians();
-                let projection = Mat4::perspective_rh(fov_radians, 1.0, 0.1, reach);
+                // let projection = Mat4::perspective_rh(fov_radians, 1.0, 0.1, reach);
                 LightRaw {
                     kind: 1,
                     color: self.color.into(),
@@ -213,7 +240,15 @@ impl From<LightKind> for Light {
     }
 }
 
-pub type LightingUniformsRaw = shaders::forward::types::LightsUniform;
+#[shader_uniform_type]
+pub struct LightingUniformsRaw {
+    pub items: [LightRaw; 8u32 as usize],
+    pub count: u32,
+    pub shadow_bias_minimum: f32,
+    pub shadow_bias_factor: f32,
+    pub shadow_blur_half_kernel_size: i32,
+    pub ambient_color: glam::f32::Vec4,
+}
 
 #[derive(Clone, Debug)]
 pub struct LightsUniform {
@@ -231,8 +266,8 @@ impl Default for LightsUniform {
             lights: vec![],
             view_frustum: Default::default(),
             shadow_bias_minimum: 0.005,
-            shadow_bias_factor: 0.025,
-            shadow_blur_half_kernel_size: 4,
+            shadow_bias_factor: 0.0,
+            shadow_blur_half_kernel_size: 2,
             ambient_color: Color::from(Vec4::splat(0.1)),
         }
     }

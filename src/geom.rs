@@ -1,57 +1,20 @@
-use crate::renderer::{shaders, VertexLayout};
-use glam::{vec2, Vec2};
-use wgpu::{vertex_attr_array, VertexAttribute, VertexBufferLayout};
+use glam::{vec2, Vec2, Vec3, Vec4};
+use shadertype_derive::{ShaderType, VertexInput};
 
-pub trait VertexData:
-    VertexLayout + std::fmt::Debug + Default + Clone + Copy + bytemuck::Pod + bytemuck::Zeroable
-{
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, ShaderType, VertexInput)]
+pub struct BasicVertexData {
+    pub position: Vec4,
+    pub tex_coords: Vec2,
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct BasicVertexData {
-    pub pos: [f32; 4],
-    pub uv: [f32; 2],
+#[derive(Debug, Default, Copy, Clone, ShaderType, VertexInput)]
+pub struct ModelVertexData {
+    pub position: Vec4,
+    pub tex_coords: Vec2,
+    pub normal: Vec3,
 }
-
-impl VertexLayout for BasicVertexData {
-    fn vertex_layout() -> VertexBufferLayout<'static> {
-        VertexBufferLayout {
-            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &Self::ATTRIBUTES,
-        }
-    }
-}
-
-impl BasicVertexData {
-    const ATTRIBUTES: [VertexAttribute; 2] = vertex_attr_array![
-        0 => Float32x4,
-        1 => Float32x2,
-    ];
-}
-
-impl VertexData for BasicVertexData {}
-
-pub type ModelVertexData = shaders::global::types::ModelVertexData;
-
-impl Default for ModelVertexData {
-    fn default() -> Self {
-        Self {
-            position: Default::default(),
-            tex_coords: Default::default(),
-            normal: Default::default(),
-        }
-    }
-}
-
-impl VertexLayout for ModelVertexData {
-    fn vertex_layout() -> VertexBufferLayout<'static> {
-        Self::vertex_buffer_layout()
-    }
-}
-
-impl VertexData for ModelVertexData {}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Point<T = i32> {
@@ -191,20 +154,20 @@ pub mod quad {
     ) -> [BasicVertexData; 4] {
         [
             BasicVertexData {
-                pos: [x, y, 0.0, 1.0],
-                uv: [uv1.0, uv2.1],
+                position: [x, y, 0.0, 1.0].into(),
+                tex_coords: [uv1.0, uv2.1].into(),
             },
             BasicVertexData {
-                pos: [x, y + h, 0.0, 1.0],
-                uv: [uv1.0, uv1.1],
+                position: [x, y + h, 0.0, 1.0].into(),
+                tex_coords: [uv1.0, uv1.1].into(),
             },
             BasicVertexData {
-                pos: [x + w, y + h, 0.0, 1.0],
-                uv: [uv2.0, uv1.1],
+                position: [x + w, y + h, 0.0, 1.0].into(),
+                tex_coords: [uv2.0, uv1.1].into(),
             },
             BasicVertexData {
-                pos: [x + w, y, 0.0, 1.0],
-                uv: [uv2.0, uv2.1],
+                position: [x + w, y, 0.0, 1.0].into(),
+                tex_coords: [uv2.0, uv2.1].into(),
             },
         ]
     }
@@ -246,11 +209,6 @@ pub mod cube {
             position: vec4(x, y, z, 1.0),
             tex_coords: vec2(s, t),
             normal: vec3(nx, ny, nz),
-            // position: vec4(x, y, z, 1.0).into(),
-            // tex_coords: vec2(s, t).into(),
-            // normal: vec3(nx, ny, nz).into(),
-            // _pad: [0; 4],
-            // _pad_tex_coords: [0; 8],
         }
     }
 

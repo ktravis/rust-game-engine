@@ -1,4 +1,14 @@
-#import global.wgsl::{GlobalUniforms, ViewProjectionUniforms};
+struct GlobalUniforms {
+    time: f32,
+    screen_size: vec2<f32>,
+}
+
+struct ViewProjectionUniforms {
+    view: mat4x4<f32>,
+    projection: mat4x4<f32>,
+    camera_pos: vec3<f32>,
+    inverse_view: mat4x4<f32>,
+}
 
 @group(0) @binding(0)
 var t_diffuse: texture_2d<f32>;
@@ -18,13 +28,11 @@ var depth_buffer_sampler: sampler;
 
 const KERNEL_SIZE: u32 = 64;
 
-@export
 struct Kernel {
     items: array<vec4<f32>, KERNEL_SIZE>,
     radius: f32,
     bias: f32,
     noise_texture_scale: vec2<f32>,
-
     aspect_ratio: f32,
     tan_half_fov: f32,
     inverse_proj: mat4x4<f32>,

@@ -5,7 +5,10 @@ use std::{
 
 use wgpu::{util::DeviceExt, BufferUsages};
 
-use crate::geom::{cube, quad, BasicVertexData, ModelVertexData, VertexData};
+use crate::{
+    geom::{cube, quad, BasicVertexData, ModelVertexData},
+    renderer::shader_type::VertexInput,
+};
 
 slotmap::new_key_type! {
     pub struct RawMeshRef;
@@ -62,7 +65,7 @@ pub struct UntypedMesh {
 pub trait LoadMesh {
     type Error: std::fmt::Debug;
 
-    fn load_mesh<V: VertexData>(
+    fn load_mesh<V: VertexInput>(
         &self,
         verts: &[V],
         indices: &[u16],
@@ -83,7 +86,7 @@ pub trait LoadMesh {
 
 impl LoadMesh for wgpu::Device {
     type Error = ();
-    fn load_mesh<V: VertexData>(
+    fn load_mesh<V: VertexInput>(
         &self,
         verts: &[V],
         indices: &[u16],

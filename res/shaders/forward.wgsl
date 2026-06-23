@@ -1,4 +1,20 @@
-#import global.wgsl::{GlobalUniforms, ViewProjectionUniforms, ModelVertexData}
+struct GlobalUniforms {
+    time: f32,
+    screen_size: vec2<f32>,
+}
+
+struct ViewProjectionUniforms {
+    view: mat4x4<f32>,
+    projection: mat4x4<f32>,
+    camera_pos: vec3<f32>,
+    inverse_view: mat4x4<f32>,
+}
+
+struct ModelVertexData {
+    @location(0) position: vec4<f32>,
+    @location(1) tex_coords: vec2<f32>,
+    @location(2) normal: vec3<f32>,
+}
 
 @group(0) @binding(0)
 var t_diffuse: texture_2d<f32>;
@@ -63,7 +79,6 @@ fn vs_main(
     return out;
 }
 
-@export
 struct Light {
     direction: vec3<f32>, // spot + directional
     kind: u32,
@@ -74,7 +89,6 @@ struct Light {
     reach: f32, // spot
 }
 
-@export
 struct LightsUniform {
     items: array<Light, 8>,
     count: u32,

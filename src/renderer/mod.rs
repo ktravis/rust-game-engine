@@ -1,3 +1,4 @@
+pub mod bindings;
 pub mod deferred_lighting;
 pub mod display;
 pub mod egui;
@@ -9,8 +10,8 @@ pub mod mesh;
 pub mod model;
 pub mod pipeline;
 pub mod render_target;
+#[macro_use]
 pub mod shader_type;
-pub mod shaders;
 pub mod shadow_mapping;
 pub mod ssao;
 pub mod ssao_from_depth;

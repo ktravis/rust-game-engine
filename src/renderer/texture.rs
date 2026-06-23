@@ -1,9 +1,6 @@
 use image::{EncodableLayout, RgbaImage};
 
 use crate::geom::Point;
-use crate::renderer::Bindable;
-
-use super::state::BindingType;
 
 slotmap::new_key_type! {
     pub struct TextureRef;
@@ -16,7 +13,7 @@ pub struct TextureBuilder<'a> {
     address_mode: Option<wgpu::AddressMode>,
     min_filter: Option<wgpu::FilterMode>,
     mag_filter: Option<wgpu::FilterMode>,
-    mipmap_filter: Option<wgpu::FilterMode>,
+    mipmap_filter: Option<wgpu::MipmapFilterMode>,
     compare_func: Option<wgpu::CompareFunction>,
     usage: Option<wgpu::TextureUsages>,
     layers: Option<u32>,
@@ -27,6 +24,7 @@ pub struct TextureBuilder<'a> {
 impl<'a> TextureBuilder<'a> {
     pub const DEFAULT_ADDRESS_MODE: wgpu::AddressMode = wgpu::AddressMode::ClampToEdge;
     pub const DEFAULT_FILTER_MODE: wgpu::FilterMode = wgpu::FilterMode::Nearest;
+    pub const DEFAULT_MIPMAP_FILTER_MODE: wgpu::MipmapFilterMode = wgpu::MipmapFilterMode::Nearest;
     pub const DEFAULT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
     pub const DEFAULT_RENDER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
     pub const DEFAULT_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -84,7 +82,7 @@ impl<'a> TextureBuilder<'a> {
         Self {
             min_filter: filter_mode,
             mag_filter: filter_mode,
-            mipmap_filter: filter_mode,
+            // mipmap_filter: filter_mode,
             ..self
         }
     }
@@ -162,7 +160,8 @@ impl<'a> TextureBuilder<'a> {
             }
             self.mag_filter.get_or_insert(wgpu::FilterMode::Linear);
             self.min_filter.get_or_insert(wgpu::FilterMode::Linear);
-            self.mipmap_filter.get_or_insert(wgpu::FilterMode::Nearest);
+            self.mipmap_filter
+                .get_or_insert(wgpu::MipmapFilterMode::Nearest);
         } else {
             let other = if format.is_srgb() {
                 format.remove_srgb_suffix()
@@ -197,7 +196,9 @@ impl<'a> TextureBuilder<'a> {
             address_mode_w: address_mode,
             mag_filter: self.mag_filter.unwrap_or(Self::DEFAULT_FILTER_MODE),
             min_filter: self.min_filter.unwrap_or(Self::DEFAULT_FILTER_MODE),
-            mipmap_filter: self.mipmap_filter.unwrap_or(Self::DEFAULT_FILTER_MODE),
+            mipmap_filter: self
+                .mipmap_filter
+                .unwrap_or(Self::DEFAULT_MIPMAP_FILTER_MODE),
             compare: self.compare_func,
             lod_min_clamp: 0.0,
             lod_max_clamp: 100.0,
@@ -233,26 +234,5 @@ impl Texture {
 
     pub fn format(&self) -> wgpu::TextureFormat {
         self.texture.format()
-    }
-}
-
-impl Bindable for Texture {
-    fn entries(&self) -> Vec<wgpu::BindGroupEntry<'_>> {
-        vec![
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&self.view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Sampler(&self.sampler),
-            },
-        ]
-    }
-
-    fn binding_type(&self) -> BindingType {
-        BindingType::Texture {
-            format: self.format(),
-        }
     }
 }

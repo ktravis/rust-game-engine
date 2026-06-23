@@ -1,20 +1,226 @@
-use std::{ops::Deref, sync::Arc};
-
 use bytemuck::Zeroable;
 use glam::{vec2, vec4, Vec2, Vec4};
-use wgpu::BindGroupLayout;
+use shadertype_derive::shader_uniform_type;
 
-use crate::geom::{BasicVertexData, Point};
-
-use super::{
-    instance::InstanceRenderData,
-    shaders,
-    state::{BoundTexture, ViewProjectionUniforms},
-    BasicInstanceData, Bindable, Display, PipelineRef, RenderState, RenderTarget, TextureBuilder,
-    TextureRef, UniformBindGroup,
+use crate::{
+    geom::{BasicVertexData, Point},
+    renderer::{
+        bindings::{
+            create_uniform_bind_group, BindGroup, Bindable, UnfilteredMaterialGroup,
+            UniformBindGroup,
+        },
+        geometry::GeometryBuffers,
+        shader_type::{create_shader, GlobalUniforms},
+    },
 };
 
-pub type SSAOKernel = shaders::ssao::types::Kernel;
+use super::{
+    instance::InstanceRenderData, state::ViewProjectionUniforms, BasicInstanceData, Display,
+    PipelineRef, RenderState, RenderTarget, TextureBuilder, TextureRef,
+};
+
+const SSAO_SHADER: &'static str = crate::wgsl!(
+    r#"
+@group(0) @binding(0)
+var t_diffuse: texture_2d<f32>;
+@group(0) @binding(1)
+var s_diffuse: sampler;
+
+@group(1) @binding(0)
+var<uniform> global_uniforms: GlobalUniforms;
+
+@group(2) @binding(0)
+var<uniform> view_proj_uniforms: ViewProjectionUniforms;
+
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) tex_coords: vec2<f32>,
+    @location(1) tint_color: vec4<f32>,
+}
+
+@vertex
+fn vs_main(
+    vertex: BasicVertexData,
+    instance: BasicInstanceData,
+) -> VertexOutput {
+    let model_transform = mat4x4<f32>(
+        instance.transform_1,
+        instance.transform_2,
+        instance.transform_3,
+        instance.transform_4,
+    );
+    var out: VertexOutput;
+    out.tex_coords = instance.subtexture_offset + instance.subtexture_scale * vertex.tex_coords;
+    var model = vertex.position;
+    model.x = model.x * 2.0 - 1.0;
+    model.y = model.y * 2.0 - 1.0;
+    let model_view = model;
+    out.clip_position = model_view;
+    out.tint_color = instance.tint;
+    return out;
+}
+
+@group(3) @binding(0)
+var g_position: texture_2d<f32>;
+@group(3) @binding(1)
+var g_position_sampler: sampler;
+@group(3) @binding(2)
+var g_normal: texture_2d<f32>;
+@group(3) @binding(3)
+var g_normal_sampler: sampler;
+@group(3) @binding(4)
+var g_albedo_spec: texture_2d<f32>;
+@group(3) @binding(5)
+var g_albedo_spec_sampler: sampler;
+
+@group(4) @binding(0)
+var<uniform> kernel: SSAOKernel;
+
+@group(5) @binding(0)
+var ssao_noise: texture_2d<f32>;
+@group(5) @binding(1)
+var ssao_noise_sampler: sampler;
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) f32 {
+    var view_space_pos = textureSample(g_position, g_position_sampler, in.tex_coords.xy);
+    var view_space_normal = normalize(textureSample(g_normal, g_normal_sampler, in.tex_coords.xy).xyz);
+
+    var random_vec = textureSample(ssao_noise, ssao_noise_sampler, kernel.noise_texture_scale * in.tex_coords.xy).xyz;
+
+    let tangent = normalize(random_vec - view_space_normal * dot(random_vec, view_space_normal));
+    let bitangent = cross(view_space_normal, tangent);
+    let TBN = mat3x3<f32>(tangent, bitangent, view_space_normal);
+
+    var occlusion = 0.0;
+    for (var i = 0; i < i32(kernel.count); i += 1) {
+        var sample = view_space_pos.xyz + kernel.radius * TBN * kernel.items[i].xyz;
+        var offset = view_proj_uniforms.projection * vec4<f32>(sample, 1.0);
+        // perspective scale for projected offset
+        offset.x /= offset.w;
+        offset.y /= offset.w;
+        // map to [0.0, 1.0] range
+        offset.x = offset.x * 0.5 + 0.5;
+        offset.y = offset.y * 0.5 + 0.5;
+        // invert y
+        offset.y = 1.0 - offset.y;
+
+        var sample_depth = textureSample(g_position, g_position_sampler, offset.xy).z;
+
+        var range_check = smoothstep(0.0f, 1.0f, kernel.radius / abs(view_space_pos.z - sample_depth));
+        if sample_depth >= sample.z + kernel.bias {
+            occlusion += range_check;
+        }
+    }
+    occlusion = 1.0 - (occlusion / f32(kernel.count));
+    occlusion = pow(occlusion, 2.0);
+    return occlusion;
+}"#
+);
+
+pub(crate) const SSAO_BLUR_SHADER: &'static str = crate::wgsl!(
+    r#"
+@group(0) @binding(0)
+var t_diffuse: texture_2d<f32>;
+@group(0) @binding(1)
+var s_diffuse: sampler;
+
+@group(1) @binding(0)
+var<uniform> global_uniforms: GlobalUniforms;
+
+// @group(2) @binding(0)
+// var<uniform> view_proj_uniforms: ViewProjectionUniforms;
+
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) tex_coords: vec2<f32>,
+    @location(1) tint_color: vec4<f32>,
+}
+
+@vertex
+fn vs_main(
+    vertex: BasicVertexData,
+    instance: BasicInstanceData,
+) -> VertexOutput {
+    let model_transform = mat4x4<f32>(
+        instance.transform_1,
+        instance.transform_2,
+        instance.transform_3,
+        instance.transform_4,
+    );
+    var out: VertexOutput;
+    out.tex_coords = instance.subtexture_offset + instance.subtexture_scale * vertex.tex_coords;
+    var model = vertex.position;
+    model.x = model.x * 2.0 - 1.0;
+    model.y = model.y * 2.0 - 1.0;
+    let model_view = model;
+    out.clip_position = model_view;
+    out.tint_color = instance.tint;
+    return out;
+}
+
+@group(4) @binding(0)
+var<uniform> blur_settings: BlurUniforms;
+
+@group(3) @binding(0)
+var depth_buffer: texture_depth_2d;
+@group(3) @binding(1)
+var depth_buffer_sampler: sampler;
+
+fn blur_weight(radius: f32, center_depth: f32, sample_depth: f32) -> f32 {
+    let blur_sigma = (f32(blur_settings.half_kernel_size) + 1.0) * 0.5;
+    let blur_falloff = 1.0 / (2.0 * blur_sigma * blur_sigma);
+    let depth_diff = (sample_depth - center_depth) * blur_settings.sharpness;
+    let weight = exp2(-radius * radius * blur_falloff - depth_diff * depth_diff);
+    return weight;
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) f32 {
+    let texelSize = vec2<f32>(1.0, 1.0) / vec2<f32>(textureDimensions(t_diffuse, 0));
+
+    var result = textureSample(t_diffuse, s_diffuse, in.tex_coords).r;
+    var center_depth = textureSample(depth_buffer, depth_buffer_sampler, in.tex_coords);
+    var weight = 1.0;
+
+    for (var i = 1; i <= blur_settings.half_kernel_size; i++) {
+        let r = f32(i);
+        let uv = in.tex_coords + r * blur_settings.step;
+        let sample_color = textureSample(t_diffuse, s_diffuse, uv).r;
+        let sample_depth = textureSample(depth_buffer, depth_buffer_sampler, in.tex_coords);
+        let w = blur_weight(r, center_depth, sample_depth);
+        weight += w;
+        result += sample_color * w;
+    }
+
+    for (var i = 1; i <= blur_settings.half_kernel_size; i++) {
+        let r = f32(i);
+        let uv = in.tex_coords - r * blur_settings.step;
+        let sample_color = textureSample(t_diffuse, s_diffuse, uv).r;
+        let sample_depth = textureSample(depth_buffer, depth_buffer_sampler, in.tex_coords);
+        let w = blur_weight(r, center_depth, sample_depth);
+        weight += w;
+        result += sample_color * w;
+    }
+
+    result /= weight;
+    return result;
+}"#
+);
+
+#[derive(Debug, PartialEq)]
+#[shader_uniform_type]
+pub struct SSAOKernel {
+    pub items: [glam::f32::Vec4; 64u32 as usize],
+    pub count: u32,
+    pub radius: f32,
+    pub bias: f32,
+    #[skip]
+    pub _pad_bias: [u8; 4u32 as usize],
+    pub noise_texture_scale: glam::f32::Vec2,
+    #[skip]
+    pub _pad: [u8; 8u32 as usize],
+}
 
 impl SSAOKernel {
     const SIZE: usize = 64;
@@ -49,12 +255,11 @@ impl SSAOKernel {
     }
 }
 
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-#[repr(C)]
-struct BlurUniforms {
-    half_kernel_size: i32,
-    sharpness: f32,
-    step: Vec2,
+#[shader_uniform_type]
+pub struct BlurUniforms {
+    pub half_kernel_size: i32,
+    pub sharpness: f32,
+    pub step: Vec2,
 }
 
 impl Default for BlurUniforms {
@@ -71,20 +276,17 @@ pub struct SSAOPass {
     pipeline: PipelineRef<BasicVertexData, BasicInstanceData>,
     output_texture: TextureRef,
     kernel: UniformBindGroup<SSAOKernel>,
-    noise_texture: BoundTexture,
+    noise_texture: BindGroup<UnfilteredMaterialGroup>,
     blur_enabled: bool,
     blur_uniforms: UniformBindGroup<BlurUniforms>,
     blur_pipeline: PipelineRef<BasicVertexData, BasicInstanceData>,
     blur_temp_buffer: TextureRef,
+    view_proj_bind_group: UniformBindGroup<ViewProjectionUniforms>,
 }
 
 impl SSAOPass {
     const NOISE_SCALE: usize = 4;
-    pub fn new(
-        state: &mut RenderState,
-        display: &Display,
-        geometry_pass_bgl: &BindGroupLayout,
-    ) -> Self {
+    pub fn new(state: &mut RenderState, display: &Display) -> Self {
         let fb_size = display.size_pixels();
         let noise: [Vec4; Self::NOISE_SCALE * Self::NOISE_SCALE] = std::array::from_fn(|_| {
             vec4(
@@ -104,11 +306,14 @@ impl SSAOPass {
                 bytemuck::bytes_of(&noise),
                 Point::new(Self::NOISE_SCALE as _, Self::NOISE_SCALE as _),
             );
-        let noise_texture_bgl =
-            state.bind_group_layout(display.device(), noise_texture.binding_type());
 
-        let noise_texture = BoundTexture::new(display.device(), &noise_texture_bgl, noise_texture);
-        let (kernel, uniform_bgl) = state.create_uniform_bind_group(
+        let noise_texture = UnfilteredMaterialGroup {
+            view: noise_texture.view.into(),
+            sampler: noise_texture.sampler.into(),
+        };
+        let noise_texture =
+            BindGroup::<UnfilteredMaterialGroup>::new(display.device(), noise_texture);
+        let kernel = create_uniform_bind_group(
             display.device(),
             SSAOKernel::new(fb_size.as_vec2() / Self::NOISE_SCALE as f32),
         );
@@ -125,13 +330,15 @@ impl SSAOPass {
                 )
                 .build(display.device(), fb_size),
         );
+        let geometry_buffers_bgl =
+            GeometryBuffers::create_layout(display.device(), "geometry buffers");
         let pipeline = state
             .pipeline_builder()
             .with_label("SSAO Pipeline")
             .with_extra_bind_group_layouts(vec![
-                geometry_pass_bgl,
-                &uniform_bgl,
-                &noise_texture_bgl,
+                &geometry_buffers_bgl,
+                kernel.layout(),
+                noise_texture.layout(),
             ])
             .with_color_target_states(vec![Some(wgpu::ColorTargetState {
                 blend: None,
@@ -141,9 +348,10 @@ impl SSAOPass {
             .with_depth_stencil_state(None)
             .build(
                 display.device(),
-                &display
-                    .device()
-                    .create_shader_module(shaders::ssao::DESCRIPTOR),
+                &create_shader::<
+                    (GlobalUniforms, ViewProjectionUniforms, SSAOKernel),
+                    (BasicVertexData, BasicInstanceData),
+                >(display, "ssao", SSAO_SHADER.to_string()),
             );
         let blur_pipeline = state
             .pipeline_builder()
@@ -153,13 +361,14 @@ impl SSAOPass {
                 format: wgpu::TextureFormat::R16Float,
                 write_mask: wgpu::ColorWrites::ALL,
             })])
-            .with_extra_bind_group_layouts(vec![geometry_pass_bgl, &uniform_bgl])
+            .with_extra_bind_group_layouts(vec![&geometry_buffers_bgl, kernel.layout()])
             .with_depth_stencil_state(None)
             .build(
                 display.device(),
-                &display
-                    .device()
-                    .create_shader_module(shaders::ssao_blur::DESCRIPTOR),
+                &create_shader::<
+                    (GlobalUniforms, ViewProjectionUniforms, BlurUniforms),
+                    (BasicVertexData, BasicInstanceData),
+                >(display, "ssao_blur", SSAO_BLUR_SHADER.to_string()),
             );
         let blur_temp_buffer = state.load_texture(
             display,
@@ -175,8 +384,9 @@ impl SSAOPass {
                 .build(display.device(), fb_size),
         );
 
-        let (blur_uniforms, _) =
-            state.create_uniform_bind_group(display.device(), Default::default());
+        let blur_uniforms = create_uniform_bind_group(display.device(), Default::default());
+        let view_proj_bind_group =
+            create_uniform_bind_group(display.device(), ViewProjectionUniforms::default());
         Self {
             pipeline,
             output_texture,
@@ -186,6 +396,7 @@ impl SSAOPass {
             blur_uniforms,
             blur_enabled: true,
             blur_temp_buffer,
+            view_proj_bind_group,
         }
     }
 
@@ -194,10 +405,12 @@ impl SSAOPass {
         state: &mut RenderState,
         display: &Display,
         view_projection: &ViewProjectionUniforms,
-        geometry_pass_bg: Arc<wgpu::BindGroup>,
+        geometry_buffers: &BindGroup<GeometryBuffers>,
     ) -> TextureRef {
-        let u = *self.kernel.uniform();
+        let u = **self.kernel;
         self.kernel.update(display.queue(), u);
+        self.view_proj_bind_group
+            .update(display.queue(), *view_projection);
         let quad = state.quad_mesh();
         state
             .render_pass(
@@ -205,11 +418,11 @@ impl SSAOPass {
                 "SSAO Pass",
                 &[RenderTarget::TextureRef(self.output_texture)],
                 None,
-                view_projection,
+                &self.view_proj_bind_group,
                 |r| {
-                    r.set_bind_group(3, geometry_pass_bg.deref(), &[]);
-                    r.set_bind_group(4, self.kernel.bind_group().deref(), &[]);
-                    r.set_bind_group(5, self.noise_texture.bind_group().deref(), &[]);
+                    r.set_bind_group(3, geometry_buffers.bind_group(), &[]);
+                    r.set_bind_group(4, self.kernel.bind_group(), &[]);
+                    r.set_bind_group(5, self.noise_texture.bind_group(), &[]);
                     r.draw_instance(&InstanceRenderData {
                         mesh: quad,
                         instance: BasicInstanceData::default(),
@@ -229,19 +442,20 @@ impl SSAOPass {
                     "SSAO Blur Pass - X",
                     &[RenderTarget::TextureRef(self.blur_temp_buffer)],
                     None,
-                    &ViewProjectionUniforms {
-                        // projection: display_view.orthographic_projection(),
-                        ..Default::default()
-                    },
+                    &self.view_proj_bind_group,
+                    // &ViewProjectionUniforms {
+                    //     // projection: display_view.orthographic_projection(),
+                    //     ..Default::default()
+                    // },
                     |r| {
-                        r.set_bind_group(3, geometry_pass_bg.deref(), &[]);
-                        r.set_bind_group(4, self.blur_uniforms.bind_group().deref(), &[]);
+                        r.set_bind_group(3, geometry_buffers.bind_group(), &[]);
+                        r.set_bind_group(4, self.blur_uniforms.bind_group(), &[]);
                         r.draw_instance(&InstanceRenderData {
                             mesh: quad,
                             instance: BasicInstanceData {
                                 ..Default::default()
                             },
-                            texture: Some(self.output_texture),
+                            texture: Some(self.output_texture.into()),
                             pipeline: Some(self.blur_pipeline),
                         });
                     },
@@ -256,19 +470,20 @@ impl SSAOPass {
                     "SSAO Blur Pass - Y",
                     &[RenderTarget::TextureRef(self.output_texture)],
                     None,
-                    &ViewProjectionUniforms {
-                        // projection: display_view.orthographic_projection(),
-                        ..Default::default()
-                    },
+                    &self.view_proj_bind_group,
+                    // &ViewProjectionUniforms {
+                    //     // projection: display_view.orthographic_projection(),
+                    //     ..Default::default()
+                    // },
                     |r| {
-                        r.set_bind_group(3, geometry_pass_bg.deref(), &[]);
-                        r.set_bind_group(4, self.blur_uniforms.bind_group().deref(), &[]);
+                        r.set_bind_group(3, geometry_buffers.bind_group(), &[]);
+                        r.set_bind_group(4, self.blur_uniforms.bind_group(), &[]);
                         r.draw_instance(&InstanceRenderData {
                             mesh: quad,
                             instance: BasicInstanceData {
                                 ..Default::default()
                             },
-                            texture: Some(self.blur_temp_buffer),
+                            texture: Some(self.blur_temp_buffer.into()),
                             pipeline: Some(self.blur_pipeline),
                         });
                     },

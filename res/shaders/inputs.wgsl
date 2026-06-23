@@ -1,11 +1,9 @@
-@export
 struct VertexInput {
     @location(0) position: vec4<f32>,
     @location(1) tex_coords: vec2<f32>,
     @location(2) normal: vec3<f32>,
 }
 
-@export
 struct InstanceInput {
     @location(3) uv_scale: vec2<f32>,
     @location(4) uv_offset: vec2<f32>,

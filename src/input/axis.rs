@@ -1,7 +1,7 @@
 use crate::input::AxisInput;
 use derive_more::Display;
 
-use super::{AnalogInput, AnyInput, DigitalInput, InputChange, StateChange, InputState};
+use super::{AnalogInput, AnyInput, DigitalInput, InputChange, InputState, StateChange};
 
 #[derive(Debug, Display, Clone, Copy)]
 pub enum OverlapMode {
@@ -136,7 +136,11 @@ impl RawAxisBinding {
                 pair: (l, r),
                 state,
             } => {
-                let InputChange::Digital { input, state_change } = input_change else {
+                let InputChange::Digital {
+                    input,
+                    state_change,
+                } = input_change
+                else {
                     // this is an analog change
                     return *state != None;
                 };

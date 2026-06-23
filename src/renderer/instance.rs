@@ -1,8 +1,9 @@
 use std::ops::Deref;
 
 use crate::geom::BasicVertexData;
+use crate::renderer::shader_type::VertexInput;
 
-use super::{Display, InstanceData, MeshRef, PipelineRef, TextureRef};
+use super::{Display, MeshRef, PipelineRef, TextureRef};
 
 use super::BasicInstanceData;
 
@@ -47,7 +48,7 @@ impl InstanceStorage {
         self.instance_buffer.as_ref().unwrap()
     }
 
-    pub fn add<I: InstanceData>(&mut self, instance: &I) {
+    pub fn add<I: VertexInput>(&mut self, instance: &I) {
         self.raw_instance_bytes
             .extend_from_slice(bytemuck::bytes_of(instance));
     }

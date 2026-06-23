@@ -1,4 +1,5 @@
 use egui::Context;
+use egui::Ui;
 use egui_wgpu::Renderer;
 use egui_wgpu::RendererOptions;
 use egui_wgpu::ScreenDescriptor;
@@ -55,10 +56,10 @@ impl EguiRenderer {
         encoder: &mut CommandEncoder,
         color_attachment: wgpu::RenderPassColorAttachment<'_>,
         depth_stencil_attachment: Option<wgpu::RenderPassDepthStencilAttachment<'_>>,
-        run_ui: impl FnMut(&Context),
+        run_ui: impl FnMut(&'_ mut Ui),
     ) {
         let raw_input = self.state.take_egui_input(display.window());
-        let full_output = self.context.run(raw_input, run_ui);
+        let full_output = self.context.run_ui(raw_input, run_ui);
 
         self.state
             .handle_platform_output(display.window(), full_output.platform_output);
@@ -86,8 +87,7 @@ impl EguiRenderer {
                 color_attachments: &[Some(color_attachment)],
                 depth_stencil_attachment,
                 label: Some("egui main render pass"),
-                timestamp_writes: None,
-                occlusion_query_set: None,
+                ..Default::default()
             })
             .forget_lifetime();
         self.renderer.render(&mut rpass, &tris, &screen_descriptor);

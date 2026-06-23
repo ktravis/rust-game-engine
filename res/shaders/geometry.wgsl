@@ -1,4 +1,14 @@
-#import global.wgsl::{GlobalUniforms, ViewProjectionUniforms}
+struct GlobalUniforms {
+    time: f32,
+    screen_size: vec2<f32>,
+}
+
+struct ViewProjectionUniforms {
+    view: mat4x4<f32>,
+    projection: mat4x4<f32>,
+    camera_pos: vec3<f32>,
+    inverse_view: mat4x4<f32>,
+}
 
 @group(0) @binding(0)
 var t_diffuse: texture_2d<f32>;

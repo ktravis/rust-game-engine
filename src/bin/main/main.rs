@@ -1,10 +1,13 @@
 use std::ops::DerefMut;
 
 use bytemuck::Zeroable;
-use glam::{vec2, vec3, Mat3, Mat4, Quat, Vec3};
+use glam::{vec2, vec3};
 use itertools::Itertools;
 use rust_game_engine::app::{App, AppState, Context};
 use rust_game_engine::color::Color;
+use rust_game_engine::renderer::bindings::{
+    create_uniform_bind_group, DepthBuffer, UniformBindGroup,
+};
 use rust_game_engine::renderer::forward::ForwardGeometryPass;
 use rust_game_engine::renderer::geometry::GeometryPass;
 use rust_game_engine::renderer::lighting::{Light, LightKind};
@@ -13,7 +16,9 @@ use rust_game_engine::renderer::shader_type::GlobalUniforms;
 use rust_game_engine::renderer::shadow_mapping::ShadowMappingPass;
 use rust_game_engine::renderer::ssao_from_depth::SSAOPass;
 use rust_game_engine::renderer::text::RenderableFont;
-use rust_game_engine::renderer::{InstanceDataWithNormalMatrix, MeshRef, RenderTarget};
+use rust_game_engine::renderer::{
+    DisplaySurfaceError, InstanceDataWithNormalMatrix, MeshRef, RenderTarget,
+};
 use winit::dpi::PhysicalSize;
 use winit::event_loop::EventLoop;
 
@@ -71,8 +76,10 @@ struct State {
     geometry_pass: GeometryPass,
     occlusion_pass: SSAOPass,
     ssao_enabled: bool,
+    show_light_volumes: bool,
     // deferred_lighting_pass: LightingPass,
     forward_pass: ForwardGeometryPass,
+    ortho_view_proj_bind_group: UniformBindGroup<ViewProjectionUniforms>,
 
     // "game" state
     camera: Camera,
@@ -125,7 +132,7 @@ impl AppState for State {
     fn new(ctx: &mut Context<Self::Controls>) -> Self {
         let mut asset_manager = AssetManager::new(GameAssets::default(), "./res/");
 
-        let camera = Camera::new(vec3(0.0, 2.3, 6.0), 960.0 / 720.0);
+        let camera = Camera::new(vec3(0.0, 2.3, -12.0), 960.0 / 720.0);
 
         let cube_mesh = ctx
             .render_state
@@ -191,18 +198,25 @@ impl AppState for State {
         ctx.set_cursor_captured(true);
 
         let shadow_mapping_pass = ShadowMappingPass::new(&mut ctx.render_state, &ctx.display);
-        let forward_pass = ForwardGeometryPass::new(
-            &mut ctx.render_state,
-            &ctx.display,
-            fb_size,
-            &shadow_mapping_pass.shadow_map_texture(),
-        );
+        let forward_pass = {
+            let smt = shadow_mapping_pass.shadow_map_texture();
+            ForwardGeometryPass::new(
+                &mut ctx.render_state,
+                &ctx.display,
+                fb_size,
+                smt.view.clone(),
+                smt.sampler.clone(),
+            )
+        };
         let geometry_pass = GeometryPass::new(&mut ctx.render_state, &ctx.display, fb_size);
         let occlusion_pass = SSAOPass::new(
             &mut ctx.render_state,
             &ctx.display,
             fb_size,
-            &forward_pass.depth_target,
+            DepthBuffer {
+                view: forward_pass.depth_target_view.clone(),
+                sampler: forward_pass.depth_target_sampler.clone(),
+            },
             &camera,
         );
 
@@ -219,6 +233,8 @@ impl AppState for State {
                 });
             }
         }
+        let ortho_view_proj_bind_group =
+            create_uniform_bind_group(ctx.display.device(), ViewProjectionUniforms::default());
 
         Self {
             asset_manager,
@@ -242,15 +258,15 @@ impl AppState for State {
                     reach: 40.0,
                 }
                 .into(),
-                Light {
-                    color: Color::RED,
-                    kind: LightKind::Spot {
-                        position: vec3(0.0, 5.0, 0.0),
-                        direction: vec3(0.0, -8.0, 30.0),
-                        fov_degrees: 60.0,
-                        reach: 40.0,
-                    },
-                },
+                // Light {
+                //     color: Color::RED,
+                //     kind: LightKind::Spot {
+                //         position: vec3(0.0, 5.0, 0.0),
+                //         direction: vec3(0.0, -8.0, 30.0),
+                //         fov_degrees: 60.0,
+                //         reach: 40.0,
+                //     },
+                // },
                 Light {
                     color: Color::GREEN,
                     kind: LightKind::Spot {
@@ -273,7 +289,9 @@ impl AppState for State {
             model_meshes,
             // deferred_lighting_pass,
             cubes,
-            scene: Scene::Cubes,
+            scene: Scene::Model,
+            show_light_volumes: true,
+            ortho_view_proj_bind_group,
         }
     }
 
@@ -320,7 +338,9 @@ impl AppState for State {
         true
     }
 
-    fn render(&mut self, ctx: &mut Context<GameControls>) -> Result<(), wgpu::SurfaceError> {
+    fn render(&mut self, ctx: &mut Context<GameControls>) -> Result<(), DisplaySurfaceError> {
+        let display_view = ctx.display.view()?;
+
         ctx.render_state.global_uniforms.update(
             ctx.display.queue(),
             GlobalUniforms {
@@ -333,15 +353,15 @@ impl AppState for State {
 
         // let mut scene = vec![];
         let mut scene = vec![
-            // InstanceRenderData {
-            //     texture: Some(self.crate_texture),
-            //     mesh: self.cube_mesh,
-            //     instance: InstanceDataWithNormalMatrix::from_basic(
-            //         Default::default(),
-            //         view_proj.view,
-            //     ),
-            //     pipeline: None,
-            // },
+            InstanceRenderData {
+                texture: Some(self.crate_texture),
+                mesh: self.cube_mesh,
+                instance: InstanceDataWithNormalMatrix::from_basic(
+                    Default::default(),
+                    view_proj.view,
+                ),
+                pipeline: None,
+            },
             // InstanceRenderData {
             //     mesh: self.cube_mesh,
             //     instance: InstanceDataWithNormalMatrix::from_basic(
@@ -422,8 +442,8 @@ impl AppState for State {
         }
 
         // Populate G buffers
-        // self.geometry_pass
-        //     .run(&mut ctx.render_state, &ctx.display, &view_proj, &scene);
+        self.geometry_pass
+            .run(&mut ctx.render_state, &ctx.display, &view_proj, &scene);
 
         self.forward_pass
             .depth_prepass(&mut ctx.render_state, &ctx.display, &view_proj, &scene);
@@ -435,18 +455,20 @@ impl AppState for State {
             ctx.render_state.default_texture()
         };
 
-        self.lights
-            .iter_mut()
-            .enumerate()
-            .for_each(|(i, light)| match &mut light.kind {
-                LightKind::Directional { .. } => todo!(),
-                LightKind::Spot { direction, .. } => {
-                    *direction = Mat3::from_rotation_y((i as f32 + 0.5) * 0.01) * *direction;
-                }
-            });
+        // self.lights
+        //     .iter_mut()
+        //     .enumerate()
+        //     .for_each(|(i, light)| match &mut light.kind {
+        //         LightKind::Directional { .. } => todo!(),
+        //         LightKind::Spot { direction, .. } => {
+        //             *direction = Mat3::from_rotation_y((i as f32 + 0.5) * 0.01) * *direction;
+        //         }
+        //     });
 
         self.forward_pass
-            .lights_uniform
+            .lighting_group
+            .lights
+            // .lights_uniform
             .update_with(ctx.display.queue(), |u| {
                 u.lights = self.lights.clone();
                 u.view_frustum = self.camera.frustum();
@@ -455,44 +477,33 @@ impl AppState for State {
         self.shadow_mapping_pass.run(
             &mut ctx.render_state,
             &ctx.display,
-            &self.forward_pass.lights_uniform,
+            &self.forward_pass.lighting_group.lights,
             &scene,
         );
 
-        if ctx.input.debug.on {
+        if ctx.input.debug.on && self.show_light_volumes {
             for light in &self.lights {
-                let pos = light.kind.position();
                 scene.push(InstanceRenderData {
                     mesh: self.cube_mesh,
-                    instance: InstanceDataWithNormalMatrix::from_basic(
-                        BasicInstanceData {
-                            transform: Mat4::from_scale_rotation_translation(
-                                vec3(0.05, 2.5, 0.05),
-                                Quat::from_rotation_arc(Vec3::Y, pos.normalize()),
-                                Vec3::ZERO,
-                            ) * Mat4::from_translation(Vec3::Y),
-                            tint: light.color.into(),
-                            ..Default::default()
-                        },
-                        view_proj.view,
-                    ),
+                    instance: InstanceDataWithNormalMatrix {
+                        material: 1,
+                        ..InstanceDataWithNormalMatrix::from_basic(
+                            BasicInstanceData {
+                                transform: light.debug_transform(&self.camera.frustum()),
+                                // transform: Mat4::from_scale_rotation_translation(
+                                //     vec3(0.15, 0.15, 0.15),
+                                //     Quat::from_rotation_arc(Vec3::Y, pos.normalize()),
+                                //     pos,
+                                // ) * Mat4::from_translation(Vec3::Y),
+                                tint: (light.color * Color::from((1.0, 1.0, 1.0, 0.5))).into(),
+                                ..Default::default()
+                            },
+                            view_proj.view,
+                        )
+                    },
                     texture: None,
                     pipeline: None,
                 });
-
-                // scene.push(InstanceRenderData {
-                //     mesh: self.cube_mesh,
-                //     instance: InstanceDataWithNormalMatrix::from_basic(
-                //         BasicInstanceData {
-                //             transform: light.view.inverse() * Mat4::from_scale(vec3(30.0, 40.0, 20.0)),
-                //             tint: light.color.into(),
-                //             ..Default::default()
-                //         },
-                //         view_proj.view,
-                //     ),
-                //     texture: None,
-                //     pipeline: None,
-                // });
             }
         }
 
@@ -504,8 +515,15 @@ impl AppState for State {
             occlusion_map,
         );
 
+        self.ortho_view_proj_bind_group.update(
+            ctx.display.queue(),
+            ViewProjectionUniforms {
+                projection: display_view.orthographic_projection(),
+                ..Default::default()
+            },
+        );
+
         // Draw offscreen buffer, overlay with 2d elements
-        let display_view = ctx.display.view()?;
         let mut enc = ctx
             .render_state
             .render_pass(
@@ -513,12 +531,9 @@ impl AppState for State {
                 "Default Pass",
                 &[RenderTarget::TextureView(display_view.view())],
                 Some(RenderTarget::TextureView(
-                    &display_view.display().depth_texture().view,
+                    display_view.display().depth_texture_view(),
                 )),
-                &ViewProjectionUniforms {
-                    projection: display_view.orthographic_projection(),
-                    ..Default::default()
-                },
+                &self.ortho_view_proj_bind_group,
                 |r| {
                     r.draw_quad(
                         // self.offscreen_framebuffer.color,
@@ -580,7 +595,7 @@ impl AppState for State {
                     depth_slice: None,
                 },
                 Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &display_view.display().depth_texture().view,
+                    view: &display_view.display().depth_texture_view(),
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(0.0),
                         store: wgpu::StoreOp::Store,
@@ -607,27 +622,31 @@ impl AppState for State {
                                 });
 
                             ui.separator();
-                            ui.label("Lights");
-                            let lights_uniform = self.forward_pass.lights_uniform.deref_mut();
+                            ui.label("Shadows");
+                            // let lights_uniform = self.forward_pass.lights_uniform.deref_mut();
+                            let lights_uniform =
+                                self.forward_pass.lighting_group.lights.deref_mut();
                             ui.label("Bias min");
                             ui.add(egui::Slider::new(
-                                &mut self.shadow_mapping_pass.depth_bias_state.constant,
-                                -10..=10,
+                                &mut lights_uniform.shadow_bias_minimum,
+                                -5.0..=5.0,
                             ));
                             ui.label("Bias factor");
                             ui.add(egui::Slider::new(
-                                &mut self.shadow_mapping_pass.depth_bias_state.slope_scale,
-                                -1.0..=5.0,
-                            ));
-                            ui.label("Bias factor");
-                            ui.add(egui::Slider::new(
-                                &mut self.shadow_mapping_pass.depth_bias_state.clamp,
-                                -1.0..=5.0,
+                                &mut lights_uniform.shadow_bias_factor,
+                                -0.1..=0.1,
                             ));
                             ui.label("Blur factor");
                             ui.add(egui::Slider::new(
                                 &mut lights_uniform.shadow_blur_half_kernel_size,
                                 0..=10,
+                            ));
+
+                            ui.separator();
+                            ui.label("Lights");
+                            ui.add(egui::Checkbox::new(
+                                &mut self.show_light_volumes,
+                                "show light volumes",
                             ));
                             {
                                 let mut c = egui::Rgba::from_rgba_premultiplied(

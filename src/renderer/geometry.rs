@@ -1,23 +1,110 @@
-use std::sync::Arc;
-
 use wgpu::TextureUsages;
 
-use crate::geom::{ModelVertexData, Point};
+use crate::{
+    define_bind_group,
+    geom::{ModelVertexData, Point},
+    renderer::{
+        bindings::{
+            create_uniform_bind_group, BindGroup, Bindable, NonFilteringSampler, TextureView,
+            UniformBindGroup,
+        },
+        shader_type::{create_shader, GlobalUniforms},
+    },
+};
 
 use super::{
-    instance::InstanceRenderData, shaders, state::ViewProjectionUniforms, Display,
+    instance::InstanceRenderData, state::ViewProjectionUniforms, Display,
     InstanceDataWithNormalMatrix, PipelineBuilder, PipelineRef, RenderState, RenderTarget, Texture,
-    TextureBuilder, TextureRef,
+    TextureBuilder,
 };
+
+const GEOMETRY_SHADER: &'static str = crate::wgsl!(
+    r#"
+@group(0) @binding(0)
+var t_diffuse: texture_2d<f32>;
+@group(0) @binding(1)
+var s_diffuse: sampler;
+
+@group(1) @binding(0)
+var<uniform> global_uniforms: GlobalUniforms;
+
+@group(2) @binding(0)
+var<uniform> view_proj_uniforms: ViewProjectionUniforms;
+
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) tex_coords: vec2<f32>,
+    @location(1) view_pos: vec4<f32>,
+    @location(2) view_space_normal: vec3<f32>,
+    @location(3) tint_color: vec4<f32>,
+}
+
+@vertex
+fn vs_main(
+    vertex: ModelVertexData,
+    instance: InstanceDataWithNormalMatrix,
+) -> VertexOutput {
+    let model_transform = mat4x4<f32>(
+        instance.transform_1,
+        instance.transform_2,
+        instance.transform_3,
+        instance.transform_4,
+    );
+    let normal_matrix = mat3x3<f32>(
+        instance.normal_matrix_1,
+        instance.normal_matrix_2,
+        instance.normal_matrix_3,
+    );
+    var out: VertexOutput;
+    out.tex_coords = instance.subtexture_offset + instance.subtexture_scale * vertex.tex_coords;
+    let model_view = (view_proj_uniforms.view * model_transform);
+    let model_view_pos = model_view * vertex.position;
+    out.clip_position = view_proj_uniforms.projection * model_view_pos;
+    out.view_space_normal = normalize(normal_matrix * vertex.normal);
+    out.view_pos = model_view_pos;
+    out.tint_color = instance.tint;
+    return out;
+}
+
+struct FragmentOutput {
+    @location(0)
+    g_position: vec4<f32>,
+    @location(1)
+    g_normal: vec4<f32>,
+    @location(2)
+    g_albedo_spec: vec4<f32>,
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> FragmentOutput {
+    var out: FragmentOutput;
+    out.g_position = in.view_pos;
+    out.g_normal = vec4(normalize(in.view_space_normal), 0.0);
+    out.g_albedo_spec = in.tint_color * textureSample(t_diffuse, s_diffuse, in.tex_coords);
+    return out;
+}
+"#
+);
+
+define_bind_group! {
+    pub GeometryBuffers {
+        position_view: TextureView<f32, 2, false>,
+        position_sampler: NonFilteringSampler,
+        normal_view: TextureView<f32, 2, false>,
+        normal_sampler: NonFilteringSampler,
+        albedo_spec_view: TextureView<f32, 2, false>,
+        albedo_spec_sampler: NonFilteringSampler,
+    }
+}
 
 pub struct GeometryPass {
     pipeline: PipelineRef<ModelVertexData, InstanceDataWithNormalMatrix>,
-    pub g_position: TextureRef,
-    pub g_normal: TextureRef,
-    pub g_albedo_specular: TextureRef,
+    // pub g_position: Texture,
+    // pub g_normal: Texture,
+    // pub g_albedo_specular: Texture,
     depth_target: Texture,
-    bind_group: Arc<wgpu::BindGroup>,
-    bind_group_layout: wgpu::BindGroupLayout,
+    bind_group: BindGroup<GeometryBuffers>,
+    view_proj_bind_group: UniformBindGroup<ViewProjectionUniforms>,
 }
 
 impl GeometryPass {
@@ -65,154 +152,44 @@ impl GeometryPass {
             ])
             .with_depth_stencil_state(Some(wgpu::DepthStencilState {
                 format: depth_target.format(),
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: Default::default(),
                 bias: Default::default(),
             }))
             .build(
                 display.device(),
-                &display
-                    .device()
-                    .create_shader_module(shaders::geometry::DESCRIPTOR),
+                &create_shader::<
+                    (GlobalUniforms, ViewProjectionUniforms),
+                    (ModelVertexData, InstanceDataWithNormalMatrix),
+                >(display, "geometry", GEOMETRY_SHADER.to_string()),
             );
-        let bind_group_layout =
-            display
-                .device()
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    entries: &[
-                        // g_position
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                multisampled: false,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-                            count: None,
-                        },
-                        // g_normal
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 2,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                multisampled: false,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 3,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-                            count: None,
-                        },
-                        // g_albedo_specular
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 4,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                multisampled: false,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 5,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-                            count: None,
-                        },
-                        // g_depth
-                        // wgpu::BindGroupLayoutEntry {
-                        //     binding: 6,
-                        //     visibility: wgpu::ShaderStages::FRAGMENT,
-                        //     ty: wgpu::BindingType::Texture {
-                        //         multisampled: false,
-                        //         view_dimension: wgpu::TextureViewDimension::D2,
-                        //         sample_type: wgpu::TextureSampleType::Depth,
-                        //     },
-                        //     count: None,
-                        // },
-                        // wgpu::BindGroupLayoutEntry {
-                        //     binding: 7,
-                        //     visibility: wgpu::ShaderStages::FRAGMENT,
-                        //     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-                        //     count: None,
-                        // },
-                    ],
-                    label: Some("geometry bind group layout"),
-                });
-        let bind_group = display
-            .device()
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("lighting bind group"),
-                layout: &bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&g_position.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&g_position.sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&g_normal.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::Sampler(&g_normal.sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(&g_albedo_specular.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: wgpu::BindingResource::Sampler(&g_albedo_specular.sampler),
-                    },
-                    // wgpu::BindGroupEntry {
-                    //     binding: 6,
-                    //     resource: wgpu::BindingResource::TextureView(&depth_target.view),
-                    // },
-                    // wgpu::BindGroupEntry {
-                    //     binding: 7,
-                    //     resource: wgpu::BindingResource::Sampler(&depth_target.sampler),
-                    // },
-                ],
-            })
-            .into();
-        let g_position = state.load_texture(display, g_position);
-        let g_normal = state.load_texture(display, g_normal);
-        let g_albedo_specular = state.load_texture(display, g_albedo_specular);
+        let bind_group = BindGroup::new(
+            display.device(),
+            GeometryBuffers {
+                position_view: g_position.view.into(),
+                position_sampler: g_position.sampler.into(),
+                normal_view: g_normal.view.into(),
+                normal_sampler: g_normal.sampler.into(),
+                albedo_spec_view: g_albedo_specular.view.into(),
+                albedo_spec_sampler: g_albedo_specular.sampler.into(),
+            },
+        );
+        let view_proj_bind_group =
+            create_uniform_bind_group(display.device(), ViewProjectionUniforms::default());
+        // let g_position = state.load_texture(display, g_position);
+        // let g_normal = state.load_texture(display, g_normal);
+        // let g_albedo_specular = state.load_texture(display, g_albedo_specular);
         Self {
             pipeline,
-            g_position,
-            g_normal,
-            g_albedo_specular,
             depth_target,
             bind_group,
-            bind_group_layout,
+            view_proj_bind_group,
         }
     }
 
-    pub fn bind_group(&self) -> &Arc<wgpu::BindGroup> {
+    pub fn bind_group(&self) -> &BindGroup<GeometryBuffers> {
         &self.bind_group
-    }
-
-    pub fn bind_group_layout(&self) -> &wgpu::BindGroupLayout {
-        &self.bind_group_layout
     }
 
     pub fn run(
@@ -222,17 +199,19 @@ impl GeometryPass {
         view_projection: &ViewProjectionUniforms,
         scene: &[InstanceRenderData<ModelVertexData, InstanceDataWithNormalMatrix>],
     ) {
+        self.view_proj_bind_group
+            .update(display.queue(), *view_projection);
         state
             .render_pass(
                 &display,
                 "Geometry Pass",
                 &[
-                    RenderTarget::TextureRef(self.g_position),
-                    RenderTarget::TextureRef(self.g_normal),
-                    RenderTarget::TextureRef(self.g_albedo_specular),
+                    RenderTarget::TextureView(&self.bind_group.position_view.raw()),
+                    RenderTarget::TextureView(&self.bind_group.normal_view.raw()),
+                    RenderTarget::TextureView(&self.bind_group.albedo_spec_view.raw()),
                 ],
                 Some(RenderTarget::TextureView(&self.depth_target.view)),
-                view_projection,
+                &self.view_proj_bind_group,
                 |r| {
                     for render_data in scene {
                         r.draw_instance(&InstanceRenderData {
