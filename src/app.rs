@@ -222,9 +222,6 @@ var t_diffuse: texture_2d<f32>;
 var s_diffuse: sampler;
 
 @group(1) @binding(0)
-var<uniform> global_uniforms: GlobalUniforms;
-
-@group(2) @binding(0)
 var<uniform> view_proj_uniforms: ViewProjectionUniforms;
 
 struct VertexOutput {
@@ -270,9 +267,6 @@ var t_diffuse: texture_2d<f32>;
 var s_diffuse: sampler;
 
 @group(1) @binding(0)
-var<uniform> global_uniforms: GlobalUniforms;
-
-@group(2) @binding(0)
 var<uniform> view_proj_uniforms: ViewProjectionUniforms;
 
 struct VertexOutput {

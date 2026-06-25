@@ -5,8 +5,8 @@ use crate::{
     geom::{ModelVertexData, Point},
     renderer::{
         bindings::{
-            create_uniform_bind_group, BindGroup, Bindable, NonFilteringSampler, TextureView,
-            UniformBindGroup,
+            create_uniform_bind_group, texture_bgl_entries, BindGroup, Bindable,
+            NonFilteringSampler, TextureView, UniformBindGroup, UNIFORM_BGL_ENTRY,
         },
         shader_type::{create_shader, GlobalUniforms},
     },
@@ -130,6 +130,27 @@ impl GeometryPass {
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             )
             .build(display.device(), size);
+        let main_texture_bgl =
+            display
+                .device()
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("main texture"),
+                    entries: &texture_bgl_entries(TextureBuilder::DEFAULT_FORMAT),
+                });
+        let global_uniform_bgl =
+            display
+                .device()
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("global uniform bg layout"),
+                    entries: &[UNIFORM_BGL_ENTRY],
+                });
+        let view_proj_uniform_bgl =
+            display
+                .device()
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("view proj uniform bg layout"),
+                    entries: &[UNIFORM_BGL_ENTRY],
+                });
         let pipeline = state
             .pipeline_builder()
             .with_label("Geometry Pass Pipeline")
@@ -157,6 +178,11 @@ impl GeometryPass {
                 stencil: Default::default(),
                 bias: Default::default(),
             }))
+            .with_bind_group_layouts(vec![
+                &main_texture_bgl,
+                &global_uniform_bgl,
+                &view_proj_uniform_bgl,
+            ])
             .build(
                 display.device(),
                 &create_shader::<
@@ -211,8 +237,12 @@ impl GeometryPass {
                     RenderTarget::TextureView(&self.bind_group.albedo_spec_view.raw()),
                 ],
                 Some(RenderTarget::TextureView(&self.depth_target.view)),
-                &self.view_proj_bind_group,
                 |r| {
+                    let default_texture = r.render_state.get_texture(None).clone();
+                    r.set_bind_group(0, &default_texture, &[]);
+                    let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
+                    r.set_bind_group(1, &global_uniforms, &[]);
+                    r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
                     for render_data in scene {
                         r.draw_instance(&InstanceRenderData {
                             pipeline: Some(self.pipeline),

@@ -24,7 +24,10 @@ use crate::{
     color::Color,
     geom::{BasicVertexData, Point, Rect},
     renderer::{
-        bindings::{create_uniform_bind_group, texture_bgl_entries, BindGroup, UniformBindGroup},
+        bindings::{
+            create_uniform_bind_group, texture_bgl_entries, BindGroup, UniformBindGroup,
+            UNIFORM_BGL_ENTRY,
+        },
         shader_type::VertexInput,
     },
     transform::{Transform, Transform2D},
@@ -178,23 +181,30 @@ impl RenderState {
                 ),
         );
         s.quad_mesh = s.prepare_mesh(display.device().load_quad_mesh());
+        let view_proj_uniform_bgl =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("view proj uniform bg layout"),
+                entries: &[UNIFORM_BGL_ENTRY],
+            });
+        let main_texture_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("main texture"),
+            entries: &texture_bgl_entries(TextureBuilder::DEFAULT_FORMAT),
+        });
         s.default_pipeline = s
             .pipeline_builder()
             .with_label("Default Render Pipeline")
+            .with_bind_group_layouts(vec![&main_texture_bgl, &view_proj_uniform_bgl])
             .build(display.device(), &default_shader);
         s.text_pipeline = s
             .pipeline_builder()
             .with_label("Text Render Pipeline")
+            .with_bind_group_layouts(vec![&main_texture_bgl, &view_proj_uniform_bgl])
             .build(display.device(), &text_shader);
         s
     }
 
     pub fn quad_mesh(&self) -> MeshRef<BasicVertexData> {
         self.quad_mesh
-    }
-
-    pub fn default_pipeline(&self) -> PipelineRef<BasicVertexData, BasicInstanceData> {
-        self.default_pipeline
     }
 
     pub fn pipeline_builder<'a>(&'a mut self) -> PipelineBuilder<'a> {
@@ -222,7 +232,6 @@ impl RenderState {
         name: &str,
         color_targets: &[RenderTarget],
         depth_target: Option<RenderTarget>,
-        view_projection: &UniformBindGroup<ViewProjectionUniforms>,
         pass: impl FnOnce(&mut RenderPass<'_, '_>),
     ) -> PartialRenderPass<'a> {
         self.instance_storage.clear();
@@ -256,7 +265,7 @@ impl RenderState {
                     }
                 })
             });
-            let mut raw_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let raw_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(name),
                 color_attachments: &color_attachments[..color_targets.len()],
                 depth_stencil_attachment: depth_target.map(|target| {
@@ -277,22 +286,6 @@ impl RenderState {
                 }),
                 ..Default::default()
             });
-            raw_pass.set_bind_group(
-                RenderPass::TEXTURE_BIND_GROUP_INDEX,
-                self.get_texture(Some(self.default_texture)),
-                &[],
-            );
-            raw_pass.set_bind_group(
-                RenderPass::GLOBAL_UNIFORMS_BIND_GROUP_INDEX,
-                self.global_uniforms.bind_group(),
-                &[],
-            );
-
-            raw_pass.set_bind_group(
-                RenderPass::VIEW_PROJECTION_UNIFORMS_BIND_GROUP_INDEX,
-                view_projection.bind_group(),
-                &[],
-            );
             let mut render_pass = RenderPass::new(self, display, raw_pass);
             pass(&mut render_pass);
             render_pass.flush_draw_calls();
@@ -345,7 +338,7 @@ impl RenderState {
         }
     }
 
-    pub fn bgl_for_texture_format(
+    fn bgl_for_texture_format(
         &mut self,
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
@@ -421,10 +414,8 @@ impl<'a, 'p> DerefMut for RenderPass<'a, 'p> {
 
 impl<'a, 'p> RenderPass<'a, 'p> {
     const TEXTURE_BIND_GROUP_INDEX: u32 = 0;
-    const GLOBAL_UNIFORMS_BIND_GROUP_INDEX: u32 = 1;
-    pub const VIEW_PROJECTION_UNIFORMS_BIND_GROUP_INDEX: u32 = 2;
 
-    pub fn new(
+    fn new(
         render_state: &'a mut RenderState,
         display: &'p Display,
         raw_pass: wgpu::RenderPass<'p>,

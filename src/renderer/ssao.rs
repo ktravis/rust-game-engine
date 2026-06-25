@@ -6,8 +6,8 @@ use crate::{
     geom::{BasicVertexData, Point},
     renderer::{
         bindings::{
-            create_uniform_bind_group, BindGroup, Bindable, UnfilteredMaterialGroup,
-            UniformBindGroup,
+            create_uniform_bind_group, texture_bgl_entries, BindGroup, Bindable,
+            UnfilteredMaterialGroup, UniformBindGroup, UNIFORM_BGL_ENTRY,
         },
         geometry::GeometryBuffers,
         shader_type::{create_shader, GlobalUniforms},
@@ -330,12 +330,36 @@ impl SSAOPass {
                 )
                 .build(display.device(), fb_size),
         );
+        let main_texture_bgl =
+            display
+                .device()
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("main texture"),
+                    entries: &texture_bgl_entries(TextureBuilder::DEFAULT_FORMAT),
+                });
+        let global_uniform_bgl =
+            display
+                .device()
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("global uniform bg layout"),
+                    entries: &[UNIFORM_BGL_ENTRY],
+                });
+        let view_proj_uniform_bgl =
+            display
+                .device()
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("view proj uniform bg layout"),
+                    entries: &[UNIFORM_BGL_ENTRY],
+                });
         let geometry_buffers_bgl =
             GeometryBuffers::create_layout(display.device(), "geometry buffers");
         let pipeline = state
             .pipeline_builder()
             .with_label("SSAO Pipeline")
-            .with_extra_bind_group_layouts(vec![
+            .with_bind_group_layouts(vec![
+                &main_texture_bgl,
+                &global_uniform_bgl,
+                &view_proj_uniform_bgl,
                 &geometry_buffers_bgl,
                 kernel.layout(),
                 noise_texture.layout(),
@@ -361,7 +385,13 @@ impl SSAOPass {
                 format: wgpu::TextureFormat::R16Float,
                 write_mask: wgpu::ColorWrites::ALL,
             })])
-            .with_extra_bind_group_layouts(vec![&geometry_buffers_bgl, kernel.layout()])
+            .with_bind_group_layouts(vec![
+                &main_texture_bgl,
+                &global_uniform_bgl,
+                &view_proj_uniform_bgl,
+                &geometry_buffers_bgl,
+                kernel.layout(),
+            ])
             .with_depth_stencil_state(None)
             .build(
                 display.device(),
@@ -418,8 +448,12 @@ impl SSAOPass {
                 "SSAO Pass",
                 &[RenderTarget::TextureRef(self.output_texture)],
                 None,
-                &self.view_proj_bind_group,
                 |r| {
+                    let default_texture = r.render_state.get_texture(None).clone();
+                    r.set_bind_group(0, &default_texture, &[]);
+                    let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
+                    r.set_bind_group(1, &global_uniforms, &[]);
+                    r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
                     r.set_bind_group(3, geometry_buffers.bind_group(), &[]);
                     r.set_bind_group(4, self.kernel.bind_group(), &[]);
                     r.set_bind_group(5, self.noise_texture.bind_group(), &[]);
@@ -442,12 +476,12 @@ impl SSAOPass {
                     "SSAO Blur Pass - X",
                     &[RenderTarget::TextureRef(self.blur_temp_buffer)],
                     None,
-                    &self.view_proj_bind_group,
-                    // &ViewProjectionUniforms {
-                    //     // projection: display_view.orthographic_projection(),
-                    //     ..Default::default()
-                    // },
                     |r| {
+                        let default_texture = r.render_state.get_texture(None).clone();
+                        r.set_bind_group(0, &default_texture, &[]);
+                        let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
+                        r.set_bind_group(1, &global_uniforms, &[]);
+                        r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
                         r.set_bind_group(3, geometry_buffers.bind_group(), &[]);
                         r.set_bind_group(4, self.blur_uniforms.bind_group(), &[]);
                         r.draw_instance(&InstanceRenderData {
@@ -470,12 +504,12 @@ impl SSAOPass {
                     "SSAO Blur Pass - Y",
                     &[RenderTarget::TextureRef(self.output_texture)],
                     None,
-                    &self.view_proj_bind_group,
-                    // &ViewProjectionUniforms {
-                    //     // projection: display_view.orthographic_projection(),
-                    //     ..Default::default()
-                    // },
                     |r| {
+                        let default_texture = r.render_state.get_texture(None).clone();
+                        r.set_bind_group(0, &default_texture, &[]);
+                        let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
+                        r.set_bind_group(1, &global_uniforms, &[]);
+                        r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
                         r.set_bind_group(3, geometry_buffers.bind_group(), &[]);
                         r.set_bind_group(4, self.blur_uniforms.bind_group(), &[]);
                         r.draw_instance(&InstanceRenderData {

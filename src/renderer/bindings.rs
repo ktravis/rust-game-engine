@@ -8,8 +8,13 @@ use wgpu::{TextureFormat, TextureSampleType};
 
 use crate::renderer::{shader_type::ShaderUniformType, Texture};
 
+// TODO: pipeline layout is the thing that needs to stay the same between draw calls to different
+// pipelines in the same render pass
+// TODO: eliminate pipeline builder and just do something like PipelineDescriptor{ field1:
+// Some(blah), ..pipeline::basic_descriptor() }
+//
 // [ ] make definition() recursive
-// [ ] move "builtin" bind groups out of renderer
+// [x] move "builtin" bind groups out of renderer
 // [x] define bindgroup as a generic type wrapping something "bindable"
 // [ ] enumerate all bindable types
 // [ ] pass.draw_instanced(mesh, commonOptions) -> batcher

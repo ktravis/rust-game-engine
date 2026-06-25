@@ -111,7 +111,8 @@ impl Display {
                 required_features: wgpu::Features::POLYGON_MODE_LINE
                     | wgpu::Features::CLEAR_TEXTURE
                     | wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER
-                    | wgpu::Features::DEPTH_CLIP_CONTROL,
+                    | wgpu::Features::DEPTH_CLIP_CONTROL
+                    | wgpu::Features::IMMEDIATES,
                 // WebGL doesn't support all of wgpu's features, so if
                 // we're building for the web we'll have to disable some.
                 required_limits: if cfg!(target_arch = "wasm32") {
@@ -119,6 +120,7 @@ impl Display {
                 } else {
                     wgpu::Limits {
                         max_bind_groups: 6,
+                        max_immediate_size: 256,
                         ..wgpu::Limits::default()
                     }
                 },

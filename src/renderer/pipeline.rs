@@ -3,10 +3,7 @@ use std::marker::PhantomData;
 use itertools::Itertools;
 use slotmap::Key;
 
-use crate::renderer::{
-    bindings::{texture_bgl_entries, UNIFORM_BGL_ENTRY},
-    shader_type::VertexInput,
-};
+use crate::renderer::shader_type::VertexInput;
 
 use super::{RenderState, TextureBuilder};
 
@@ -43,7 +40,7 @@ pub struct PipelineBuilder<'a> {
     state: &'a mut RenderState,
     label: Option<&'a str>,
     color_target_states: Vec<Option<wgpu::ColorTargetState>>,
-    extra_bind_group_layouts: Vec<&'a wgpu::BindGroupLayout>,
+    bind_group_layouts: Vec<&'a wgpu::BindGroupLayout>,
     key: Option<RawPipelineRef>,
     cull_mode: Option<wgpu::Face>,
     depth_stencil_state: Option<wgpu::DepthStencilState>,
@@ -68,7 +65,7 @@ impl<'a> PipelineBuilder<'a> {
                 blend: Some(Self::DEFAULT_BLEND),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
-            extra_bind_group_layouts: vec![],
+            bind_group_layouts: vec![],
             key: None,
             cull_mode: Some(wgpu::Face::Back),
             depth_stencil_state: Some(wgpu::DepthStencilState {
@@ -114,12 +111,12 @@ impl<'a> PipelineBuilder<'a> {
         })])
     }
 
-    pub fn with_extra_bind_group_layouts(
+    pub fn with_bind_group_layouts(
         self,
-        extra_bind_group_layouts: Vec<&'a wgpu::BindGroupLayout>,
+        bind_group_layouts: Vec<&'a wgpu::BindGroupLayout>,
     ) -> Self {
         Self {
-            extra_bind_group_layouts,
+            bind_group_layouts,
             ..self
         }
     }
@@ -143,25 +140,9 @@ impl<'a> PipelineBuilder<'a> {
         device: &wgpu::Device,
         shader: &wgpu::ShaderModule,
     ) -> PipelineRef<V, I> {
-        let global_uniform_bgl =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("global uniform bg layout"),
-                entries: &[UNIFORM_BGL_ENTRY],
-            });
-        let view_proj_uniform_bgl =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("view proj uniform bg layout"),
-                entries: &[UNIFORM_BGL_ENTRY],
-            });
-        let main_texture_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("main texture"),
-            entries: &texture_bgl_entries(TextureBuilder::DEFAULT_FORMAT),
-        });
-        let bind_group_layouts_vec =
-            vec![main_texture_bgl, global_uniform_bgl, view_proj_uniform_bgl];
-        let refs = bind_group_layouts_vec
-            .iter()
-            .chain(self.extra_bind_group_layouts.into_iter())
+        let refs = self
+            .bind_group_layouts
+            .into_iter()
             .map(Option::Some)
             .collect_vec();
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

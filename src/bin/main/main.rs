@@ -533,8 +533,10 @@ impl AppState for State {
                 Some(RenderTarget::TextureView(
                     display_view.display().depth_texture_view(),
                 )),
-                &self.ortho_view_proj_bind_group,
                 |r| {
+                    let default_texture = r.render_state.get_texture(None).clone();
+                    r.set_bind_group(0, &default_texture, &[]);
+                    r.set_bind_group(1, self.ortho_view_proj_bind_group.bind_group(), &[]);
                     r.draw_quad(
                         // self.offscreen_framebuffer.color,
                         self.forward_pass.color_target,

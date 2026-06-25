@@ -5,9 +5,9 @@ use crate::{
     geom::{ModelVertexData, Point},
     renderer::{
         bindings::{
-            create_uniform_bind_group, BindGroup, Bindable, ComparisonSampler,
+            create_uniform_bind_group, texture_bgl_entries, BindGroup, Bindable, ComparisonSampler,
             DepthTextureArrayView, DepthTextureView, MaterialGroup, TextureSampler,
-            UniformBindGroup, UniformBuffer,
+            UniformBindGroup, UniformBuffer, UNIFORM_BGL_ENTRY,
         },
         lighting::{LightRaw, LightingUniformsRaw},
         shader_type::{create_shader, GlobalUniforms},
@@ -28,9 +28,6 @@ var t_diffuse: texture_2d<f32>;
 var s_diffuse: sampler;
 
 @group(1) @binding(0)
-var<uniform> global_uniforms: GlobalUniforms;
-
-@group(2) @binding(0)
 var<uniform> view_proj_uniforms: ViewProjectionUniforms;
 
 struct VertexOutput {
@@ -267,11 +264,28 @@ impl ForwardGeometryPass {
             stencil: Default::default(),
             bias: Default::default(),
         });
+        let main_texture_bgl =
+            display
+                .device()
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("main texture"),
+                    entries: &texture_bgl_entries(TextureBuilder::DEFAULT_FORMAT),
+                });
+        let global_uniform_bgl =
+            UniformBuffer::<GlobalUniforms>::create_layout(display.device(), "global uniforms");
+        let view_proj_uniform_bgl =
+            display
+                .device()
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("view proj uniform bg layout"),
+                    entries: &[UNIFORM_BGL_ENTRY],
+                });
         let depth_only_pipeline = state
             .pipeline_builder()
             .with_label("Forward Rendering (Depth Prepass)")
             .with_color_target_states(vec![])
             .with_depth_stencil_state(depth_stencil_state.clone())
+            .with_bind_group_layouts(vec![&main_texture_bgl, &view_proj_uniform_bgl])
             .build(
                 display.device(),
                 &create_shader::<
@@ -299,7 +313,13 @@ impl ForwardGeometryPass {
                 write_mask: wgpu::ColorWrites::ALL,
             })])
             .with_depth_stencil_state(depth_stencil_state)
-            .with_extra_bind_group_layouts(vec![lighting_group.layout(), &occlusion_map_layout])
+            .with_bind_group_layouts(vec![
+                &main_texture_bgl,
+                &global_uniform_bgl,
+                &view_proj_uniform_bgl,
+                lighting_group.layout(),
+                &occlusion_map_layout,
+            ])
             .build(
                 display.device(),
                 &create_shader::<
@@ -339,8 +359,10 @@ impl ForwardGeometryPass {
                 "Depth Pre-Pass",
                 &[],
                 Some(RenderTarget::TextureView(self.depth_target_view.raw())),
-                &self.view_proj_bind_group,
                 |r| {
+                    let default_texture = r.render_state.get_texture(None).clone();
+                    r.set_bind_group(0, &default_texture, &[]);
+                    r.set_bind_group(1, self.view_proj_bind_group.bind_group(), &[]);
                     for render_data in scene {
                         r.draw_instance(&InstanceRenderData {
                             pipeline: Some(self.depth_only_pipeline),
@@ -369,9 +391,12 @@ impl ForwardGeometryPass {
                 "Forward Rendering Pass",
                 &[RenderTarget::TextureRef(self.color_target)],
                 Some(RenderTarget::TextureView(self.depth_target_view.raw())),
-                &self.view_proj_bind_group,
                 |r| {
-                    // r.set_bind_group(3, &self.lights_bind_group, &[]);
+                    let default_texture = r.render_state.get_texture(None).clone();
+                    r.set_bind_group(0, &default_texture, &[]);
+                    let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
+                    r.set_bind_group(1, &global_uniforms, &[]);
+                    r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
                     r.set_bind_group(3, self.lighting_group.bind_group(), &[]);
                     r.set_bind_group(4, &occlusion_map_tex, &[]);
                     for render_data in scene {

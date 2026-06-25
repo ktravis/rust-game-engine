@@ -1,10 +1,14 @@
 use crate::{
     geom::BasicVertexData,
     renderer::{
-        bindings::{create_uniform_bind_group, BindGroup, Bindable, UniformBindGroup},
+        bindings::{
+            create_uniform_bind_group, texture_bgl_entries, BindGroup, Bindable, UniformBindGroup,
+            UNIFORM_BGL_ENTRY,
+        },
         geometry::GeometryBuffers,
         lighting::{LightRaw, LightingUniformsRaw},
         shader_type::{create_shader, GlobalUniforms},
+        TextureBuilder,
     },
 };
 
@@ -152,13 +156,40 @@ pub struct LightingPass {
 
 impl LightingPass {
     pub fn new(state: &mut RenderState, display: &Display) -> Self {
+        let main_texture_bgl =
+            display
+                .device()
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("main texture"),
+                    entries: &texture_bgl_entries(TextureBuilder::DEFAULT_FORMAT),
+                });
+        let global_uniform_bgl =
+            display
+                .device()
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("global uniform bg layout"),
+                    entries: &[UNIFORM_BGL_ENTRY],
+                });
+        let view_proj_uniform_bgl =
+            display
+                .device()
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("view proj uniform bg layout"),
+                    entries: &[UNIFORM_BGL_ENTRY],
+                });
         let geometry_pass_bgl =
             GeometryBuffers::create_layout(display.device(), "geometry buffers");
         let lights_uniform = create_uniform_bind_group(display.device(), LightsUniform::default());
         let pipeline = state
             .pipeline_builder()
             .with_label("Lighting Render Pipeline")
-            .with_extra_bind_group_layouts(vec![&geometry_pass_bgl, lights_uniform.layout()])
+            .with_bind_group_layouts(vec![
+                &main_texture_bgl,
+                &global_uniform_bgl,
+                &view_proj_uniform_bgl,
+                &geometry_pass_bgl,
+                lights_uniform.layout(),
+            ])
             .with_depth_stencil_state(None)
             .build(
                 display.device(),
@@ -206,23 +237,21 @@ impl LightingPass {
             .update(display.queue(), *view_projection);
         let quad = state.quad_mesh();
         state
-            .render_pass(
-                display,
-                "Lighting Pass",
-                &[destination],
-                None,
-                &self.view_proj_bind_group,
-                |r| {
-                    r.set_bind_group(3, geometry_buffers.bind_group(), &[]);
-                    r.set_bind_group(4, self.lights_uniform.bind_group(), &[]);
-                    r.draw_instance(&InstanceRenderData {
-                        mesh: quad,
-                        instance: Default::default(),
-                        texture: Some(occlusion_map),
-                        pipeline: Some(self.pipeline),
-                    });
-                },
-            )
+            .render_pass(display, "Lighting Pass", &[destination], None, |r| {
+                let default_texture = r.render_state.get_texture(None).clone();
+                r.set_bind_group(0, &default_texture, &[]);
+                let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
+                r.set_bind_group(1, &global_uniforms, &[]);
+                r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
+                r.set_bind_group(3, geometry_buffers.bind_group(), &[]);
+                r.set_bind_group(4, self.lights_uniform.bind_group(), &[]);
+                r.draw_instance(&InstanceRenderData {
+                    mesh: quad,
+                    instance: Default::default(),
+                    texture: Some(occlusion_map),
+                    pipeline: Some(self.pipeline),
+                });
+            })
             .submit();
     }
 }
