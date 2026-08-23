@@ -5,16 +5,18 @@ use crate::{
     geom::{ModelVertexData, Point},
     renderer::{
         bindings::{
-            create_uniform_bind_group, texture_bgl_entries, BindGroup, Bindable,
-            NonFilteringSampler, TextureView, UniformBindGroup, UNIFORM_BGL_ENTRY,
+            create_uniform_bind_group, texture_bgl_entries, BindGroup, Bindable, DepthTextureView,
+            NonFilteringSampler, TextureView, UniformBindGroup, ViewProjectionUniforms,
+            UNIFORM_BGL_ENTRY,
         },
+        instance::InstanceDataWithNormalMatrix,
         shader_type::{create_shader, GlobalUniforms},
+        state::ModelData,
     },
 };
 
 use super::{
-    instance::InstanceRenderData, state::ViewProjectionUniforms, Display,
-    InstanceDataWithNormalMatrix, PipelineBuilder, PipelineRef, RenderState, RenderTarget, Texture,
+    instance::InstanceRenderData, Display, PipelineBuilder, PipelineRef, RenderState,
     TextureBuilder,
 };
 
@@ -39,30 +41,20 @@ struct VertexOutput {
     @location(3) tint_color: vec4<f32>,
 }
 
+var<immediate> model_data: ModelData;
+
 @vertex
 fn vs_main(
     vertex: ModelVertexData,
-    instance: InstanceDataWithNormalMatrix,
 ) -> VertexOutput {
-    let model_transform = mat4x4<f32>(
-        instance.transform_1,
-        instance.transform_2,
-        instance.transform_3,
-        instance.transform_4,
-    );
-    let normal_matrix = mat3x3<f32>(
-        instance.normal_matrix_1,
-        instance.normal_matrix_2,
-        instance.normal_matrix_3,
-    );
     var out: VertexOutput;
-    out.tex_coords = instance.subtexture_offset + instance.subtexture_scale * vertex.tex_coords;
-    let model_view = (view_proj_uniforms.view * model_transform);
+    out.tex_coords = model_data.uv_offset + model_data.uv_scale * vertex.tex_coords;
+    let model_view = (view_proj_uniforms.view * model_data.transform);
     let model_view_pos = model_view * vertex.position;
     out.clip_position = view_proj_uniforms.projection * model_view_pos;
-    out.view_space_normal = normalize(normal_matrix * vertex.normal);
+    out.view_space_normal = normalize(model_data.normal_matrix * vertex.normal);
     out.view_pos = model_view_pos;
-    out.tint_color = instance.tint;
+    out.tint_color = model_data.tint;
     return out;
 }
 
@@ -98,11 +90,11 @@ define_bind_group! {
 }
 
 pub struct GeometryPass {
-    pipeline: PipelineRef<ModelVertexData, InstanceDataWithNormalMatrix>,
+    pipeline: PipelineRef<ModelVertexData>,
     // pub g_position: Texture,
     // pub g_normal: Texture,
     // pub g_albedo_specular: Texture,
-    depth_target: Texture,
+    depth_target_view: DepthTextureView,
     bind_group: BindGroup<GeometryBuffers>,
     view_proj_bind_group: UniformBindGroup<ViewProjectionUniforms>,
 }
@@ -183,11 +175,12 @@ impl GeometryPass {
                 &global_uniform_bgl,
                 &view_proj_uniform_bgl,
             ])
+            .with_immediate_size(std::mem::size_of::<ModelData>() as u32)
             .build(
                 display.device(),
                 &create_shader::<
-                    (GlobalUniforms, ViewProjectionUniforms),
-                    (ModelVertexData, InstanceDataWithNormalMatrix),
+                    (GlobalUniforms, ViewProjectionUniforms, ModelData),
+                    ModelVertexData,
                 >(display, "geometry", GEOMETRY_SHADER.to_string()),
             );
         let bind_group = BindGroup::new(
@@ -208,7 +201,7 @@ impl GeometryPass {
         // let g_albedo_specular = state.load_texture(display, g_albedo_specular);
         Self {
             pipeline,
-            depth_target,
+            depth_target_view: DepthTextureView::from(depth_target.view),
             bind_group,
             view_proj_bind_group,
         }
@@ -232,22 +225,37 @@ impl GeometryPass {
                 &display,
                 "Geometry Pass",
                 &[
-                    RenderTarget::TextureView(&self.bind_group.position_view.raw()),
-                    RenderTarget::TextureView(&self.bind_group.normal_view.raw()),
-                    RenderTarget::TextureView(&self.bind_group.albedo_spec_view.raw()),
+                    &self.bind_group.position_view.raw(),
+                    &self.bind_group.normal_view.raw(),
+                    &self.bind_group.albedo_spec_view.raw(),
                 ],
-                Some(RenderTarget::TextureView(&self.depth_target.view)),
+                Some(&self.depth_target_view),
                 |r| {
+                    r.set_pipeline(self.pipeline);
                     let default_texture = r.render_state.get_texture(None).clone();
                     r.set_bind_group(0, &default_texture, &[]);
                     let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
                     r.set_bind_group(1, &global_uniforms, &[]);
                     r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
                     for render_data in scene {
-                        r.draw_instance(&InstanceRenderData {
-                            pipeline: Some(self.pipeline),
-                            ..*render_data
-                        });
+                        let tex = if let Some(t) = render_data.texture {
+                            r.render_state.get_texture(t).clone()
+                        } else {
+                            default_texture.clone()
+                        };
+                        r.set_bind_group(0, &tex, &[]);
+                        r.set_immediates(
+                            0,
+                            bytemuck::bytes_of(&ModelData {
+                                uv_scale: render_data.subtexture.dim,
+                                uv_offset: render_data.subtexture.pos,
+                                tint: render_data.tint.into(),
+                                transform: render_data.transform,
+                                normal_matrix: render_data.normal_matrix.into(),
+                                material: render_data.material,
+                            }),
+                        );
+                        r.draw_mesh(render_data.mesh);
                     }
                 },
             )

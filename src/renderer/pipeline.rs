@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use itertools::Itertools;
 use slotmap::Key;
 
-use crate::renderer::shader_type::VertexInput;
+use crate::renderer::shader_type::VertexInputs;
 
 use super::{RenderState, TextureBuilder};
 
@@ -12,12 +12,12 @@ slotmap::new_key_type! {
 }
 
 #[derive(Copy, Clone, Debug, Default)]
-pub struct PipelineRef<V, I> {
+pub struct PipelineRef<V> {
     raw: RawPipelineRef,
-    _marker: PhantomData<(V, I)>,
+    _marker: PhantomData<V>,
 }
 
-impl<V, I> PipelineRef<V, I> {
+impl<V> PipelineRef<V> {
     pub(super) fn raw(self) -> RawPipelineRef {
         self.raw
     }
@@ -27,7 +27,7 @@ impl<V, I> PipelineRef<V, I> {
     }
 }
 
-impl<V, I> From<RawPipelineRef> for PipelineRef<V, I> {
+impl<V> From<RawPipelineRef> for PipelineRef<V> {
     fn from(raw: RawPipelineRef) -> Self {
         PipelineRef {
             raw,
@@ -44,6 +44,7 @@ pub struct PipelineBuilder<'a> {
     key: Option<RawPipelineRef>,
     cull_mode: Option<wgpu::Face>,
     depth_stencil_state: Option<wgpu::DepthStencilState>,
+    immediate_size: u32,
 }
 
 impl<'a> PipelineBuilder<'a> {
@@ -78,10 +79,11 @@ impl<'a> PipelineBuilder<'a> {
                     ..Default::default()
                 },
             }),
+            immediate_size: 0,
         }
     }
 
-    pub fn with_key<V, I>(self, key: PipelineRef<V, I>) -> Self {
+    pub fn with_key<V>(self, key: PipelineRef<V>) -> Self {
         let key = if key.is_null() { None } else { Some(key.raw()) };
         Self { key, ..self }
     }
@@ -135,11 +137,18 @@ impl<'a> PipelineBuilder<'a> {
         Self { cull_mode, ..self }
     }
 
-    pub fn build<V: VertexInput, I: VertexInput>(
+    pub fn with_immediate_size(self, immediate_size: u32) -> Self {
+        Self {
+            immediate_size,
+            ..self
+        }
+    }
+
+    pub fn build<V: VertexInputs>(
         self,
         device: &wgpu::Device,
         shader: &wgpu::ShaderModule,
-    ) -> PipelineRef<V, I> {
+    ) -> PipelineRef<V> {
         let refs = self
             .bind_group_layouts
             .into_iter()
@@ -151,21 +160,25 @@ impl<'a> PipelineBuilder<'a> {
                 self.label.unwrap_or("Default Pipeline")
             )),
             bind_group_layouts: &refs,
-            immediate_size: 0,
+            immediate_size: self.immediate_size,
         });
-        let vv = V::vertex_buffer_layout(wgpu::VertexStepMode::Vertex, 0);
-        let ii = I::vertex_buffer_layout(wgpu::VertexStepMode::Instance, V::next_offset());
-        let mut vertex_buffers = vec![vv.to_wgpu()];
-        if ii.attributes.len() > 0 {
-            vertex_buffers.push(ii.to_wgpu());
-        }
+        // let vv = V::vertex_buffer_layout(wgpu::VertexStepMode::Vertex, 0);
+        // let ii = I::vertex_buffer_layout(wgpu::VertexStepMode::Instance, V::next_offset());
+        // let mut vertex_buffers = vec![vv.to_wgpu()];
+        // if ii.attributes.len() > 0 {
+        //     vertex_buffers.push(ii.to_wgpu());
+        // }
+        let vertex_buffer_layouts = V::vertex_buffer_layouts();
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: self.label,
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: shader,
                 entry_point: Some("vs_main"),
-                buffers: &vertex_buffers,
+                buffers: &vertex_buffer_layouts
+                    .iter()
+                    .map(|b| b.to_wgpu())
+                    .collect::<Vec<_>>(),
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {

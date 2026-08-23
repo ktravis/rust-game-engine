@@ -4,9 +4,15 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
+use bytemuck::Zeroable;
+use glam::{Mat4, Vec3, Vec4};
+use shadertype_derive::shader_uniform_type;
 use wgpu::{TextureFormat, TextureSampleType};
 
-use crate::renderer::{shader_type::ShaderUniformType, Texture};
+use crate::{
+    camera::Camera,
+    renderer::{shader_type::ShaderUniformType, Texture},
+};
 
 // TODO: pipeline layout is the thing that needs to stay the same between draw calls to different
 // pipelines in the same render pass
@@ -40,6 +46,47 @@ pub fn create_uniform_bind_group<U: UniformData>(
     <BindGroup<UniformBuffer<U>>>::new(device, resource)
 }
 
+#[shader_uniform_type]
+pub struct ViewProjectionUniforms {
+    pub view: Mat4,
+    pub projection: Mat4,
+    pub camera_pos: Vec3,
+    #[skip]
+    pub _pad_camera_pos: [u8; 4u32 as usize],
+    pub inverse_view: Mat4,
+}
+
+impl ViewProjectionUniforms {
+    pub fn for_camera(camera: &Camera) -> Self {
+        let view = camera.view_matrix();
+        assert!(
+            (view.inverse() * view * Vec4::ONE - Vec4::ONE)
+                .abs()
+                .length_squared()
+                < 0.000001
+        );
+        Self {
+            view,
+            inverse_view: view.inverse(),
+            projection: camera.perspective_matrix(),
+            camera_pos: camera.position(),
+            ..Default::default()
+        }
+    }
+}
+
+impl Default for ViewProjectionUniforms {
+    fn default() -> Self {
+        Self {
+            view: Default::default(),
+            projection: Default::default(),
+            camera_pos: Default::default(),
+            inverse_view: Default::default(),
+            ..Zeroable::zeroed()
+        }
+    }
+}
+
 pub struct TextureView<S = f32, const D: u8 = 2, const F: bool = true> {
     inner: wgpu::TextureView,
     _marker: PhantomData<S>,
@@ -69,7 +116,7 @@ impl<const D: u8, const F: bool> Bindable for TextureView<f32, D, F> {
         vec![
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::all(),
+                visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     multisampled: false,
                     view_dimension,
@@ -110,7 +157,7 @@ impl<const D: u8, const F: bool> Bindable for TextureView<u32, D, F> {
         assert!(!F, "Uint texture sample type is not filterable");
         vec![wgpu::BindGroupLayoutEntry {
             binding: 0,
-            visibility: wgpu::ShaderStages::all(),
+            visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 multisampled: false,
                 view_dimension,
@@ -139,7 +186,7 @@ impl<const D: u8, const F: bool> Bindable for TextureView<i32, D, F> {
         assert!(!F, "Sint texture sample type is not filterable");
         vec![wgpu::BindGroupLayoutEntry {
             binding: 0,
-            visibility: wgpu::ShaderStages::all(),
+            visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 multisampled: false,
                 view_dimension,
@@ -181,7 +228,7 @@ impl<const D: u8> Bindable for DepthTextureView<D> {
         };
         vec![wgpu::BindGroupLayoutEntry {
             binding: 0,
-            visibility: wgpu::ShaderStages::all(),
+            visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 multisampled: false,
                 view_dimension,
@@ -221,7 +268,7 @@ impl Bindable for DepthTextureArrayView {
     fn layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         vec![wgpu::BindGroupLayoutEntry {
             binding: 0,
-            visibility: wgpu::ShaderStages::all(),
+            visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 multisampled: false,
                 view_dimension: wgpu::TextureViewDimension::D2Array,
@@ -270,7 +317,7 @@ impl<const F: bool> Bindable for TextureSampler<F> {
     fn layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         vec![wgpu::BindGroupLayoutEntry {
             binding: 0,
-            visibility: wgpu::ShaderStages::all(),
+            visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Sampler(if F {
                 wgpu::SamplerBindingType::Filtering
             } else {
@@ -303,7 +350,7 @@ impl Bindable for ComparisonSampler {
     fn layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         vec![wgpu::BindGroupLayoutEntry {
             binding: 0,
-            visibility: wgpu::ShaderStages::all(),
+            visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
             count: None,
         }]
@@ -326,7 +373,7 @@ pub fn texture_bgl_entries(format: TextureFormat) -> Vec<wgpu::BindGroupLayoutEn
     vec![
         wgpu::BindGroupLayoutEntry {
             binding: 0,
-            visibility: wgpu::ShaderStages::all(),
+            visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 multisampled: false,
                 view_dimension: wgpu::TextureViewDimension::D2,
@@ -336,7 +383,7 @@ pub fn texture_bgl_entries(format: TextureFormat) -> Vec<wgpu::BindGroupLayoutEn
         },
         wgpu::BindGroupLayoutEntry {
             binding: 1,
-            visibility: wgpu::ShaderStages::all(),
+            visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Sampler(if format.has_depth_aspect() {
                 wgpu::SamplerBindingType::Comparison
             } else {
@@ -478,6 +525,18 @@ where
     type Raw = <Self as ShaderUniformType>::Raw;
     fn raw(&self) -> Self::Raw {
         *<Self as ShaderUniformType>::raw(self)
+    }
+}
+
+impl ShaderUniformType for Mat4 {
+    type Raw = Self;
+
+    fn definition() -> String {
+        "mat4x4<f32>".to_string()
+    }
+
+    fn raw<'a>(&'a self) -> &'a Self::Raw {
+        self
     }
 }
 

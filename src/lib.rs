@@ -10,6 +10,7 @@ pub mod sprite;
 pub mod sprite_manager;
 pub mod time;
 pub mod transform;
+pub mod utils;
 
 #[macro_use]
 pub mod input;

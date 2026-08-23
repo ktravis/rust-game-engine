@@ -8,14 +8,8 @@ use winit::{
 };
 
 use crate::{
-    geom::BasicVertexData,
     input::{AnalogInput, ControlSet, InputManager, Key, MouseButton},
-    renderer::{
-        egui::EguiRenderer,
-        shader_type::{create_shader, GlobalUniforms},
-        state::ViewProjectionUniforms,
-        BasicInstanceData, Display, DisplaySurfaceError, RenderState,
-    },
+    renderer::{egui::EguiRenderer, Display, DisplaySurfaceError, RenderState},
     time::FrameTiming,
 };
 
@@ -214,107 +208,6 @@ impl<A: AppState> ApplicationHandler for App<A> {
     }
 }
 
-const FLAT_SHADER: &'static str = crate::wgsl!(
-    r#"
-@group(0) @binding(0)
-var t_diffuse: texture_2d<f32>;
-@group(0) @binding(1)
-var s_diffuse: sampler;
-
-@group(1) @binding(0)
-var<uniform> view_proj_uniforms: ViewProjectionUniforms;
-
-struct VertexOutput {
-    @builtin(position) clip_position: vec4<f32>,
-    @location(0) tex_coords: vec2<f32>,
-    @location(1) screen_pos: vec2<f32>,
-    @location(2) tint_color: vec4<f32>,
-}
-
-@vertex
-fn vs_main(
-    vertex: BasicVertexData,
-    instance: BasicInstanceData,
-) -> VertexOutput {
-    let model_transform = mat4x4<f32>(
-        instance.transform_1,
-        instance.transform_2,
-        instance.transform_3,
-        instance.transform_4,
-    );
-    var out: VertexOutput;
-    out.tex_coords = instance.subtexture_offset + instance.subtexture_scale * vertex.tex_coords;
-    let model = model_transform * vertex.position;
-    let model_view = view_proj_uniforms.view * model;
-    out.clip_position = view_proj_uniforms.projection * model_view;
-    out.screen_pos = model_view.xy;
-    out.tint_color = instance.tint;
-    return out;
-}
-
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return in.tint_color * textureSample(t_diffuse, s_diffuse, in.tex_coords);
-}
-"#
-);
-
-const TEXT_SHADER: &'static str = crate::wgsl!(
-    r#"
-@group(0) @binding(0)
-var t_diffuse: texture_2d<f32>;
-@group(0) @binding(1)
-var s_diffuse: sampler;
-
-@group(1) @binding(0)
-var<uniform> view_proj_uniforms: ViewProjectionUniforms;
-
-struct VertexOutput {
-    @builtin(position) clip_position: vec4<f32>,
-    @location(0) tex_coords: vec2<f32>,
-    @location(1) screen_pos: vec2<f32>,
-    @location(2) tint_color: vec4<f32>,
-}
-
-@vertex
-fn vs_main(
-    vertex: BasicVertexData,
-    instance: BasicInstanceData,
-) -> VertexOutput {
-    let model_transform = mat4x4<f32>(
-        instance.transform_1,
-        instance.transform_2,
-        instance.transform_3,
-        instance.transform_4,
-    );
-    var out: VertexOutput;
-    out.tex_coords = instance.subtexture_offset + instance.subtexture_scale * vertex.tex_coords;
-    let model = model_transform * vertex.position;
-    let model_view = view_proj_uniforms.view * model;
-    out.clip_position = view_proj_uniforms.projection * model_view;
-    out.screen_pos = model_view.xy;
-    out.tint_color = instance.tint;
-    return out;
-}
-
-fn median(r: f32, g: f32, b: f32) -> f32 {
-    return max(min(r, g), min(max(r, g), b));
-}
-
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let msd = textureSample(t_diffuse, s_diffuse, in.tex_coords);
-    let sd = median(msd.r, msd.g, msd.b);
-    let w = fwidth(sd) * 0.5;
-    let opacity = smoothstep(0.5 - w, 0.5 + w, sd);
-    // if (opacity == 0.0) {
-    //     discard;
-    // }
-    return vec4(in.tint_color.x, in.tint_color.y, in.tint_color.z, opacity * in.tint_color.w);
-}
-"#
-);
-
 pub trait AppState {
     type Controls: ControlSet;
 
@@ -324,16 +217,6 @@ pub trait AppState {
     fn destroy(&mut self, _ctx: &mut Context<Self::Controls>) {}
 
     fn init_render_state(display: &Display) -> RenderState {
-        RenderState::new(
-            display,
-            &create_shader::<
-                (GlobalUniforms, ViewProjectionUniforms),
-                (BasicVertexData, BasicInstanceData),
-            >(display, "flat", FLAT_SHADER.to_string()),
-            &create_shader::<
-                (GlobalUniforms, ViewProjectionUniforms),
-                (BasicVertexData, BasicInstanceData),
-            >(display, "text", TEXT_SHADER.to_string()),
-        )
+        RenderState::new(display)
     }
 }

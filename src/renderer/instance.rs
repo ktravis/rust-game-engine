@@ -1,18 +1,20 @@
 use std::ops::Deref;
 
-use crate::geom::BasicVertexData;
+use glam::{Mat3, Mat4};
+use shadertype_derive::{ShaderType, VertexInput};
+
+use crate::color::Color;
+use crate::geom::{BasicVertexData, Rect};
 use crate::renderer::shader_type::VertexInput;
+use crate::transform::Transform;
 
-use super::{Display, MeshRef, PipelineRef, TextureRef};
-
-use super::BasicInstanceData;
+use super::{Display, MeshRef, TextureRef};
 
 #[derive(Debug)]
 pub struct InstanceRenderData<V = BasicVertexData, I = BasicInstanceData> {
     pub mesh: MeshRef<V>,
     pub instance: I,
     pub texture: Option<TextureRef>,
-    pub pipeline: Option<PipelineRef<V, I>>,
 }
 
 impl<V, I> Deref for InstanceRenderData<V, I> {
@@ -20,6 +22,53 @@ impl<V, I> Deref for InstanceRenderData<V, I> {
 
     fn deref(&self) -> &Self::Target {
         &self.instance
+    }
+}
+
+// TODO: rename "PerInstanceData"
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, ShaderType, VertexInput)]
+#[step_mode(instance)] // TODO: this should be #[vertex_input(step_mode = instance)]
+pub struct BasicInstanceData {
+    pub subtexture: Rect,
+    pub tint: Color,
+    pub transform: Mat4,
+}
+
+impl BasicInstanceData {
+    #[inline]
+    pub fn transform(transform: impl Transform) -> Self {
+        Self {
+            transform: transform.as_mat4(),
+            ..Default::default()
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, ShaderType, VertexInput)]
+#[step_mode(instance)] // TODO: this should be #[vertex_input(step_mode = instance)]
+pub struct InstanceDataWithNormalMatrix {
+    pub subtexture: Rect,
+    pub tint: Color,
+    pub transform: Mat4,
+    pub normal_matrix: Mat3,
+    pub material: u32,
+}
+
+impl InstanceDataWithNormalMatrix {
+    pub fn from_basic(other: BasicInstanceData, view_matrix: Mat4) -> Self {
+        Self {
+            transform: other.transform,
+            tint: other.tint,
+            subtexture: other.subtexture,
+            // TODO: this is the big performance killer, we need to not do this every frame
+            normal_matrix: Mat3::from_mat4(view_matrix * other.transform)
+                .inverse()
+                .transpose(),
+            material: 0,
+        }
     }
 }
 

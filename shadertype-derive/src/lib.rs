@@ -1,6 +1,6 @@
 use quote::{quote, quote_spanned};
 use syn::{
-    parse, parse_macro_input, spanned::Spanned, Data, DeriveInput, Error, ItemStruct, LitInt,
+    Data, DeriveInput, Error, Ident, ItemStruct, LitInt, parse, parse_macro_input, spanned::Spanned
 };
 
 #[proc_macro_derive(ShaderType)] // attributes(bind, overlap_mode))]
@@ -55,7 +55,7 @@ pub fn derive_vertex_data_type(ts: proc_macro::TokenStream) -> proc_macro::Token
     .into()
 }
 
-#[proc_macro_derive(VertexInput, attributes(location))]
+#[proc_macro_derive(VertexInput, attributes(step_mode, location))]
 pub fn derive_vertex_input_type(ts: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse_macro_input!(ts as DeriveInput);
     let Data::Struct(data) = &input.data else {
@@ -63,11 +63,36 @@ pub fn derive_vertex_input_type(ts: proc_macro::TokenStream) -> proc_macro::Toke
             .into_compile_error()
             .into();
     };
+    let mut errors = vec![];
+    let mut step_mode = quote!(::wgpu::VertexStepMode::Vertex);
+    for attr in &input.attrs {
+        if attr.path().is_ident("step_mode") {
+            match attr.parse_args::<Ident>() {
+                Ok(id) if id == "vertex" => {}
+                Ok(id) if id == "instance"=> step_mode = quote!(::wgpu::VertexStepMode::Instance),
+                _ => {
+                        errors.push(
+                            Error::new_spanned(
+                                attr,
+                                "argument to step_mode(...) must be either vertex or instance",
+                            )
+                            .into_compile_error(),
+                        );
+                        break;
+                }
+            }
+        }
+    }
+    if errors.len() > 0 {
+        return quote! {
+            #(#errors)*
+        }
+        .into();
+    }
 
     let struct_ident = input.ident.clone();
     let maude = quote!(::rust_game_engine::renderer::shader_type);
     let mut subsequent_loc = quote!(0);
-    let mut errors = vec![];
     let mut attrs = vec![];
     let fields = data.fields.iter().map(|f| {
         let loc = 'loc: {
@@ -127,6 +152,10 @@ pub fn derive_vertex_input_type(ts: proc_macro::TokenStream) -> proc_macro::Toke
                     #(#attrs,)*
                 ])
             }
+
+            fn step_mode() -> ::wgpu::VertexStepMode {
+                #step_mode
+            }
         }
     }
     .into()
@@ -175,8 +204,11 @@ pub fn shader_uniform_type(
 
     let name = struct_ident.to_string();
     quote_spanned! {input.span()=>
+        unsafe impl ::bytemuck::Zeroable for #struct_ident { }
+        unsafe impl ::bytemuck::Pod for #struct_ident { }
+
         #[repr(C, align(16))]
-        #[derive(Copy, Clone, ::shadertype_derive::ShaderType, ::bytemuck::Zeroable, ::bytemuck::Pod)]
+        #[derive(Copy, Clone, ::shadertype_derive::ShaderType)]
         #input
 
         #(#asserts;)*

@@ -1,7 +1,5 @@
-use std::marker::PhantomData;
-
-use glam::{Mat3, Mat4, Vec2, Vec3, Vec4};
-use shadertype_derive::{shader_uniform_type, ShaderType, VertexInput};
+use glam::{Mat3, Mat3A, Mat4, Vec2, Vec3, Vec4};
+use shadertype_derive::shader_uniform_type;
 
 use crate::{color::Color, geom::Rect, renderer::Display};
 
@@ -32,7 +30,7 @@ macro_rules! impl_basic_shader_type {
 impl_basic_shader_type!(i32, "i32", align: 4);
 impl_basic_shader_type!(u32, "u32", align: 4);
 impl_basic_shader_type!(f32, "f32", align: 4);
-impl_basic_shader_type!(Mat3, "mat3x3<f32>", align: 16);
+impl_basic_shader_type!(Mat3A, "mat3x3<f32>", align: 16);
 impl_basic_shader_type!(Mat4, "mat4x4<f32>", align: 16);
 impl_basic_shader_type!(Vec2, "vec2<f32>", align: 8);
 impl_basic_shader_type!(Vec3, "vec3<f32>", align: 16);
@@ -49,31 +47,13 @@ impl<T: ShaderTypeAligned, const N: usize> ShaderTypeAligned for [T; N] {
     const ALIGNMENT: usize = T::ALIGNMENT;
 }
 
-pub struct BufferLayout<V: VertexInput> {
-    _marker: PhantomData<V>,
+pub struct BufferLayout {
     pub attributes: Vec<wgpu::VertexAttribute>,
     pub step_mode: wgpu::VertexStepMode,
     pub array_stride: wgpu::BufferAddress,
 }
 
-impl<V: VertexInput> BufferLayout<V> {
-    pub fn new(step_mode: wgpu::VertexStepMode, location_offset: u32) -> Self {
-        let attributes = V::vertex_attributes()
-            .iter()
-            .map(|a| wgpu::VertexAttribute {
-                shader_location: location_offset + a.shader_location,
-                ..a.clone()
-            })
-            .collect();
-
-        BufferLayout {
-            _marker: PhantomData,
-            attributes,
-            step_mode,
-            array_stride: std::mem::size_of::<V>() as wgpu::BufferAddress,
-        }
-    }
-
+impl BufferLayout {
     pub fn to_wgpu<'a>(&'a self) -> wgpu::VertexBufferLayout<'a> {
         wgpu::VertexBufferLayout {
             array_stride: self.array_stride,
@@ -87,11 +67,24 @@ pub trait VertexInput: bytemuck::Zeroable + bytemuck::Pod {
     fn definition(location_offset: u32) -> String;
     fn vertex_attributes() -> Vec<wgpu::VertexAttribute>;
 
-    fn vertex_buffer_layout(
-        step_mode: wgpu::VertexStepMode,
-        location_offset: u32,
-    ) -> BufferLayout<Self> {
-        BufferLayout::new(step_mode, location_offset)
+    fn step_mode() -> wgpu::VertexStepMode {
+        wgpu::VertexStepMode::Vertex
+    }
+
+    fn vertex_buffer_layout(location_offset: u32) -> BufferLayout {
+        let attributes = Self::vertex_attributes()
+            .iter()
+            .map(|a| wgpu::VertexAttribute {
+                shader_location: location_offset + a.shader_location,
+                ..a.clone()
+            })
+            .collect();
+
+        BufferLayout {
+            attributes,
+            step_mode: Self::step_mode(),
+            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+        }
     }
 
     fn next_offset() -> u32 {
@@ -100,16 +93,6 @@ pub trait VertexInput: bytemuck::Zeroable + bytemuck::Pod {
             .map(|a| a.shader_location + 1)
             .unwrap_or(vv.len() as u32)
     }
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug, ShaderType, VertexInput)]
-pub struct InstanceInput {
-    pub uv_scale: Vec2,
-    pub uv_offset: Vec2,
-    pub tint: Vec4,
-    pub transform: Mat4,
-    pub normal_matrix: Mat4,
 }
 
 fn vertex_format_wgsl_type_name(f: wgpu::VertexFormat) -> &'static str {
@@ -353,6 +336,8 @@ impl_shader_uniforms_tuple!(T1, T2, T3, T4, T5, T6);
 pub trait VertexInputs {
     fn definition() -> String;
     fn locations_count() -> u32;
+
+    fn vertex_buffer_layouts() -> Vec<BufferLayout>;
 }
 
 impl<V: VertexInput> VertexInputs for V {
@@ -362,6 +347,10 @@ impl<V: VertexInput> VertexInputs for V {
     fn locations_count() -> u32 {
         // should this be 1 + the last attribute's offset instead? does it matter?
         <V as VertexInput>::vertex_attributes().len() as u32
+    }
+
+    fn vertex_buffer_layouts() -> Vec<BufferLayout> {
+        vec![V::vertex_buffer_layout(0)]
     }
 }
 
@@ -390,6 +379,25 @@ macro_rules! impl_vertex_inputs_tuple {
                     offset += o;
                     s
                 }).collect::<Vec<String>>().join("\n")
+            }
+
+            fn vertex_buffer_layouts() -> Vec<BufferLayout> {
+                let counts = [
+                    $(<$T as VertexInputs>::locations_count()),*
+                ];
+                let calls = [
+                    $(
+                        |o: u32| -> BufferLayout {
+                            <$T as VertexInput>::vertex_buffer_layout(o)
+                        }
+                    ),*
+                ];
+                let mut offset = 0;
+                counts.iter().zip(calls.into_iter()).map(|(o, f)| {
+                    let s = f(offset);
+                    offset += o;
+                    s
+                }).collect()
             }
         }
     };

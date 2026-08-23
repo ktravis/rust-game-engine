@@ -9,10 +9,10 @@ pub mod lighting;
 pub mod mesh;
 pub mod model;
 pub mod pipeline;
-pub mod render_target;
 #[macro_use]
 pub mod shader_type;
 pub mod shadow_mapping;
+pub mod sprite_renderer;
 pub mod ssao;
 pub mod ssao_from_depth;
 pub mod state;
@@ -21,10 +21,10 @@ pub mod texture;
 
 mod renderer;
 
+pub use bindings::ViewProjectionUniforms;
 pub use display::*;
 pub use mesh::MeshRef;
 pub use pipeline::*;
-pub use render_target::*;
 pub use renderer::*;
 pub use state::{RenderPass, RenderState};
 pub use texture::*;

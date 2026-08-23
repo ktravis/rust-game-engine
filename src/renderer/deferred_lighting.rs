@@ -3,9 +3,10 @@ use crate::{
     renderer::{
         bindings::{
             create_uniform_bind_group, texture_bgl_entries, BindGroup, Bindable, UniformBindGroup,
-            UNIFORM_BGL_ENTRY,
+            ViewProjectionUniforms, UNIFORM_BGL_ENTRY,
         },
         geometry::GeometryBuffers,
+        instance::BasicInstanceData,
         lighting::{LightRaw, LightingUniformsRaw},
         shader_type::{create_shader, GlobalUniforms},
         TextureBuilder,
@@ -13,10 +14,8 @@ use crate::{
 };
 
 use super::{
-    instance::InstanceRenderData,
     lighting::{Light, LightsUniform},
-    state::ViewProjectionUniforms,
-    BasicInstanceData, Display, PipelineRef, RenderState, RenderTarget, TextureRef,
+    Display, PipelineRef, RenderState,
 };
 
 const DEFERRED_LIGHTING_SHADER: &'static str = crate::wgsl!(
@@ -149,7 +148,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 );
 
 pub struct LightingPass {
-    pipeline: PipelineRef<BasicVertexData, BasicInstanceData>,
+    pipeline: PipelineRef<(BasicVertexData, BasicInstanceData)>,
     lights_uniform: UniformBindGroup<LightsUniform>,
     view_proj_bind_group: UniformBindGroup<ViewProjectionUniforms>,
 }
@@ -220,10 +219,10 @@ impl LightingPass {
         &mut self,
         state: &mut RenderState,
         display: &Display,
-        destination: RenderTarget,
+        destination: &wgpu::TextureView,
         geometry_buffers: &BindGroup<GeometryBuffers>,
         view_projection: &ViewProjectionUniforms,
-        occlusion_map: TextureRef,
+        occlusion_map: Option<wgpu::BindGroup>,
         lights: &[Light],
     ) {
         self.lights_uniform.update(
@@ -235,22 +234,19 @@ impl LightingPass {
         );
         self.view_proj_bind_group
             .update(display.queue(), *view_projection);
+        let occlusion_map =
+            occlusion_map.unwrap_or_else(|| state.get_texture(state.default_texture()).clone());
         let quad = state.quad_mesh();
         state
             .render_pass(display, "Lighting Pass", &[destination], None, |r| {
-                let default_texture = r.render_state.get_texture(None).clone();
-                r.set_bind_group(0, &default_texture, &[]);
+                r.set_bind_group(0, &occlusion_map, &[]);
                 let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
                 r.set_bind_group(1, &global_uniforms, &[]);
                 r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
                 r.set_bind_group(3, geometry_buffers.bind_group(), &[]);
                 r.set_bind_group(4, self.lights_uniform.bind_group(), &[]);
-                r.draw_instance(&InstanceRenderData {
-                    mesh: quad,
-                    instance: Default::default(),
-                    texture: Some(occlusion_map),
-                    pipeline: Some(self.pipeline),
-                });
+                r.set_pipeline(self.pipeline);
+                r.draw_mesh(quad);
             })
             .submit();
     }

@@ -2,9 +2,11 @@ use bytemuck::Zeroable;
 use glam::{vec3, Mat4, Quat, Vec3, Vec4, Vec4Swizzles};
 use shadertype_derive::shader_uniform_type;
 
-use crate::{camera::Frustum, color::Color, renderer::bindings::UniformData};
-
-use super::state::ViewProjectionUniforms;
+use crate::{
+    camera::Frustum,
+    color::Color,
+    renderer::bindings::{UniformData, ViewProjectionUniforms},
+};
 
 #[shader_uniform_type]
 pub struct LightRaw {

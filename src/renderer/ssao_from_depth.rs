@@ -12,19 +12,16 @@ use crate::{
         },
         shader_type::{create_shader, GlobalUniforms},
         ssao::{BlurUniforms, SSAO_BLUR_SHADER},
+        state::BoundTexture,
     },
 };
 
-use super::{
-    instance::InstanceRenderData, state::ViewProjectionUniforms, BasicInstanceData, Display,
-    PipelineRef, RenderState, RenderTarget, TextureBuilder, TextureRef,
-};
+use super::{bindings::ViewProjectionUniforms, Display, PipelineRef, RenderState, TextureBuilder};
 
 mod ssao_shader {
     use crate::renderer::{
-        bindings::{DepthBuffer, MaterialGroup},
+        bindings::{DepthBuffer, MaterialGroup, ViewProjectionUniforms},
         shader_type::GlobalUniforms,
-        state::ViewProjectionUniforms,
     };
 
     pub(super) struct BindGroups {
@@ -66,16 +63,9 @@ struct VertexOutput {
 @vertex
 fn vs_main(
     vertex: BasicVertexData,
-    instance: BasicInstanceData,
 ) -> VertexOutput {
-    let model_transform = mat4x4<f32>(
-        instance.transform_1,
-        instance.transform_2,
-        instance.transform_3,
-        instance.transform_4,
-    );
     var out: VertexOutput;
-    out.tex_coords = instance.subtexture_offset + instance.subtexture_scale * vertex.tex_coords;
+    out.tex_coords = vertex.tex_coords;
     var model = vertex.position;
     model.x = model.x * 2.0 - 1.0;
     model.y = model.y * 2.0 - 1.0;
@@ -213,14 +203,15 @@ impl SSAOKernel {
 }
 
 pub struct SSAOPass {
-    pipeline: PipelineRef<BasicVertexData, BasicInstanceData>,
-    output_texture: TextureRef,
+    pipeline: PipelineRef<BasicVertexData>,
+    output_texture: BoundTexture,
     kernel: UniformBindGroup<SSAOKernel>,
     noise_texture: BindGroup<UnfilteredMaterialGroup>,
     blur_enabled: bool,
     blur_uniforms: UniformBindGroup<BlurUniforms>,
-    blur_pipeline: PipelineRef<BasicVertexData, BasicInstanceData>,
-    blur_temp_buffer: TextureRef,
+    blur_pipeline: PipelineRef<BasicVertexData>,
+    // blur_temp_buffer: TextureRef,
+    blur_temp_buffer: BoundTexture,
     scene_depth_buffer: BindGroup<DepthBuffer>,
     buffer_size: Point<u32>,
     view_proj_bind_group: UniformBindGroup<ViewProjectionUniforms>,
@@ -298,7 +289,7 @@ impl SSAOPass {
                     | wgpu::TextureUsages::RENDER_ATTACHMENT,
             )
             .build(display.device(), size);
-        let output_texture = state.load_texture(&display, output_texture);
+        let output_texture = state.bind_texture(&display, output_texture);
 
         let scene_depth_buffer = BindGroup::new(display.device(), depth_target);
         let pipeline = state
@@ -322,7 +313,7 @@ impl SSAOPass {
                 display.device(),
                 &create_shader::<
                     (GlobalUniforms, ViewProjectionUniforms, SSAOKernel),
-                    (BasicVertexData, BasicInstanceData),
+                    BasicVertexData,
                 >(
                     display,
                     "ssao_from_depth",
@@ -349,10 +340,10 @@ impl SSAOPass {
                 display.device(),
                 &create_shader::<
                     (GlobalUniforms, ViewProjectionUniforms, BlurUniforms),
-                    (BasicVertexData, BasicInstanceData),
+                    BasicVertexData,
                 >(display, "ssao_blur", SSAO_BLUR_SHADER.to_string()),
             );
-        let blur_temp_buffer = state.load_texture(
+        let blur_temp_buffer = state.bind_texture(
             display,
             TextureBuilder::render_target()
                 .with_label("blurred_ssao")
@@ -389,7 +380,7 @@ impl SSAOPass {
         state: &mut RenderState,
         display: &Display,
         view_projection: &ViewProjectionUniforms,
-    ) -> TextureRef {
+    ) -> &BoundTexture {
         let mut u = **self.kernel;
         u.inverse_proj = view_projection.projection.inverse();
         self.kernel.update(display.queue(), u);
@@ -400,7 +391,7 @@ impl SSAOPass {
             .render_pass(
                 &display,
                 "SSAO Pass",
-                &[RenderTarget::TextureRef(self.output_texture)],
+                &[&self.output_texture.resource.view],
                 None,
                 |r| {
                     let default_texture = r.render_state.get_texture(None).clone();
@@ -411,12 +402,8 @@ impl SSAOPass {
                     r.set_bind_group(3, self.scene_depth_buffer.bind_group(), &[]);
                     r.set_bind_group(4, self.kernel.bind_group(), &[]);
                     r.set_bind_group(5, self.noise_texture.bind_group(), &[]);
-                    r.draw_instance(&InstanceRenderData {
-                        mesh: quad,
-                        instance: BasicInstanceData::default(),
-                        texture: None,
-                        pipeline: Some(self.pipeline),
-                    });
+                    r.set_pipeline(self.pipeline);
+                    r.draw_mesh(quad);
                 },
             )
             .submit();
@@ -428,24 +415,17 @@ impl SSAOPass {
                 .render_pass(
                     display,
                     "SSAO Blur Pass - X",
-                    &[RenderTarget::TextureRef(self.blur_temp_buffer)],
+                    &[&self.blur_temp_buffer.resource.view],
                     None,
                     |r| {
-                        let default_texture = r.render_state.get_texture(None).clone();
-                        r.set_bind_group(0, &default_texture, &[]);
+                        r.set_bind_group(0, self.output_texture.bind_group(), &[]);
                         let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
                         r.set_bind_group(1, &global_uniforms, &[]);
                         r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
                         r.set_bind_group(3, self.scene_depth_buffer.bind_group(), &[]);
                         r.set_bind_group(4, self.blur_uniforms.bind_group(), &[]);
-                        r.draw_instance(&InstanceRenderData {
-                            mesh: quad,
-                            instance: BasicInstanceData {
-                                ..Default::default()
-                            },
-                            texture: Some(self.output_texture.into()),
-                            pipeline: Some(self.blur_pipeline),
-                        });
+                        r.set_pipeline(self.blur_pipeline);
+                        r.draw_mesh(quad);
                     },
                 )
                 .submit();
@@ -456,29 +436,22 @@ impl SSAOPass {
                 .render_pass(
                     display,
                     "SSAO Blur Pass - Y",
-                    &[RenderTarget::TextureRef(self.output_texture)],
+                    &[&self.output_texture.resource.view],
                     None,
                     |r| {
-                        let default_texture = r.render_state.get_texture(None).clone();
-                        r.set_bind_group(0, &default_texture, &[]);
+                        r.set_bind_group(0, self.blur_temp_buffer.bind_group(), &[]);
                         let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
                         r.set_bind_group(1, &global_uniforms, &[]);
                         r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
                         r.set_bind_group(3, self.scene_depth_buffer.bind_group(), &[]);
                         r.set_bind_group(4, self.blur_uniforms.bind_group(), &[]);
-                        r.draw_instance(&InstanceRenderData {
-                            mesh: quad,
-                            instance: BasicInstanceData {
-                                ..Default::default()
-                            },
-                            texture: Some(self.blur_temp_buffer.into()),
-                            pipeline: Some(self.blur_pipeline),
-                        });
+                        r.set_pipeline(self.blur_pipeline);
+                        r.draw_mesh(quad);
                     },
                 )
                 .submit();
         }
-        self.output_texture
+        &self.output_texture
     }
 
     pub fn debug_ui(&mut self, ui: &mut egui::Ui) {

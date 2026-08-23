@@ -1,7 +1,7 @@
 use std::ops::DerefMut;
 
 use bytemuck::Zeroable;
-use glam::{vec2, vec3};
+use glam::{vec2, vec3, Mat4};
 use itertools::Itertools;
 use rust_game_engine::app::{App, AppState, Context};
 use rust_game_engine::color::Color;
@@ -10,27 +10,26 @@ use rust_game_engine::renderer::bindings::{
 };
 use rust_game_engine::renderer::forward::ForwardGeometryPass;
 use rust_game_engine::renderer::geometry::GeometryPass;
+use rust_game_engine::renderer::instance::{BasicInstanceData, InstanceDataWithNormalMatrix};
 use rust_game_engine::renderer::lighting::{Light, LightKind};
 use rust_game_engine::renderer::model::LoadModel;
 use rust_game_engine::renderer::shader_type::GlobalUniforms;
 use rust_game_engine::renderer::shadow_mapping::ShadowMappingPass;
+use rust_game_engine::renderer::sprite_renderer::SpriteRenderer;
 use rust_game_engine::renderer::ssao_from_depth::SSAOPass;
 use rust_game_engine::renderer::text::RenderableFont;
-use rust_game_engine::renderer::{
-    DisplaySurfaceError, InstanceDataWithNormalMatrix, MeshRef, RenderTarget,
-};
+use rust_game_engine::renderer::{DisplaySurfaceError, MeshRef};
 use winit::dpi::PhysicalSize;
 use winit::event_loop::EventLoop;
 
 use controlset_derive::ControlSet;
 use rust_game_engine::assets::AssetManager;
 use rust_game_engine::camera::Camera;
-use rust_game_engine::geom::{BasicVertexData, ModelVertexData, Point};
+use rust_game_engine::geom::{ModelVertexData, Point, Rect};
 use rust_game_engine::input::{Axis, Button, Key, Toggle};
 use rust_game_engine::renderer::{
-    instance::InstanceRenderData, mesh::LoadMesh, state::ViewProjectionUniforms,
-    text::TextDisplayOptions, BasicInstanceData, Display, OffscreenFramebuffer, RenderData,
-    ScalingMode, TextureBuilder, TextureRef,
+    instance::InstanceRenderData, mesh::LoadMesh, text::TextDisplayOptions, Display,
+    OffscreenFramebuffer, ScalingMode, TextureBuilder, TextureRef, ViewProjectionUniforms,
 };
 use rust_game_engine::sprite_manager::SpriteManager;
 use rust_game_engine::transform::{Transform, Transform2D, Transform3D};
@@ -70,7 +69,7 @@ struct State {
     // TODO: BitmapFontRenderer
     default_font: RenderableFont,
 
-    sprite_render_data: RenderData<BasicVertexData, BasicInstanceData>,
+    sprite_renderer: SpriteRenderer,
     offscreen_framebuffer: OffscreenFramebuffer,
     shadow_mapping_pass: ShadowMappingPass,
     geometry_pass: GeometryPass,
@@ -79,12 +78,12 @@ struct State {
     show_light_volumes: bool,
     // deferred_lighting_pass: LightingPass,
     forward_pass: ForwardGeometryPass,
-    ortho_view_proj_bind_group: UniformBindGroup<ViewProjectionUniforms>,
+    proj_matrix_bind_group: UniformBindGroup<Mat4>,
 
     // "game" state
     camera: Camera,
     lights: Vec<Light>,
-    sprite_instances: Vec<InstanceRenderData>,
+    sprite_instances: Vec<BasicInstanceData>,
     crate_texture: TextureRef,
     cat_texture: TextureRef,
     cube_mesh: MeshRef<ModelVertexData>,
@@ -101,21 +100,19 @@ impl State {
         let sprite_ref = self.asset_manager.sprites.get_sprite_ref("guy").unwrap();
         let sprite = self.asset_manager.sprites.get_sprite(sprite_ref);
         for _ in 0..100 {
-            self.sprite_instances.push(
-                self.sprite_render_data.for_instance(BasicInstanceData {
-                    subtexture: sprite.frames[0].region,
-                    transform: Transform2D {
-                        position: vec2(
-                            (rand::random::<u32>() % size.x) as f32,
-                            (rand::random::<u32>() % size.y) as f32,
-                        ),
-                        scale: 4.0 * sprite.size.as_vec2(),
-                        ..Default::default()
-                    }
-                    .as_mat4(),
+            self.sprite_instances.push(BasicInstanceData {
+                subtexture: sprite.frames[0].region,
+                transform: Transform2D {
+                    position: vec2(
+                        (rand::random::<u32>() % size.x) as f32,
+                        (rand::random::<u32>() % size.y) as f32,
+                    ),
+                    scale: 4.0 * sprite.size.as_vec2(),
                     ..Default::default()
-                }),
-            );
+                }
+                .as_mat4(),
+                ..Default::default()
+            });
         }
     }
 }
@@ -160,14 +157,13 @@ impl AppState for State {
         asset_manager.track_glob("./res/sprites/*.aseprite", |state, path, f| {
             state.sprites.add_sprite_file(path.to_path_buf(), f);
         });
-        let sprite_atlas = ctx.render_state.load_texture(
-            &ctx.display,
-            TextureBuilder::labeled("sprite_atlas").from_image(
-                ctx.display.device(),
-                ctx.display.queue(),
-                asset_manager.sprites.atlas_image(),
-            ),
+        let sprite_atlas = TextureBuilder::labeled("sprite_atlas").from_image(
+            ctx.display.device(),
+            ctx.display.queue(),
+            asset_manager.sprites.atlas_image(),
         );
+        let sprite_renderer =
+            SpriteRenderer::new(&mut ctx.render_state, &ctx.display, sprite_atlas);
 
         let model = ctx
             .display
@@ -175,6 +171,12 @@ impl AppState for State {
             // .load_model("./res/models/jeep.obj")
             .load_model("./res/models/room_thickwalls.obj")
             .unwrap();
+
+        // let sponza = ctx
+        //     .display
+        //     .device()
+        //     .load_model("./res/models/sponza/sponza.obj")
+        //     .unwrap();
 
         let model_meshes = model
             .meshes
@@ -190,11 +192,6 @@ impl AppState for State {
             ctx.render_state
                 .create_offscreen_framebuffer(&ctx.display, fb_size, None);
 
-        let sprite_render_data = RenderData {
-            pipeline: None,
-            texture: sprite_atlas,
-            mesh: ctx.render_state.quad_mesh(),
-        };
         ctx.set_cursor_captured(true);
 
         let shadow_mapping_pass = ShadowMappingPass::new(&mut ctx.render_state, &ctx.display);
@@ -233,8 +230,8 @@ impl AppState for State {
                 });
             }
         }
-        let ortho_view_proj_bind_group =
-            create_uniform_bind_group(ctx.display.device(), ViewProjectionUniforms::default());
+        let proj_matrix_bind_group =
+            create_uniform_bind_group(ctx.display.device(), Default::default());
 
         Self {
             asset_manager,
@@ -283,7 +280,7 @@ impl AppState for State {
             occlusion_pass,
             ssao_enabled: true,
             // font_render_data: Default::default(),
-            sprite_render_data,
+            sprite_renderer,
             offscreen_framebuffer,
             // render_pipelines: Default::default(),
             model_meshes,
@@ -291,16 +288,16 @@ impl AppState for State {
             cubes,
             scene: Scene::Model,
             show_light_volumes: true,
-            ortho_view_proj_bind_group,
+            proj_matrix_bind_group,
         }
     }
 
     fn update(&mut self, ctx: &mut Context<GameControls>) -> bool {
         if self.asset_manager.check_for_updates() {
             if self.asset_manager.sprites.maybe_rebuild() {
-                ctx.render_state.replace_texture(
+                self.sprite_renderer.update(
+                    &mut ctx.render_state,
                     &ctx.display,
-                    self.sprite_render_data.texture,
                     TextureBuilder::labeled("sprite_atlas").from_image(
                         ctx.display.device(),
                         ctx.display.queue(),
@@ -349,7 +346,7 @@ impl AppState for State {
                 ..Zeroable::zeroed()
             },
         );
-        let view_proj = ViewProjectionUniforms::for_camera(&self.camera);
+        let view_projection = ViewProjectionUniforms::for_camera(&self.camera);
 
         // let mut scene = vec![];
         let mut scene = vec![
@@ -358,9 +355,8 @@ impl AppState for State {
                 mesh: self.cube_mesh,
                 instance: InstanceDataWithNormalMatrix::from_basic(
                     Default::default(),
-                    view_proj.view,
+                    view_projection.view,
                 ),
-                pipeline: None,
             },
             // InstanceRenderData {
             //     mesh: self.cube_mesh,
@@ -411,10 +407,9 @@ impl AppState for State {
                             transform: t.as_mat4(),
                             ..Default::default()
                         },
-                        view_proj.view,
+                        view_projection.view,
                     ),
                     texture: None,
-                    pipeline: None,
                 }));
             }
             Scene::Model => {
@@ -432,28 +427,35 @@ impl AppState for State {
                                 .as_mat4(),
                                 ..Default::default()
                             },
-                            view_proj.view,
+                            view_projection.view,
                         ),
                         texture: None,
-                        pipeline: None,
                     });
                 }
             }
         }
 
         // Populate G buffers
-        self.geometry_pass
-            .run(&mut ctx.render_state, &ctx.display, &view_proj, &scene);
+        self.geometry_pass.run(
+            &mut ctx.render_state,
+            &ctx.display,
+            &view_projection,
+            &scene,
+        );
 
-        self.forward_pass
-            .depth_prepass(&mut ctx.render_state, &ctx.display, &view_proj, &scene);
+        self.forward_pass.depth_prepass(
+            &mut ctx.render_state,
+            &ctx.display,
+            &view_projection,
+            &scene,
+        );
 
-        let occlusion_map = if self.ssao_enabled {
+        let occlusion_map = self.ssao_enabled.then(|| {
             self.occlusion_pass
-                .run(&mut ctx.render_state, &ctx.display, &view_proj)
-        } else {
-            ctx.render_state.default_texture()
-        };
+                .run(&mut ctx.render_state, &ctx.display, &view_projection)
+                .bind_group()
+                .clone()
+        });
 
         // self.lights
         //     .iter_mut()
@@ -468,7 +470,6 @@ impl AppState for State {
         self.forward_pass
             .lighting_group
             .lights
-            // .lights_uniform
             .update_with(ctx.display.queue(), |u| {
                 u.lights = self.lights.clone();
                 u.view_frustum = self.camera.frustum();
@@ -498,11 +499,10 @@ impl AppState for State {
                                 tint: (light.color * Color::from((1.0, 1.0, 1.0, 0.5))).into(),
                                 ..Default::default()
                             },
-                            view_proj.view,
+                            view_projection.view,
                         )
                     },
                     texture: None,
-                    pipeline: None,
                 });
             }
         }
@@ -510,18 +510,13 @@ impl AppState for State {
         self.forward_pass.run(
             &mut ctx.render_state,
             &ctx.display,
-            &view_proj,
+            &view_projection,
             &scene,
             occlusion_map,
         );
 
-        self.ortho_view_proj_bind_group.update(
-            ctx.display.queue(),
-            ViewProjectionUniforms {
-                projection: display_view.orthographic_projection(),
-                ..Default::default()
-            },
-        );
+        self.proj_matrix_bind_group
+            .update(ctx.display.queue(), display_view.orthographic_projection());
 
         // Draw offscreen buffer, overlay with 2d elements
         let mut enc = ctx
@@ -529,31 +524,35 @@ impl AppState for State {
             .render_pass(
                 &ctx.display,
                 "Default Pass",
-                &[RenderTarget::TextureView(display_view.view())],
-                Some(RenderTarget::TextureView(
-                    display_view.display().depth_texture_view(),
-                )),
+                &[display_view.view()],
+                Some(display_view.display().depth_texture_view()),
                 |r| {
-                    let default_texture = r.render_state.get_texture(None).clone();
+                    let default_texture = self.forward_pass.color_target.bind_group().clone();
                     r.set_bind_group(0, &default_texture, &[]);
-                    r.set_bind_group(1, self.ortho_view_proj_bind_group.bind_group(), &[]);
+                    r.set_bind_group(1, self.proj_matrix_bind_group.bind_group(), &[]);
                     r.draw_quad(
-                        // self.offscreen_framebuffer.color,
-                        self.forward_pass.color_target,
+                        self.forward_pass.color_target.bind_group(),
                         ScalingMode::Centered.view_matrix(
-                            self.offscreen_framebuffer.size_pixels().as_vec2(),
+                            // self.offscreen_framebuffer.size_pixels().as_vec2(),
+                            self.forward_pass
+                                .color_target
+                                .resource
+                                .size_pixels()
+                                .as_vec2(),
                             ctx.display.size_pixels().as_vec2(),
                         ),
+                        Color::WHITE,
+                        Rect::default(),
                     );
-                    for instance in &self.sprite_instances {
-                        r.draw_instance(instance);
-                    }
+                    self.sprite_renderer
+                        .render_batch(r, self.sprite_instances.iter());
                     let text = if ctx.input.show_help.on {
                         ctx.input
                             .status()
                             .map(|(c, bindings, state)| {
                                 format!("{:?} : {} = {}", c, bindings.iter().join(", "), state)
                             })
+                            .chain([format!("pos: {:?}", self.camera.position())])
                             .join("\n")
                     } else {
                         format!("{:.2}", ctx.frame_timing.fps())
@@ -597,7 +596,7 @@ impl AppState for State {
                     depth_slice: None,
                 },
                 Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &display_view.display().depth_texture_view(),
+                    view: &display_view.display().depth_texture_view().raw(),
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(0.0),
                         store: wgpu::StoreOp::Store,

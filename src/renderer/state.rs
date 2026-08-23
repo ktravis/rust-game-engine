@@ -1,109 +1,140 @@
 use std::{
     collections::HashMap,
+    marker::PhantomData,
     ops::{Deref, DerefMut, Range},
-    sync::Mutex,
 };
 
 use bytemuck::Zeroable;
-use glam::{Mat4, Quat, Vec3, Vec4};
+use glam::{Mat3A, Mat4, Quat, Vec2, Vec4};
 use shadertype_derive::shader_uniform_type;
 use slotmap::SlotMap;
 
 use super::{
     display::Display,
-    instance::{InstanceRenderData, InstanceStorage},
+    instance::InstanceStorage,
     mesh::{LoadMesh, Mesh, RawMeshRef, UntypedMesh},
     shader_type::GlobalUniforms,
     text::{RenderableFont, TextDisplayOptions},
     texture::{Texture, TextureBuilder},
-    BasicInstanceData, MeshRef, OffscreenFramebuffer, PipelineBuilder, PipelineRef, RawPipelineRef,
-    RenderTarget, TextureRef, DEFAULT_TEXTURE_DATA,
+    MeshRef, OffscreenFramebuffer, PipelineBuilder, PipelineRef, RawPipelineRef, TextureRef,
+    DEFAULT_TEXTURE_DATA,
 };
 use crate::{
-    camera::Camera,
     color::Color,
     geom::{BasicVertexData, Point, Rect},
     renderer::{
         bindings::{
-            create_uniform_bind_group, texture_bgl_entries, BindGroup, UniformBindGroup,
-            UNIFORM_BGL_ENTRY,
+            create_uniform_bind_group, texture_bgl_entries, BindGroup, DepthTextureView,
+            UniformBindGroup, UNIFORM_BGL_ENTRY,
         },
-        shader_type::VertexInput,
+        instance::BasicInstanceData,
+        shader_type::{create_shader, VertexInput, VertexInputs},
     },
-    transform::{Transform, Transform2D},
+    transform::Transform,
 };
 
 pub type BoundTexture = BindGroup<Texture>;
 
+#[derive(Debug, Default)]
 #[shader_uniform_type]
-pub struct ViewProjectionUniforms {
-    pub view: Mat4,
-    pub projection: Mat4,
-    pub camera_pos: Vec3,
-    #[skip]
-    pub _pad_camera_pos: [u8; 4u32 as usize],
-    pub inverse_view: Mat4,
+pub struct ModelData {
+    pub uv_scale: Vec2,
+    pub uv_offset: Vec2,
+    pub tint: Vec4,
+    pub transform: Mat4,
+    pub normal_matrix: Mat3A,
+    pub material: u32,
 }
 
-impl ViewProjectionUniforms {
-    pub fn for_camera(camera: &Camera) -> Self {
-        let view = camera.view_matrix();
-        assert!(
-            (view.inverse() * view * Vec4::ONE - Vec4::ONE)
-                .abs()
-                .length_squared()
-                < 0.000001
-        );
-        Self {
-            view,
-            inverse_view: view.inverse(),
-            projection: camera.perspective_matrix(),
-            camera_pos: camera.position(),
-            ..Default::default()
-        }
-    }
+const DEFAULT_SHADER: &'static str = crate::wgsl!(
+    r#"
+@group(0) @binding(0)
+var t_diffuse: texture_2d<f32>;
+@group(0) @binding(1)
+var s_diffuse: sampler;
+
+@group(1) @binding(0)
+var<uniform> projection: mat4x4<f32>;
+
+var<immediate> model_data: ModelData;
+
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) tex_coords: vec2<f32>,
 }
 
-impl Default for ViewProjectionUniforms {
-    fn default() -> Self {
-        Self {
-            view: Default::default(),
-            projection: Default::default(),
-            camera_pos: Default::default(),
-            inverse_view: Default::default(),
-            ..Zeroable::zeroed()
-        }
-    }
+@vertex
+fn vs_main(
+    vertex: BasicVertexData,
+) -> VertexOutput {
+    let model = model_data.transform * vertex.position;
+    var out: VertexOutput;
+    out.tex_coords = model_data.uv_offset + model_data.uv_scale * vertex.tex_coords;
+    out.clip_position = projection * model;
+    return out;
 }
 
-pub struct CachePool<T> {
-    items: Vec<T>,
-    in_use: usize,
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    return model_data.tint * textureSample(t_diffuse, s_diffuse, in.tex_coords);
+}
+"#
+);
+
+const TEXT_SHADER: &'static str = crate::wgsl!(
+    r#"
+@group(0) @binding(0)
+var t_diffuse: texture_2d<f32>;
+@group(0) @binding(1)
+var s_diffuse: sampler;
+
+@group(1) @binding(0)
+var<uniform> projection: mat4x4<f32>;
+
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) tex_coords: vec2<f32>,
+    @location(1) screen_pos: vec2<f32>,
+    @location(2) tint_color: vec4<f32>,
 }
 
-impl<T> Default for CachePool<T> {
-    fn default() -> Self {
-        Self {
-            items: vec![],
-            in_use: 0,
-        }
-    }
+@vertex
+fn vs_main(
+    vertex: BasicVertexData,
+    instance: BasicInstanceData,
+) -> VertexOutput {
+    let model_transform = mat4x4<f32>(
+        instance.transform_1,
+        instance.transform_2,
+        instance.transform_3,
+        instance.transform_4,
+    );
+    var out: VertexOutput;
+    out.tex_coords = instance.subtexture_offset + instance.subtexture_scale * vertex.tex_coords;
+    let model = model_transform * vertex.position;
+    out.clip_position = projection * model;
+    out.screen_pos = model.xy;
+    out.tint_color = instance.tint;
+    return out;
 }
 
-impl<T> CachePool<T> {
-    pub fn get<'a>(&'a mut self, ctor: impl FnOnce() -> T) -> &'a T {
-        if self.in_use >= self.items.len() {
-            self.items.push(ctor());
-        }
-        let i = self.in_use;
-        self.in_use += 1;
-        &self.items[i]
-    }
-
-    pub fn reset(&mut self) {
-        self.in_use = 0;
-    }
+fn median(r: f32, g: f32, b: f32) -> f32 {
+    return max(min(r, g), min(max(r, g), b));
 }
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let msd = textureSample(t_diffuse, s_diffuse, in.tex_coords);
+    let sd = median(msd.r, msd.g, msd.b);
+    let w = fwidth(sd) * 0.5;
+    let opacity = smoothstep(0.5 - w, 0.5 + w, sd);
+    // if (opacity == 0.0) {
+    //     discard;
+    // }
+    return vec4(in.tint_color.x, in.tint_color.y, in.tint_color.z, opacity * in.tint_color.w);
+}
+"#
+);
 
 pub struct PartialRenderPass<'a> {
     display: &'a Display,
@@ -129,7 +160,6 @@ pub struct RenderState {
     quad_mesh: MeshRef<BasicVertexData>,
 
     instance_storage: InstanceStorage,
-    view_proj_bind_groups: Mutex<CachePool<UniformBindGroup<ViewProjectionUniforms>>>,
 
     texture_bind_group_layouts: HashMap<wgpu::TextureFormat, wgpu::BindGroupLayout>,
     texture_manager: SlotMap<TextureRef, BoundTexture>,
@@ -137,23 +167,31 @@ pub struct RenderState {
 
     mesh_manager: SlotMap<RawMeshRef, UntypedMesh>,
     pipelines: SlotMap<RawPipelineRef, wgpu::RenderPipeline>,
-    default_pipeline: PipelineRef<BasicVertexData, BasicInstanceData>,
-    text_pipeline: PipelineRef<BasicVertexData, BasicInstanceData>,
+    pub default_instanced_pipeline: PipelineRef<(BasicVertexData, BasicInstanceData)>,
+    default_pipeline: PipelineRef<BasicVertexData>,
+    text_pipeline: PipelineRef<(BasicVertexData, BasicInstanceData)>,
 }
 
 impl RenderState {
     const MAX_COLOR_ATTACHMENTS: usize = 8;
 
-    pub fn new(
-        display: &Display,
-        default_shader: &wgpu::ShaderModule,
-        text_shader: &wgpu::ShaderModule,
-    ) -> Self {
+    pub fn new(display: &Display) -> Self {
         let device = display.device();
 
         let global_uniforms = create_uniform_bind_group(device, GlobalUniforms::zeroed());
         let mesh_manager = SlotMap::with_key();
         let instance_storage = InstanceStorage::new(display, 1024);
+
+        let text_shader = &create_shader::<(), (BasicVertexData, BasicInstanceData)>(
+            display,
+            "text",
+            TEXT_SHADER.to_string(),
+        );
+        let default_shader = &create_shader::<ModelData, BasicVertexData>(
+            display,
+            "default",
+            DEFAULT_SHADER.to_string(),
+        );
 
         let mut s = Self {
             texture_manager: SlotMap::with_key(),
@@ -163,7 +201,7 @@ impl RenderState {
             instance_storage,
             texture_bind_group_layouts: Default::default(),
             quad_mesh: Default::default(),
-            view_proj_bind_groups: Default::default(),
+            default_instanced_pipeline: Default::default(),
             default_pipeline: Default::default(),
             text_pipeline: Default::default(),
             default_texture: Default::default(),
@@ -190,16 +228,17 @@ impl RenderState {
             label: Some("main texture"),
             entries: &texture_bgl_entries(TextureBuilder::DEFAULT_FORMAT),
         });
-        s.default_pipeline = s
-            .pipeline_builder()
-            .with_label("Default Render Pipeline")
-            .with_bind_group_layouts(vec![&main_texture_bgl, &view_proj_uniform_bgl])
-            .build(display.device(), &default_shader);
         s.text_pipeline = s
             .pipeline_builder()
             .with_label("Text Render Pipeline")
             .with_bind_group_layouts(vec![&main_texture_bgl, &view_proj_uniform_bgl])
             .build(display.device(), &text_shader);
+        s.default_pipeline = s
+            .pipeline_builder()
+            .with_label("default pipeline")
+            .with_bind_group_layouts(vec![&main_texture_bgl, &view_proj_uniform_bgl])
+            .with_immediate_size(std::mem::size_of::<ModelData>() as u32)
+            .build(display.device(), &default_shader);
         s
     }
 
@@ -211,11 +250,11 @@ impl RenderState {
         PipelineBuilder::new(self)
     }
 
-    pub(super) fn add_pipeline<V: VertexInput, I: VertexInput>(
+    pub(super) fn add_pipeline<V: VertexInputs>(
         &mut self,
         key: impl Into<Option<RawPipelineRef>>,
         pipeline: wgpu::RenderPipeline,
-    ) -> PipelineRef<V, I> {
+    ) -> PipelineRef<V> {
         match key.into() {
             Some(key) => {
                 *self.pipelines.get_mut(key).unwrap() = pipeline;
@@ -230,8 +269,10 @@ impl RenderState {
         &mut self,
         display: &'a Display,
         name: &str,
-        color_targets: &[RenderTarget],
-        depth_target: Option<RenderTarget>,
+        // TODO: this could be a tuple of typed TextureView's instead, which would allow them to be
+        // different formats with validation on pass outputs?
+        color_targets: &[&wgpu::TextureView],
+        depth_target: Option<&DepthTextureView>,
         pass: impl FnOnce(&mut RenderPass<'_, '_>),
     ) -> PartialRenderPass<'a> {
         self.instance_storage.clear();
@@ -243,18 +284,18 @@ impl RenderState {
             );
         }
 
-        let mut encoder = display.command_encoder();
+        let mut encoder =
+            display
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some(&format!("Render Pass Encoder({name})")),
+                });
         {
             let color_attachments: [Option<wgpu::RenderPassColorAttachment>;
                 Self::MAX_COLOR_ATTACHMENTS] = std::array::from_fn(|i| {
-                color_targets.get(i).map(|target| {
-                    let view = match target {
-                        RenderTarget::TextureView(view) => *view,
-                        RenderTarget::TextureRef(texture) => {
-                            &self.texture_manager.get(*texture).unwrap().resource.view
-                        }
-                    };
-                    wgpu::RenderPassColorAttachment {
+                color_targets
+                    .get(i)
+                    .map(|view| wgpu::RenderPassColorAttachment {
                         view,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -262,21 +303,21 @@ impl RenderState {
                         },
                         resolve_target: None,
                         depth_slice: None,
-                    }
-                })
+                    })
             });
             let raw_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(name),
                 color_attachments: &color_attachments[..color_targets.len()],
                 depth_stencil_attachment: depth_target.map(|target| {
-                    let view = match target {
-                        RenderTarget::TextureView(view) => view,
-                        RenderTarget::TextureRef(texture) => {
-                            &self.texture_manager.get(texture).unwrap().resource.view
-                        }
-                    };
+                    // target.
+                    // let view = match target {
+                    //     RenderTarget::TextureView(view) => view,
+                    //     RenderTarget::TextureRef(texture) => {
+                    //         &self.texture_manager.get(texture).unwrap().resource.view
+                    //     }
+                    // };
                     wgpu::RenderPassDepthStencilAttachment {
-                        view,
+                        view: target.raw(),
                         depth_ops: Some(wgpu::Operations {
                             load: wgpu::LoadOp::Clear(1.0),
                             store: wgpu::StoreOp::Store,
@@ -288,13 +329,13 @@ impl RenderState {
             });
             let mut render_pass = RenderPass::new(self, display, raw_pass);
             pass(&mut render_pass);
-            render_pass.flush_draw_calls();
         }
         PartialRenderPass { display, encoder }
     }
 
     pub fn after_frame(&mut self) {
-        self.view_proj_bind_groups.lock().unwrap().reset();
+        // ...
+        // self.instance_storage.clear();
     }
 
     pub fn create_offscreen_framebuffer(
@@ -306,7 +347,7 @@ impl RenderState {
         let format = format
             .into()
             .unwrap_or(TextureBuilder::DEFAULT_RENDER_FORMAT);
-        let color = self.load_texture(
+        let color = self.bind_texture(
             display,
             TextureBuilder::labeled("offscreen_color_target")
                 .with_format(format)
@@ -318,17 +359,16 @@ impl RenderState {
                 .build(display.device(), size),
         );
         let depth = Some(
-            self.load_texture(
-                display,
-                TextureBuilder::depth()
-                    .with_label("offscreen_depth_target")
-                    .with_usage(
-                        wgpu::TextureUsages::COPY_SRC
-                            | wgpu::TextureUsages::TEXTURE_BINDING
-                            | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                    )
-                    .build(display.device(), size),
-            ),
+            TextureBuilder::depth()
+                .with_label("offscreen_depth_target")
+                .with_usage(
+                    wgpu::TextureUsages::COPY_SRC
+                        | wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                )
+                .build(display.device(), size)
+                .view
+                .into(),
         );
         OffscreenFramebuffer {
             color,
@@ -353,12 +393,16 @@ impl RenderState {
             })
     }
 
-    pub fn load_texture(&mut self, display: &Display, t: Texture) -> TextureRef {
-        let bt = BoundTexture::for_texture(
+    pub fn bind_texture(&mut self, display: &Display, t: Texture) -> BoundTexture {
+        BoundTexture::for_texture(
             display.device(),
             self.bgl_for_texture_format(display.device(), t.format()),
             t,
-        );
+        )
+    }
+
+    pub fn load_texture(&mut self, display: &Display, t: Texture) -> TextureRef {
+        let bt = self.bind_texture(display, t);
         self.texture_manager.insert(bt)
     }
 
@@ -392,9 +436,6 @@ pub struct RenderPass<'a, 'p> {
     display: &'p Display,
     raw_pass: wgpu::RenderPass<'p>,
 
-    active_mesh: Option<RawMeshRef>,
-    active_pipeline: Option<RawPipelineRef>,
-    active_texture: Option<TextureRef>,
     current_draw_range: Range<u32>,
 }
 
@@ -424,14 +465,11 @@ impl<'a, 'p> RenderPass<'a, 'p> {
             display,
             render_state,
             raw_pass,
-            active_mesh: None,
-            active_pipeline: None,
-            active_texture: None,
             current_draw_range: 0..0,
         }
     }
 
-    pub fn draw_raw_mesh_ex(
+    fn draw_raw_mesh_ex(
         &mut self,
         raw_mesh: RawMeshRef,
         base_vertex: i32,
@@ -454,68 +492,55 @@ impl<'a, 'p> RenderPass<'a, 'p> {
         self.draw_raw_mesh_ex(mesh.raw(), 0, None, 0..1)
     }
 
-    #[inline]
-    pub fn draw_instance<V: VertexInput, I: VertexInput>(
-        &mut self,
-        instance: &InstanceRenderData<V, I>,
-    ) {
-        let pipeline = instance.pipeline.map(|p| p.raw());
-        if pipeline != self.active_pipeline {
-            self.flush_draw_calls();
-            self.active_pipeline = pipeline;
-        }
-        let mesh = instance.mesh.raw();
-        if mesh != self.active_mesh.unwrap_or_default() {
-            self.flush_draw_calls();
-            self.active_mesh = Some(mesh);
-        }
-        if instance.texture != self.active_texture {
-            self.flush_draw_calls();
-            self.active_texture = instance.texture;
-        }
-        self.current_draw_range.end += 1;
-        self.render_state.instance_storage.add(&instance.instance);
+    pub fn set_pipeline<V: VertexInputs>(&mut self, pipeline: PipelineRef<V>) {
+        let p = self.render_state.pipelines.get(pipeline.raw()).unwrap();
+        self.raw_pass.set_pipeline(p);
     }
 
     #[inline]
-    pub fn draw_quad(&mut self, texture: impl Into<Option<TextureRef>>, transform: impl Transform) {
-        self.draw_quad_ex(texture.into(), transform, Color::WHITE, Rect::default())
-    }
-
-    #[inline]
-    pub fn draw_quad_ex(
+    pub fn draw_quad(
         &mut self,
-        texture: Option<TextureRef>,
+        texture: &wgpu::BindGroup,
         transform: impl Transform,
         c: Color,
         subtexture: Rect,
     ) {
         let transform = transform.as_mat4();
-        self.draw_instance(&InstanceRenderData {
-            mesh: self.render_state.quad_mesh,
-            instance: BasicInstanceData {
+        let mesh = self.render_state.quad_mesh.raw();
+        let p = self
+            .render_state
+            .pipelines
+            .get(self.render_state.default_pipeline.raw())
+            .unwrap();
+        self.raw_pass.set_pipeline(p);
+        self.raw_pass.set_bind_group(0, texture, &[]);
+        self.raw_pass.set_immediates(
+            0,
+            bytemuck::bytes_of(&ModelData {
+                uv_scale: subtexture.dim,
+                uv_offset: subtexture.pos,
+                tint: c.into(),
                 transform,
-                tint: c,
-                subtexture,
-            },
-            texture,
-            pipeline: None,
-        });
+                normal_matrix: Mat3A::IDENTITY,
+                material: 0,
+            }),
+        );
+        self.draw_raw_mesh_ex(mesh, 0, None, 0..1);
     }
 
-    #[inline]
-    pub fn draw_rect(&mut self, rect: Rect, c: Color, texture: impl Into<Option<TextureRef>>) {
-        self.draw_quad_ex(
-            texture.into(),
-            Transform2D {
-                position: rect.pos,
-                scale: rect.dim,
-                rotation_rad: 0.0,
-            },
-            c,
-            Rect::new(0.0, 0.0, 0.0, 0.0),
-        );
-    }
+    // #[inline]
+    // pub fn draw_rect(&mut self, rect: Rect, c: Color, texture: impl Into<Option<TextureRef>>) {
+    //     self.draw_quad_ex(
+    //         texture.into(),
+    //         Transform2D {
+    //             position: rect.pos,
+    //             scale: rect.dim,
+    //             rotation_rad: 0.0,
+    //         },
+    //         c,
+    //         Rect::new(0.0, 0.0, 0.0, 0.0),
+    //     );
+    // }
 
     #[inline]
     pub fn draw_text(
@@ -525,56 +550,113 @@ impl<'a, 'p> RenderPass<'a, 'p> {
         transform: impl Transform,
         opts: TextDisplayOptions,
     ) {
+        self.raw_pass.set_bind_group(
+            Self::TEXTURE_BIND_GROUP_INDEX,
+            font.texture().bind_group(),
+            &[],
+        );
         let m = transform.as_mat4();
+        let mut batch =
+            self.draw_instanced(self.render_state.quad_mesh, self.render_state.text_pipeline);
         for glyph_data in font.layout_text(s.as_ref(), opts.layout) {
             let transform = m * Mat4::from_scale_rotation_translation(
                 glyph_data.bounds.dim.extend(1.0),
                 Quat::IDENTITY,
                 glyph_data.bounds.pos.extend(0.0),
             );
-            self.draw_instance(&InstanceRenderData {
-                instance: BasicInstanceData {
-                    subtexture: glyph_data.subtexture,
-                    tint: opts.color,
-                    transform,
-                    ..Default::default()
-                },
-                mesh: self.render_state.quad_mesh,
-                texture: Some(font.texture()),
-                pipeline: Some(self.render_state.text_pipeline),
+            batch.add(&BasicInstanceData {
+                subtexture: glyph_data.subtexture,
+                tint: opts.color,
+                transform,
+                // mesh: self.render_state.quad_mesh,
+                // texture: Some(font.texture()),
+                // pipeline: Some(self.render_state.text_pipeline),
+                ..Default::default()
             });
         }
     }
 
-    fn flush_draw_calls(&mut self) {
-        if self.current_draw_range.is_empty() {
+    // TODO: we could require I: InstanceInput or something and have that set step mode?
+    // TODO: this doesn't really *need* to set the pipeline, it's mostly enforcing that V and I are
+    // all aligned. Could potentially build the pipeline into the render_pass creation, so that
+    // it's typed from the start (and then only something with (V, I: InstanceInput) would even
+    // implement the instanced drawing functions
+    pub fn draw_instanced<'r, V: VertexInput, I: VertexInput>(
+        &'r mut self,
+        mesh: MeshRef<V>,
+        pipeline: PipelineRef<(V, I)>,
+    ) -> Batcher<'r, 'a, 'p, V, I> {
+        let p = self.render_state.pipelines.get(pipeline.raw()).unwrap();
+        self.raw_pass.set_pipeline(p);
+        let num_indices = {
+            let m = self.render_state.mesh_manager.get(mesh.raw()).unwrap();
+            self.raw_pass
+                .set_vertex_buffer(0, m.vertex_buffer.slice(..));
+            self.raw_pass
+                .set_index_buffer(m.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            m.num_indices
+        };
+        let draw_range_start = self.current_draw_range.start;
+        Batcher {
+            render_pass: self,
+            // instance_storage: &mut self.render_state.instance_storage,
+            // display: self.display,
+            // raw_pass: &mut self.raw_pass,
+            draw_count: 0,
+            draw_range_start,
+            base_vertex: 0,
+            mesh_indices: 0..num_indices,
+            _marker: PhantomData,
+        }
+    }
+}
+
+pub struct Batcher<'r, 'x: 'r, 'y: 'r, V: VertexInput, I: VertexInput> {
+    render_pass: &'r mut RenderPass<'x, 'y>,
+    // instance_storage: &'a mut InstanceStorage,
+    // display: &'p Display,
+    // raw_pass: &'a mut wgpu::RenderPass<'p>,
+    draw_count: u32,
+    draw_range_start: u32,
+    base_vertex: i32,
+    mesh_indices: Range<u32>,
+    _marker: PhantomData<(V, I)>,
+}
+
+impl<'r, 'x: 'r, 'y: 'r, V: VertexInput, I: VertexInput> Batcher<'r, 'x, 'y, V, I> {
+    pub fn add(&mut self, instance: &I) {
+        self.render_pass.render_state.instance_storage.add(instance);
+        self.draw_count += 1;
+    }
+
+    fn flush(&mut self) {
+        if self.draw_count == 0 {
             return;
         }
-        let p = self
+        // TODO: make this instance range calculation internal to the instance storage
+        self.render_pass.current_draw_range.start += self.draw_count;
+        self.render_pass
             .render_state
-            .pipelines
-            .get(
-                self.active_pipeline
-                    .unwrap_or(self.render_state.default_pipeline.raw()),
-            )
-            .unwrap();
-        self.raw_pass.set_pipeline(p);
-        self.render_state
             .instance_storage
-            .update_buffer(self.display);
-        self.raw_pass.set_bind_group(
-            Self::TEXTURE_BIND_GROUP_INDEX,
-            self.render_state.get_texture(self.active_texture),
-            &[],
+            .update_buffer(self.render_pass.display);
+        let buf = self
+            .render_pass
+            .render_state
+            .instance_storage
+            .buffer()
+            .clone();
+        // NOTE: this has to be done once we know the size of the buffer
+        self.render_pass.set_vertex_buffer(1, buf.slice(..));
+        self.render_pass.draw_indexed(
+            self.mesh_indices.clone(),
+            self.base_vertex,
+            self.draw_range_start..(self.draw_range_start + self.draw_count),
         );
-        self.raw_pass
-            .set_vertex_buffer(1, self.render_state.instance_storage.buffer().slice(..));
-        self.draw_raw_mesh_ex(
-            self.active_mesh.expect("no active mesh"),
-            0,
-            None,
-            self.current_draw_range.clone(),
-        );
-        self.current_draw_range.start = self.current_draw_range.end
+    }
+}
+
+impl<'r, 'x: 'r, 'y: 'r, V: VertexInput, I: VertexInput> Drop for Batcher<'r, 'x, 'y, V, I> {
+    fn drop(&mut self) {
+        self.flush();
     }
 }

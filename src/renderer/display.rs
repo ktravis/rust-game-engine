@@ -1,7 +1,7 @@
 use std::{ops::Deref, sync::Arc};
 
 use super::texture::{Texture, TextureBuilder};
-use crate::geom::Point;
+use crate::{geom::Point, renderer::bindings::DepthTextureView};
 
 use glam::{vec3, Mat4, Quat, Vec2};
 use image::ImageResult;
@@ -70,7 +70,7 @@ pub struct Display {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    depth_texture_view: wgpu::TextureView,
+    depth_texture_view: DepthTextureView,
     // The window must be declared after the surface so
     // it gets dropped after it as the surface contains
     // unsafe references to the window's resources.
@@ -157,7 +157,7 @@ impl Display {
             surface,
             device,
             queue,
-            depth_texture_view: depth_texture.view.clone(),
+            depth_texture_view: depth_texture.view.into(),
             window,
             staging_buffer: None,
         }
@@ -178,7 +178,7 @@ impl Display {
             let t = TextureBuilder::depth()
                 .with_label("display_depth_texture")
                 .build(self.device(), Point::new(new_size.width, new_size.height));
-            self.depth_texture_view = t.view;
+            self.depth_texture_view = t.view.into();
         }
     }
 
@@ -216,7 +216,7 @@ impl Display {
         }
     }
 
-    pub fn depth_texture_view(&self) -> &wgpu::TextureView {
+    pub fn depth_texture_view(&self) -> &DepthTextureView {
         &self.depth_texture_view
     }
 
@@ -230,13 +230,6 @@ impl Display {
             output_texture,
             view,
         })
-    }
-
-    pub fn command_encoder(&self) -> wgpu::CommandEncoder {
-        self.device()
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Render Encoder"),
-            })
     }
 
     pub fn depth_format(&self) -> wgpu::TextureFormat {

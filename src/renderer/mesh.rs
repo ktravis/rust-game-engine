@@ -20,6 +20,12 @@ pub struct MeshRef<V> {
     _marker: PhantomData<V>,
 }
 
+impl<V> PartialEq for MeshRef<V> {
+    fn eq(&self, other: &Self) -> bool {
+        self.raw == other.raw
+    }
+}
+
 impl<V> MeshRef<V> {
     pub fn raw(&self) -> RawMeshRef {
         self.raw

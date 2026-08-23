@@ -7,9 +7,10 @@ use crate::{
     color::Color,
     font::{FontAtlas, LayoutOptions},
     input::ControlSet,
+    renderer::state::BoundTexture,
 };
 
-use super::{TextureBuilder, TextureRef};
+use super::TextureBuilder;
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct TextDisplayOptions {
@@ -17,10 +18,9 @@ pub struct TextDisplayOptions {
     pub layout: LayoutOptions,
 }
 
-#[derive(Clone)]
 pub struct RenderableFont {
     font_atlas: FontAtlas,
-    font_atlas_texture: TextureRef,
+    font_atlas_texture: BoundTexture,
 }
 
 impl Deref for RenderableFont {
@@ -37,7 +37,7 @@ impl RenderableFont {
         let ttf_bytes = include_bytes!("../../res/fonts/Ubuntu-M.ttf");
         let face = Face::parse(ttf_bytes, 0).unwrap();
         let font_atlas = FontAtlas::new(face, Default::default()).unwrap();
-        let font_atlas_texture = ctx.render_state.load_texture(
+        let font_atlas_texture = ctx.render_state.bind_texture(
             &ctx.display,
             TextureBuilder::labeled("font_atlas")
                 .with_filter_mode(wgpu::FilterMode::Linear)
@@ -54,7 +54,7 @@ impl RenderableFont {
         }
     }
 
-    pub fn texture(&self) -> TextureRef {
-        self.font_atlas_texture
+    pub fn texture(&self) -> &BoundTexture {
+        &self.font_atlas_texture
     }
 }

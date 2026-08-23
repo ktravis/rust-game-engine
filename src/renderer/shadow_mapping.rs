@@ -2,16 +2,18 @@ use crate::{
     geom::{ModelVertexData, Point},
     renderer::{
         bindings::{
-            create_uniform_bind_group, texture_bgl_entries, UniformBindGroup, UNIFORM_BGL_ENTRY,
+            create_uniform_bind_group, texture_bgl_entries, DepthTextureView, UniformBindGroup,
+            ViewProjectionUniforms, UNIFORM_BGL_ENTRY,
         },
+        instance::InstanceDataWithNormalMatrix,
         shader_type::{create_shader, GlobalUniforms},
-        state::ViewProjectionUniforms,
+        state::BoundTexture,
     },
 };
 
 use super::{
-    instance::InstanceRenderData, lighting::LightsUniform, Display, InstanceDataWithNormalMatrix,
-    PipelineRef, RenderState, RenderTarget, Texture, TextureBuilder, TextureRef,
+    instance::InstanceRenderData, lighting::LightsUniform, Display, PipelineRef, RenderState,
+    Texture, TextureBuilder,
 };
 
 pub const MAX_LIGHTS: usize = 8;
@@ -52,10 +54,10 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
 );
 
 pub struct ShadowMappingPass {
-    shadow_map_pipeline: PipelineRef<ModelVertexData, InstanceDataWithNormalMatrix>,
+    shadow_map_pipeline: PipelineRef<(ModelVertexData, InstanceDataWithNormalMatrix)>,
     shadow_map: Texture,
-    shadow_map_target_views: [wgpu::TextureView; MAX_LIGHTS],
-    pub shadow_map_debug_textures: [TextureRef; MAX_LIGHTS],
+    shadow_map_target_views: [DepthTextureView; MAX_LIGHTS],
+    pub shadow_map_debug_textures: [BoundTexture; MAX_LIGHTS],
     pub depth_bias_state: wgpu::DepthBiasState,
     last_depth_bias_state: wgpu::DepthBiasState,
     view_proj_bind_groups: [UniformBindGroup<ViewProjectionUniforms>; MAX_LIGHTS],
@@ -85,9 +87,10 @@ impl ShadowMappingPass {
                     array_layer_count: Some(1),
                     usage: Some(usage),
                 })
+                .into()
         });
         let shadow_map_debug_textures = std::array::from_fn(|i| {
-            state.load_texture(
+            state.bind_texture(
                 display,
                 TextureBuilder::render_target()
                     .with_label(&format!("shadow map debug {}", i))
@@ -190,19 +193,31 @@ impl ShadowMappingPass {
                 .render_pass(
                     &display,
                     "Shadow Mapping Pass",
-                    &[RenderTarget::TextureRef(self.shadow_map_debug_textures[i])],
-                    Some(RenderTarget::TextureView(&self.shadow_map_target_views[i])),
+                    &[&self.shadow_map_debug_textures[i].resource.view],
+                    Some(&self.shadow_map_target_views[i]),
                     |r| {
+                        r.set_pipeline(self.shadow_map_pipeline);
                         let default_texture = r.render_state.get_texture(None).clone();
                         r.set_bind_group(0, &default_texture, &[]);
                         let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
                         r.set_bind_group(1, &global_uniforms, &[]);
                         r.set_bind_group(2, self.view_proj_bind_groups[i].bind_group(), &[]);
-                        for render_data in scene {
-                            r.draw_instance(&InstanceRenderData {
-                                pipeline: Some(self.shadow_map_pipeline),
-                                ..*render_data
-                            });
+                        let mut objects = scene.iter().peekable();
+                        while let Some(first) = objects.next() {
+                            // let first = objects.next().unwrap();
+                            // TODO: if textures were bindless, could just partition objects by mesh and
+                            // give each a batcher
+                            let mesh = first.mesh;
+
+                            let mut b = r.draw_instanced(first.mesh, self.shadow_map_pipeline);
+                            b.add(first);
+                            while let Some(object) = objects.peek() {
+                                if object.mesh != mesh {
+                                    break;
+                                }
+                                b.add(&object.instance);
+                                objects.next();
+                            }
                         }
                     },
                 )
