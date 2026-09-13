@@ -9,13 +9,13 @@ use crate::{
         instance::BasicInstanceData,
         lighting::{LightRaw, LightingUniformsRaw},
         shader_type::{create_shader, GlobalUniforms},
-        TextureBuilder,
+        PipelineBuilder, TextureBuilder,
     },
 };
 
 use super::{
     lighting::{Light, LightsUniform},
-    Display, PipelineRef, RenderState,
+    Display, Pipeline, RenderState,
 };
 
 const DEFERRED_LIGHTING_SHADER: &'static str = crate::wgsl!(
@@ -148,13 +148,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 );
 
 pub struct LightingPass {
-    pipeline: PipelineRef<(BasicVertexData, BasicInstanceData)>,
+    pipeline: Pipeline<(BasicVertexData, BasicInstanceData)>,
     lights_uniform: UniformBindGroup<LightsUniform>,
     view_proj_bind_group: UniformBindGroup<ViewProjectionUniforms>,
 }
 
 impl LightingPass {
-    pub fn new(state: &mut RenderState, display: &Display) -> Self {
+    pub fn new(display: &Display) -> Self {
         let main_texture_bgl =
             display
                 .device()
@@ -179,9 +179,7 @@ impl LightingPass {
         let geometry_pass_bgl =
             GeometryBuffers::create_layout(display.device(), "geometry buffers");
         let lights_uniform = create_uniform_bind_group(display.device(), LightsUniform::default());
-        let pipeline = state
-            .pipeline_builder()
-            .with_label("Lighting Render Pipeline")
+        let pipeline = PipelineBuilder::new("Lighting Render Pipeline")
             .with_bind_group_layouts(vec![
                 &main_texture_bgl,
                 &global_uniform_bgl,
@@ -245,7 +243,7 @@ impl LightingPass {
                 r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
                 r.set_bind_group(3, geometry_buffers.bind_group(), &[]);
                 r.set_bind_group(4, self.lights_uniform.bind_group(), &[]);
-                r.set_pipeline(self.pipeline);
+                r.set_pipeline(&self.pipeline);
                 r.draw_mesh(quad);
             })
             .submit();

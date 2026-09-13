@@ -1,35 +1,30 @@
 use std::marker::PhantomData;
 
 use itertools::Itertools;
-use slotmap::Key;
 
 use crate::renderer::shader_type::VertexInputs;
 
-use super::{RenderState, TextureBuilder};
+use super::TextureBuilder;
 
 slotmap::new_key_type! {
     pub(super) struct RawPipelineRef;
 }
 
-#[derive(Copy, Clone, Debug, Default)]
-pub struct PipelineRef<V> {
-    raw: RawPipelineRef,
+#[derive(Clone)]
+pub struct Pipeline<V> {
+    raw: wgpu::RenderPipeline,
     _marker: PhantomData<V>,
 }
 
-impl<V> PipelineRef<V> {
-    pub(super) fn raw(self) -> RawPipelineRef {
-        self.raw
-    }
-
-    pub fn is_null(&self) -> bool {
-        self.raw.is_null()
+impl<V> Pipeline<V> {
+    pub(super) fn raw(&self) -> &wgpu::RenderPipeline {
+        &self.raw
     }
 }
 
-impl<V> From<RawPipelineRef> for PipelineRef<V> {
-    fn from(raw: RawPipelineRef) -> Self {
-        PipelineRef {
+impl<V> From<wgpu::RenderPipeline> for Pipeline<V> {
+    fn from(raw: wgpu::RenderPipeline) -> Self {
+        Pipeline {
             raw,
             _marker: PhantomData,
         }
@@ -37,11 +32,10 @@ impl<V> From<RawPipelineRef> for PipelineRef<V> {
 }
 
 pub struct PipelineBuilder<'a> {
-    state: &'a mut RenderState,
     label: Option<&'a str>,
     color_target_states: Vec<Option<wgpu::ColorTargetState>>,
     bind_group_layouts: Vec<&'a wgpu::BindGroupLayout>,
-    key: Option<RawPipelineRef>,
+    // key: Option<RawPipelineRef>,
     cull_mode: Option<wgpu::Face>,
     depth_stencil_state: Option<wgpu::DepthStencilState>,
     immediate_size: u32,
@@ -57,17 +51,16 @@ impl<'a> PipelineBuilder<'a> {
         alpha: wgpu::BlendComponent::OVER,
     };
 
-    pub fn new(state: &'a mut RenderState) -> Self {
+    pub fn new(label: &'a str) -> Self {
         Self {
-            state,
-            label: None,
+            label: Some(label),
             color_target_states: vec![Some(wgpu::ColorTargetState {
                 format: TextureBuilder::DEFAULT_RENDER_FORMAT,
                 blend: Some(Self::DEFAULT_BLEND),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
             bind_group_layouts: vec![],
-            key: None,
+            // key: None,
             cull_mode: Some(wgpu::Face::Back),
             depth_stencil_state: Some(wgpu::DepthStencilState {
                 format: TextureBuilder::DEFAULT_DEPTH_FORMAT,
@@ -80,18 +73,6 @@ impl<'a> PipelineBuilder<'a> {
                 },
             }),
             immediate_size: 0,
-        }
-    }
-
-    pub fn with_key<V>(self, key: PipelineRef<V>) -> Self {
-        let key = if key.is_null() { None } else { Some(key.raw()) };
-        Self { key, ..self }
-    }
-
-    pub fn with_label(self, label: &'a str) -> Self {
-        Self {
-            label: Some(label),
-            ..self
         }
     }
 
@@ -148,7 +129,7 @@ impl<'a> PipelineBuilder<'a> {
         self,
         device: &wgpu::Device,
         shader: &wgpu::ShaderModule,
-    ) -> PipelineRef<V> {
+    ) -> Pipeline<V> {
         let refs = self
             .bind_group_layouts
             .into_iter()
@@ -169,7 +150,7 @@ impl<'a> PipelineBuilder<'a> {
         //     vertex_buffers.push(ii.to_wgpu());
         // }
         let vertex_buffer_layouts = V::vertex_buffer_layouts();
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let raw = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: self.label,
             layout: Some(&layout),
             vertex: wgpu::VertexState {
@@ -207,6 +188,10 @@ impl<'a> PipelineBuilder<'a> {
             multiview_mask: None,
             cache: None,
         });
-        self.state.add_pipeline(self.key, pipeline)
+        // self.state.add_pipeline(self.key, pipeline)
+        Pipeline {
+            raw,
+            _marker: PhantomData,
+        }
     }
 }

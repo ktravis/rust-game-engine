@@ -28,8 +28,8 @@ use rust_game_engine::camera::Camera;
 use rust_game_engine::geom::{ModelVertexData, Point, Rect};
 use rust_game_engine::input::{Axis, Button, Key, Toggle};
 use rust_game_engine::renderer::{
-    instance::InstanceRenderData, mesh::LoadMesh, text::TextDisplayOptions, Display,
-    OffscreenFramebuffer, ScalingMode, TextureBuilder, TextureRef, ViewProjectionUniforms,
+    instance::InstanceRenderData, mesh::LoadMesh, text::TextDisplayOptions, Display, ScalingMode,
+    TextureBuilder, ViewProjectionUniforms,
 };
 use rust_game_engine::sprite_manager::SpriteManager;
 use rust_game_engine::transform::{Transform, Transform2D, Transform3D};
@@ -70,7 +70,7 @@ struct State {
     default_font: RenderableFont,
 
     sprite_renderer: SpriteRenderer,
-    offscreen_framebuffer: OffscreenFramebuffer,
+    // offscreen_framebuffer: OffscreenFramebuffer,
     shadow_mapping_pass: ShadowMappingPass,
     geometry_pass: GeometryPass,
     occlusion_pass: SSAOPass,
@@ -84,8 +84,8 @@ struct State {
     camera: Camera,
     lights: Vec<Light>,
     sprite_instances: Vec<BasicInstanceData>,
-    crate_texture: TextureRef,
-    cat_texture: TextureRef,
+    crate_texture: u32,
+    cat_texture: u32,
     cube_mesh: MeshRef<ModelVertexData>,
 
     model_meshes: Vec<(MeshRef<ModelVertexData>, Option<tobj::Material>)>,
@@ -133,10 +133,9 @@ impl AppState for State {
 
         let cube_mesh = ctx
             .render_state
-            .prepare_mesh(ctx.display.device().load_cube_mesh());
+            .register_mesh(ctx.display.device().load_cube_mesh());
 
-        let crate_texture = ctx.render_state.load_texture(
-            &ctx.display,
+        let crate_texture = ctx.render_state.add_texture(
             ctx.display
                 .load_texture_bytes(
                     include_bytes!("../../../res/images/crate.png"),
@@ -144,15 +143,19 @@ impl AppState for State {
                 )
                 .unwrap(),
         );
-        let cat_texture = ctx.render_state.load_texture(
-            &ctx.display,
+        let cat_texture = ctx.render_state.add_texture(
             ctx.display
                 .load_texture_bytes(
                     include_bytes!("../../../res/images/sample.png"),
-                    TextureBuilder::labeled("sample"),
+                    TextureBuilder::labeled("sample")
+                        .with_border_color(wgpu::SamplerBorderColor::OpaqueWhite)
+                        .with_filter_mode(wgpu::FilterMode::Linear)
+                        .with_address_mode(wgpu::AddressMode::MirrorRepeat),
                 )
                 .unwrap(),
         );
+
+        ctx.render_state.commit_textures(&ctx.display);
 
         asset_manager.track_glob("./res/sprites/*.aseprite", |state, path, f| {
             state.sprites.add_sprite_file(path.to_path_buf(), f);
@@ -181,16 +184,13 @@ impl AppState for State {
         let model_meshes = model
             .meshes
             .into_iter()
-            .map(|m| (ctx.render_state.prepare_mesh(m.mesh), m.material))
+            .map(|m| (ctx.render_state.register_mesh(m.mesh), m.material))
             .collect();
 
         let fb_size = Point::from((
             (WINDOW_SIZE.width as f32 / RENDER_SCALE) as u32,
             (WINDOW_SIZE.height as f32 / RENDER_SCALE) as u32,
         ));
-        let offscreen_framebuffer =
-            ctx.render_state
-                .create_offscreen_framebuffer(&ctx.display, fb_size, None);
 
         ctx.set_cursor_captured(true);
 
@@ -205,7 +205,7 @@ impl AppState for State {
                 smt.sampler.clone(),
             )
         };
-        let geometry_pass = GeometryPass::new(&mut ctx.render_state, &ctx.display, fb_size);
+        let geometry_pass = GeometryPass::new(&ctx.display, fb_size);
         let occlusion_pass = SSAOPass::new(
             &mut ctx.render_state,
             &ctx.display,
@@ -232,7 +232,6 @@ impl AppState for State {
         }
         let proj_matrix_bind_group =
             create_uniform_bind_group(ctx.display.device(), Default::default());
-
         Self {
             asset_manager,
             crate_texture,
@@ -281,7 +280,7 @@ impl AppState for State {
             ssao_enabled: true,
             // font_render_data: Default::default(),
             sprite_renderer,
-            offscreen_framebuffer,
+            // offscreen_framebuffer,
             // render_pipelines: Default::default(),
             model_meshes,
             // deferred_lighting_pass,
@@ -353,10 +352,13 @@ impl AppState for State {
             InstanceRenderData {
                 texture: Some(self.crate_texture),
                 mesh: self.cube_mesh,
-                instance: InstanceDataWithNormalMatrix::from_basic(
-                    Default::default(),
-                    view_projection.view,
-                ),
+                instance: InstanceDataWithNormalMatrix {
+                    texture: self.crate_texture,
+                    ..InstanceDataWithNormalMatrix::from_basic(
+                        Default::default(),
+                        view_projection.view,
+                    )
+                },
             },
             // InstanceRenderData {
             //     mesh: self.cube_mesh,
@@ -379,24 +381,29 @@ impl AppState for State {
             //     texture: None,
             //     pipeline: None,
             // },
-            // InstanceRenderData {
-            //     mesh: self.cube_mesh,
-            //     instance: InstanceDataWithNormalMatrix::from_basic(
-            //         BasicInstanceData {
-            //             // tint: vec4(0.88, 0.82, 0.8, 1.0).into(),
-            //             transform: Transform3D {
-            //                 position: vec3(0.0, -1.5, 0.0),
-            //                 scale: vec3(30.0, 0.5, 30.0),
-            //                 ..Default::default()
-            //             }
-            //             .as_mat4(),
-            //             ..Default::default()
-            //         },
-            //         view_proj.view,
-            //     ),
-            //     texture: None,
-            //     pipeline: None,
-            // },
+            InstanceRenderData {
+                mesh: self.cube_mesh,
+                texture: None,
+                instance: InstanceDataWithNormalMatrix {
+                    texture: self.cat_texture,
+                    ..InstanceDataWithNormalMatrix::from_basic(
+                        BasicInstanceData {
+                            subtexture: Rect::new(-0.5, -0.5, 2.0, 2.0),
+                            // tint: vec4(0.88, 0.82, 0.8, 1.0).into(),
+                            transform: Transform3D {
+                                position: vec3(0.0, -1.5, 0.0),
+                                scale: vec3(20.0, 0.5, 20.0),
+                                ..Default::default()
+                            }
+                            .as_mat4(),
+                            ..Default::default()
+                        },
+                        view_projection.view,
+                    )
+                },
+                // texture: None,
+                // pipeline: None,
+            },
         ];
         match self.scene {
             Scene::Cubes => {

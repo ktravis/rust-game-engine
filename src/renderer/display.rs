@@ -110,6 +110,8 @@ impl Display {
                 label: None,
                 required_features: wgpu::Features::POLYGON_MODE_LINE
                     | wgpu::Features::CLEAR_TEXTURE
+                    | wgpu::Features::TEXTURE_BINDING_ARRAY
+                    | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
                     | wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER
                     | wgpu::Features::DEPTH_CLIP_CONTROL
                     | wgpu::Features::IMMEDIATES,
@@ -121,6 +123,8 @@ impl Display {
                     wgpu::Limits {
                         max_bind_groups: 6,
                         max_immediate_size: 256,
+                        max_binding_array_elements_per_shader_stage: 500_000,
+                        max_binding_array_sampler_elements_per_shader_stage: 1_000,
                         ..wgpu::Limits::default()
                     }
                 },

@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use wgpu::TextureUsages;
 
 use crate::{
@@ -18,7 +19,7 @@ use crate::{
 
 use super::{
     bindings::ViewProjectionUniforms, instance::InstanceRenderData, lighting::LightsUniform,
-    Display, PipelineBuilder, PipelineRef, RenderState, TextureBuilder,
+    Display, Pipeline, PipelineBuilder, RenderState, TextureBuilder,
 };
 
 const DEPTH_ONLY_SHADER: &'static str = crate::wgsl!(
@@ -60,9 +61,9 @@ fn fs_main(in: VertexOutput) { }"#
 const FORWARD_LIGHTING_SHADER: &'static str = crate::wgsl!(
     r#"
 @group(0) @binding(0)
-var t_diffuse: texture_2d<f32>;
+var texture_array: binding_array<texture_2d<f32>, 256>;
 @group(0) @binding(1)
-var s_diffuse: sampler;
+var sampler_array: binding_array<sampler, 256>;
 
 @group(1) @binding(0)
 var<uniform> global_uniforms: GlobalUniforms;
@@ -78,6 +79,7 @@ struct VertexOutput {
     @location(3) tint_color: vec4<f32>,
     @location(4) world_pos: vec4<f32>,
     @location(5) material: u32,
+    @location(6) texture: u32,
 }
 
 @vertex
@@ -106,6 +108,7 @@ fn vs_main(
     out.tint_color = instance.tint;
     out.world_pos = model_transform * vertex.position;
     out.material = instance.material;
+    out.texture = instance.texture;
     return out;
 }
 
@@ -124,7 +127,7 @@ var occlusion_map_sampler: sampler;
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let view_pos = in.view_pos;
-    let albedo_spec = in.tint_color * textureSample(t_diffuse, s_diffuse, in.tex_coords);
+    let albedo_spec = in.tint_color * textureSample(texture_array[in.texture], sampler_array[in.texture], in.tex_coords);
 
     let texelSize = 1.0 / f32(textureDimensions(shadow_map).x);
 
@@ -229,8 +232,8 @@ define_bind_group! {
 }
 
 pub struct ForwardGeometryPass {
-    pipeline: PipelineRef<(ModelVertexData, InstanceDataWithNormalMatrix)>,
-    depth_only_pipeline: PipelineRef<(ModelVertexData, InstanceDataWithNormalMatrix)>,
+    pipeline: Pipeline<(ModelVertexData, InstanceDataWithNormalMatrix)>,
+    depth_only_pipeline: Pipeline<(ModelVertexData, InstanceDataWithNormalMatrix)>,
     pub color_target: BoundTexture,
     pub depth_target_view: DepthTextureView,
     pub depth_target_sampler: TextureSampler,
@@ -281,9 +284,7 @@ impl ForwardGeometryPass {
                     label: Some("view proj uniform bg layout"),
                     entries: &[UNIFORM_BGL_ENTRY],
                 });
-        let depth_only_pipeline = state
-            .pipeline_builder()
-            .with_label("Forward Rendering (Depth Prepass)")
+        let depth_only_pipeline = PipelineBuilder::new("Forward Rendering (Depth Prepass)")
             .with_color_target_states(vec![])
             .with_depth_stencil_state(depth_stencil_state.clone())
             .with_bind_group_layouts(vec![&main_texture_bgl, &view_proj_uniform_bgl])
@@ -305,9 +306,7 @@ impl ForwardGeometryPass {
         );
         let view_proj_bind_group =
             create_uniform_bind_group(display.device(), ViewProjectionUniforms::default());
-        let pipeline = state
-            .pipeline_builder()
-            .with_label("Forward Rendering")
+        let pipeline = PipelineBuilder::new("Forward Rendering")
             .with_color_target_states(vec![Some(wgpu::ColorTargetState {
                 format: color_target.format(),
                 blend: Some(PipelineBuilder::DEFAULT_BLEND),
@@ -315,7 +314,7 @@ impl ForwardGeometryPass {
             })])
             .with_depth_stencil_state(depth_stencil_state)
             .with_bind_group_layouts(vec![
-                &main_texture_bgl,
+                state.texture_array_bgl.as_ref().unwrap(),
                 &global_uniform_bgl,
                 &view_proj_uniform_bgl,
                 lighting_group.layout(),
@@ -361,7 +360,7 @@ impl ForwardGeometryPass {
                 &[],
                 Some(&self.depth_target_view),
                 |r| {
-                    r.set_pipeline(self.depth_only_pipeline);
+                    r.set_pipeline(&self.depth_only_pipeline);
                     let default_texture = r.render_state.get_texture(None).clone();
                     r.set_bind_group(0, &default_texture, &[]);
                     r.set_bind_group(1, self.view_proj_bind_group.bind_group(), &[]);
@@ -372,7 +371,7 @@ impl ForwardGeometryPass {
                         // give each a batcher
                         let mesh = first.mesh;
 
-                        let mut b = r.draw_instanced(first.mesh, self.depth_only_pipeline);
+                        let mut b = r.draw_instanced(first.mesh, &self.depth_only_pipeline);
                         b.add(first);
                         while let Some(object) = objects.peek() {
                             if object.mesh != mesh {
@@ -409,31 +408,18 @@ impl ForwardGeometryPass {
                 &[&self.color_target.resource.view],
                 Some(&self.depth_target_view),
                 |r| {
-                    r.set_pipeline(self.pipeline);
+                    r.set_pipeline(&self.pipeline);
                     let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
+                    let ta = r.render_state.texture_array.as_ref().unwrap().clone();
+                    r.set_bind_group(0, &ta, &[]);
                     r.set_bind_group(1, &global_uniforms, &[]);
                     r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
                     r.set_bind_group(3, self.lighting_group.bind_group(), &[]);
                     r.set_bind_group(4, &occlusion_map, &[]);
-
-                    let mut objects = scene.iter().peekable();
-                    while let Some(first) = objects.next() {
-                        // let first = objects.next().unwrap();
-                        // TODO: if textures were bindless, could just partition objects by mesh and
-                        // give each a batcher
-                        let params = (first.mesh, first.texture);
-
-                        let tex = r.render_state.get_texture(first.texture).clone();
-                        r.set_bind_group(0, &tex, &[]);
-                        let mut b = r.draw_instanced(first.mesh, self.pipeline);
-                        b.add(first);
-                        while let Some(object) = objects.peek() {
-                            let p = (object.mesh, object.texture);
-                            if p != params {
-                                break;
-                            }
-                            b.add(&object.instance);
-                            objects.next();
+                    for (mesh, group) in &scene.iter().group_by(|i| i.mesh) {
+                        let mut b = r.draw_instanced(mesh, &self.pipeline);
+                        for object in group {
+                            b.add(object);
                         }
                     }
                 },

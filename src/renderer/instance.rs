@@ -8,13 +8,13 @@ use crate::geom::{BasicVertexData, Rect};
 use crate::renderer::shader_type::VertexInput;
 use crate::transform::Transform;
 
-use super::{Display, MeshRef, TextureRef};
+use super::{Display, MeshRef};
 
 #[derive(Debug)]
 pub struct InstanceRenderData<V = BasicVertexData, I = BasicInstanceData> {
     pub mesh: MeshRef<V>,
     pub instance: I,
-    pub texture: Option<TextureRef>,
+    pub texture: Option<u32>,
 }
 
 impl<V, I> Deref for InstanceRenderData<V, I> {
@@ -55,6 +55,7 @@ pub struct InstanceDataWithNormalMatrix {
     pub transform: Mat4,
     pub normal_matrix: Mat3,
     pub material: u32,
+    pub texture: u32,
 }
 
 impl InstanceDataWithNormalMatrix {
@@ -68,6 +69,7 @@ impl InstanceDataWithNormalMatrix {
                 .inverse()
                 .transpose(),
             material: 0,
+            texture: 0,
         }
     }
 }

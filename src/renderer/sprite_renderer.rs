@@ -5,12 +5,12 @@ use crate::{
         instance::BasicInstanceData,
         shader_type::create_shader,
         state::BoundTexture,
-        Display, MeshRef, PipelineRef, RenderPass, RenderState, Texture,
+        Display, MeshRef, Pipeline, PipelineBuilder, RenderPass, RenderState, Texture,
     },
 };
 
 pub struct SpriteRenderer {
-    pipeline: PipelineRef<(BasicVertexData, BasicInstanceData)>,
+    pipeline: Pipeline<(BasicVertexData, BasicInstanceData)>,
     sprite_atlas_texture: BoundTexture,
     quad_mesh: MeshRef<BasicVertexData>,
 }
@@ -36,9 +36,7 @@ impl SpriteRenderer {
                     label: Some("view proj uniform bg layout"),
                     entries: &[UNIFORM_BGL_ENTRY],
                 });
-        let pipeline = state
-            .pipeline_builder()
-            .with_label("Default Render Pipeline")
+        let pipeline = PipelineBuilder::new("Default Render Pipeline")
             .with_bind_group_layouts(vec![&main_texture_bgl, &view_proj_uniform_bgl])
             .build(display.device(), &sprite_shader);
         let sprite_atlas_texture = state.bind_texture(display, sprite_atlas);
@@ -56,7 +54,7 @@ impl SpriteRenderer {
         sprites: impl Iterator<Item = &'a BasicInstanceData>,
     ) {
         r.set_bind_group(0, self.sprite_atlas_texture.bind_group(), &[]);
-        let mut b = r.draw_instanced(self.quad_mesh, self.pipeline);
+        let mut b = r.draw_instanced(self.quad_mesh, &self.pipeline);
         for s in sprites {
             b.add(s);
         }

@@ -8,12 +8,13 @@ use crate::{
         instance::InstanceDataWithNormalMatrix,
         shader_type::{create_shader, GlobalUniforms},
         state::BoundTexture,
+        PipelineBuilder,
     },
 };
 
 use super::{
-    instance::InstanceRenderData, lighting::LightsUniform, Display, PipelineRef, RenderState,
-    Texture, TextureBuilder,
+    instance::InstanceRenderData, lighting::LightsUniform, Display, Pipeline, RenderState, Texture,
+    TextureBuilder,
 };
 
 pub const MAX_LIGHTS: usize = 8;
@@ -54,7 +55,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
 );
 
 pub struct ShadowMappingPass {
-    shadow_map_pipeline: PipelineRef<(ModelVertexData, InstanceDataWithNormalMatrix)>,
+    shadow_map_pipeline: Pipeline<(ModelVertexData, InstanceDataWithNormalMatrix)>,
     shadow_map: Texture,
     shadow_map_target_views: [DepthTextureView; MAX_LIGHTS],
     pub shadow_map_debug_textures: [BoundTexture; MAX_LIGHTS],
@@ -100,22 +101,26 @@ impl ShadowMappingPass {
         let view_proj_bind_groups = std::array::from_fn(|_| {
             create_uniform_bind_group(display.device(), ViewProjectionUniforms::default())
         });
+        let depth_bias_state = wgpu::DepthBiasState {
+            constant: 1,
+            slope_scale: 0.025,
+            clamp: 1.0,
+        };
         Self {
-            shadow_map_pipeline: Default::default(),
+            shadow_map_pipeline: Self::build_shadow_map_pipeline(display, depth_bias_state),
             shadow_map,
             shadow_map_target_views,
-            depth_bias_state: wgpu::DepthBiasState {
-                constant: 1,
-                slope_scale: 0.025,
-                clamp: 1.0,
-            },
+            depth_bias_state,
             last_depth_bias_state: Default::default(),
             shadow_map_debug_textures,
             view_proj_bind_groups,
         }
     }
 
-    fn build_shadow_map_pipeline(&mut self, state: &mut RenderState, display: &Display) {
+    fn build_shadow_map_pipeline(
+        display: &Display,
+        depth_bias_state: wgpu::DepthBiasState,
+    ) -> Pipeline<(ModelVertexData, InstanceDataWithNormalMatrix)> {
         let main_texture_bgl =
             display
                 .device()
@@ -137,10 +142,7 @@ impl ShadowMappingPass {
                     label: Some("view proj uniform bg layout"),
                     entries: &[UNIFORM_BGL_ENTRY],
                 });
-        self.shadow_map_pipeline = state
-            .pipeline_builder()
-            .with_label("Shadow Map Render Pipeline")
-            .with_key(self.shadow_map_pipeline)
+        PipelineBuilder::new("Shadow Map Render Pipeline")
             .with_cull_mode(Some(wgpu::Face::Front))
             .with_color_target_states(vec![Some(wgpu::ColorTargetState {
                 format: TextureBuilder::DEFAULT_RENDER_FORMAT,
@@ -152,7 +154,7 @@ impl ShadowMappingPass {
                 depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: Default::default(),
-                bias: self.depth_bias_state,
+                bias: depth_bias_state,
             }))
             .with_bind_group_layouts(vec![
                 &main_texture_bgl,
@@ -165,7 +167,7 @@ impl ShadowMappingPass {
                     (GlobalUniforms, ViewProjectionUniforms),
                     (ModelVertexData, InstanceDataWithNormalMatrix),
                 >(display, "shadow_map", SHADOW_MAPPING_SHADER.to_string()),
-            );
+            )
     }
 
     pub fn shadow_map_texture(&self) -> &Texture {
@@ -180,7 +182,7 @@ impl ShadowMappingPass {
         scene: &[InstanceRenderData<ModelVertexData, InstanceDataWithNormalMatrix>],
     ) {
         if self.depth_bias_state != self.last_depth_bias_state {
-            self.build_shadow_map_pipeline(state, display);
+            Self::build_shadow_map_pipeline(display, self.depth_bias_state);
             self.last_depth_bias_state = self.depth_bias_state;
         }
 
@@ -196,7 +198,7 @@ impl ShadowMappingPass {
                     &[&self.shadow_map_debug_textures[i].resource.view],
                     Some(&self.shadow_map_target_views[i]),
                     |r| {
-                        r.set_pipeline(self.shadow_map_pipeline);
+                        r.set_pipeline(&self.shadow_map_pipeline);
                         let default_texture = r.render_state.get_texture(None).clone();
                         r.set_bind_group(0, &default_texture, &[]);
                         let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
@@ -209,7 +211,7 @@ impl ShadowMappingPass {
                             // give each a batcher
                             let mesh = first.mesh;
 
-                            let mut b = r.draw_instanced(first.mesh, self.shadow_map_pipeline);
+                            let mut b = r.draw_instanced(first.mesh, &self.shadow_map_pipeline);
                             b.add(first);
                             while let Some(object) = objects.peek() {
                                 if object.mesh != mesh {

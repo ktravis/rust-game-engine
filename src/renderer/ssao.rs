@@ -13,10 +13,11 @@ use crate::{
         instance::BasicInstanceData,
         shader_type::{create_shader, GlobalUniforms},
         state::BoundTexture,
+        PipelineBuilder,
     },
 };
 
-use super::{bindings::ViewProjectionUniforms, Display, PipelineRef, RenderState, TextureBuilder};
+use super::{bindings::ViewProjectionUniforms, Display, Pipeline, RenderState, TextureBuilder};
 
 const SSAO_SHADER: &'static str = crate::wgsl!(
     r#"
@@ -256,13 +257,13 @@ impl Default for BlurUniforms {
 }
 
 pub struct SSAOPass {
-    pipeline: PipelineRef<(BasicVertexData, BasicInstanceData)>,
+    pipeline: Pipeline<(BasicVertexData, BasicInstanceData)>,
     output_texture: BoundTexture,
     kernel: UniformBindGroup<SSAOKernel>,
     noise_texture: BindGroup<UnfilteredMaterialGroup>,
     blur_enabled: bool,
     blur_uniforms: UniformBindGroup<BlurUniforms>,
-    blur_pipeline: PipelineRef<(BasicVertexData, BasicInstanceData)>,
+    blur_pipeline: Pipeline<(BasicVertexData, BasicInstanceData)>,
     blur_temp_buffer: BoundTexture,
     view_proj_bind_group: UniformBindGroup<ViewProjectionUniforms>,
 }
@@ -336,9 +337,7 @@ impl SSAOPass {
                 });
         let geometry_buffers_bgl =
             GeometryBuffers::create_layout(display.device(), "geometry buffers");
-        let pipeline = state
-            .pipeline_builder()
-            .with_label("SSAO Pipeline")
+        let pipeline = PipelineBuilder::new("SSAO Pipeline")
             .with_bind_group_layouts(vec![
                 &main_texture_bgl,
                 &global_uniform_bgl,
@@ -360,9 +359,7 @@ impl SSAOPass {
                     BasicVertexData,
                 >(display, "ssao", SSAO_SHADER.to_string()),
             );
-        let blur_pipeline = state
-            .pipeline_builder()
-            .with_label("SSAO Blur Pipeline")
+        let blur_pipeline = PipelineBuilder::new("SSAO Blur Pipeline")
             .with_color_target_states(vec![Some(wgpu::ColorTargetState {
                 blend: None,
                 format: wgpu::TextureFormat::R16Float,
@@ -440,7 +437,7 @@ impl SSAOPass {
                     r.set_bind_group(3, geometry_buffers.bind_group(), &[]);
                     r.set_bind_group(4, self.kernel.bind_group(), &[]);
                     r.set_bind_group(5, self.noise_texture.bind_group(), &[]);
-                    r.set_pipeline(self.pipeline);
+                    r.set_pipeline(&self.pipeline);
                     r.draw_mesh(quad);
                 },
             )
@@ -462,7 +459,7 @@ impl SSAOPass {
                         r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
                         r.set_bind_group(3, geometry_buffers.bind_group(), &[]);
                         r.set_bind_group(4, self.blur_uniforms.bind_group(), &[]);
-                        r.set_pipeline(self.blur_pipeline);
+                        r.set_pipeline(&self.blur_pipeline);
                         r.draw_mesh(quad);
                     },
                 )
@@ -483,7 +480,7 @@ impl SSAOPass {
                         r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
                         r.set_bind_group(3, geometry_buffers.bind_group(), &[]);
                         r.set_bind_group(4, self.blur_uniforms.bind_group(), &[]);
-                        r.set_pipeline(self.blur_pipeline);
+                        r.set_pipeline(&self.blur_pipeline);
                         r.draw_mesh(quad);
                     },
                 )

@@ -16,8 +16,7 @@ use crate::{
 };
 
 use super::{
-    instance::InstanceRenderData, Display, PipelineBuilder, PipelineRef, RenderState,
-    TextureBuilder,
+    instance::InstanceRenderData, Display, Pipeline, PipelineBuilder, RenderState, TextureBuilder,
 };
 
 const GEOMETRY_SHADER: &'static str = crate::wgsl!(
@@ -90,7 +89,7 @@ define_bind_group! {
 }
 
 pub struct GeometryPass {
-    pipeline: PipelineRef<ModelVertexData>,
+    pipeline: Pipeline<ModelVertexData>,
     // pub g_position: Texture,
     // pub g_normal: Texture,
     // pub g_albedo_specular: Texture,
@@ -100,7 +99,7 @@ pub struct GeometryPass {
 }
 
 impl GeometryPass {
-    pub fn new(state: &mut RenderState, display: &Display, size: Point<u32>) -> Self {
+    pub fn new(display: &Display, size: Point<u32>) -> Self {
         let g_position = TextureBuilder::render_target()
             .with_label("g_position")
             .with_format(wgpu::TextureFormat::Rgba32Float)
@@ -143,9 +142,7 @@ impl GeometryPass {
                     label: Some("view proj uniform bg layout"),
                     entries: &[UNIFORM_BGL_ENTRY],
                 });
-        let pipeline = state
-            .pipeline_builder()
-            .with_label("Geometry Pass Pipeline")
+        let pipeline = PipelineBuilder::new("Geometry Pass Pipeline")
             .with_color_target_states(vec![
                 Some(wgpu::ColorTargetState {
                     format: g_position.format(),
@@ -196,9 +193,6 @@ impl GeometryPass {
         );
         let view_proj_bind_group =
             create_uniform_bind_group(display.device(), ViewProjectionUniforms::default());
-        // let g_position = state.load_texture(display, g_position);
-        // let g_normal = state.load_texture(display, g_normal);
-        // let g_albedo_specular = state.load_texture(display, g_albedo_specular);
         Self {
             pipeline,
             depth_target_view: DepthTextureView::from(depth_target.view),
@@ -231,18 +225,20 @@ impl GeometryPass {
                 ],
                 Some(&self.depth_target_view),
                 |r| {
-                    r.set_pipeline(self.pipeline);
+                    r.set_pipeline(&self.pipeline);
                     let default_texture = r.render_state.get_texture(None).clone();
                     r.set_bind_group(0, &default_texture, &[]);
                     let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
                     r.set_bind_group(1, &global_uniforms, &[]);
                     r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
                     for render_data in scene {
-                        let tex = if let Some(t) = render_data.texture {
-                            r.render_state.get_texture(t).clone()
-                        } else {
-                            default_texture.clone()
-                        };
+                        let tex = default_texture.clone();
+                        // TODO: update for bindless textures
+                        // let tex = if let Some(t) = render_data.texture {
+                        //     r.render_state.get_texture(t).clone()
+                        // } else {
+                        //     default_texture.clone()
+                        // };
                         r.set_bind_group(0, &tex, &[]);
                         r.set_immediates(
                             0,

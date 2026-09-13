@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     marker::PhantomData,
+    num::NonZeroU32,
     ops::{Deref, DerefMut, Range},
 };
 
@@ -16,8 +17,7 @@ use super::{
     shader_type::GlobalUniforms,
     text::{RenderableFont, TextDisplayOptions},
     texture::{Texture, TextureBuilder},
-    MeshRef, OffscreenFramebuffer, PipelineBuilder, PipelineRef, RawPipelineRef, TextureRef,
-    DEFAULT_TEXTURE_DATA,
+    MeshRef, Pipeline, PipelineBuilder, TextureRef, DEFAULT_TEXTURE_DATA,
 };
 use crate::{
     color::Color,
@@ -166,10 +166,12 @@ pub struct RenderState {
     default_texture: TextureRef,
 
     mesh_manager: SlotMap<RawMeshRef, UntypedMesh>,
-    pipelines: SlotMap<RawPipelineRef, wgpu::RenderPipeline>,
-    pub default_instanced_pipeline: PipelineRef<(BasicVertexData, BasicInstanceData)>,
-    default_pipeline: PipelineRef<BasicVertexData>,
-    text_pipeline: PipelineRef<(BasicVertexData, BasicInstanceData)>,
+    default_pipeline: Pipeline<BasicVertexData>,
+    text_pipeline: Pipeline<(BasicVertexData, BasicInstanceData)>,
+
+    textures: Vec<Texture>,
+    pub texture_array: Option<wgpu::BindGroup>,
+    pub texture_array_bgl: Option<wgpu::BindGroupLayout>,
 }
 
 impl RenderState {
@@ -182,32 +184,60 @@ impl RenderState {
         let mesh_manager = SlotMap::with_key();
         let instance_storage = InstanceStorage::new(display, 1024);
 
-        let text_shader = &create_shader::<(), (BasicVertexData, BasicInstanceData)>(
-            display,
-            "text",
-            TEXT_SHADER.to_string(),
-        );
+        let view_proj_uniform_bgl =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("view proj uniform bg layout"),
+                entries: &[UNIFORM_BGL_ENTRY],
+            });
+        let main_texture_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("main texture"),
+            entries: &texture_bgl_entries(TextureBuilder::DEFAULT_FORMAT),
+        });
         let default_shader = &create_shader::<ModelData, BasicVertexData>(
             display,
             "default",
             DEFAULT_SHADER.to_string(),
         );
+        let default_pipeline = PipelineBuilder::new("default pipeline")
+            .with_bind_group_layouts(vec![&main_texture_bgl, &view_proj_uniform_bgl])
+            .with_immediate_size(std::mem::size_of::<ModelData>() as u32)
+            .build(display.device(), &default_shader);
+        let text_shader = &create_shader::<(), (BasicVertexData, BasicInstanceData)>(
+            display,
+            "text",
+            TEXT_SHADER.to_string(),
+        );
+        let text_pipeline = PipelineBuilder::new("Text Render Pipeline")
+            .with_bind_group_layouts(vec![&main_texture_bgl, &view_proj_uniform_bgl])
+            .build(display.device(), &text_shader);
 
         let mut s = Self {
             texture_manager: SlotMap::with_key(),
             mesh_manager,
-            pipelines: SlotMap::with_key(),
             global_uniforms,
             instance_storage,
             texture_bind_group_layouts: Default::default(),
             quad_mesh: Default::default(),
-            default_instanced_pipeline: Default::default(),
-            default_pipeline: Default::default(),
-            text_pipeline: Default::default(),
+            default_pipeline,
+            text_pipeline,
             default_texture: Default::default(),
+            textures: vec![],
+            texture_array: None,
+            texture_array_bgl: None,
         };
 
-        s.default_texture = s.load_texture(
+        // let default_texture = TextureBuilder::render_target()
+        let default_texture = TextureBuilder::default()
+            .with_label("default_texture")
+            .from_raw_bytes(
+                display.device(),
+                display.queue(),
+                &DEFAULT_TEXTURE_DATA,
+                Point::new(2, 2),
+            );
+        s.add_texture(default_texture);
+
+        s.default_texture = s.bind_and_register_texture(
             display,
             TextureBuilder::render_target()
                 .with_label("default_texture")
@@ -218,50 +248,12 @@ impl RenderState {
                     Point::new(2, 2),
                 ),
         );
-        s.quad_mesh = s.prepare_mesh(display.device().load_quad_mesh());
-        let view_proj_uniform_bgl =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("view proj uniform bg layout"),
-                entries: &[UNIFORM_BGL_ENTRY],
-            });
-        let main_texture_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("main texture"),
-            entries: &texture_bgl_entries(TextureBuilder::DEFAULT_FORMAT),
-        });
-        s.text_pipeline = s
-            .pipeline_builder()
-            .with_label("Text Render Pipeline")
-            .with_bind_group_layouts(vec![&main_texture_bgl, &view_proj_uniform_bgl])
-            .build(display.device(), &text_shader);
-        s.default_pipeline = s
-            .pipeline_builder()
-            .with_label("default pipeline")
-            .with_bind_group_layouts(vec![&main_texture_bgl, &view_proj_uniform_bgl])
-            .with_immediate_size(std::mem::size_of::<ModelData>() as u32)
-            .build(display.device(), &default_shader);
+        s.quad_mesh = s.register_mesh(display.device().load_quad_mesh());
         s
     }
 
     pub fn quad_mesh(&self) -> MeshRef<BasicVertexData> {
         self.quad_mesh
-    }
-
-    pub fn pipeline_builder<'a>(&'a mut self) -> PipelineBuilder<'a> {
-        PipelineBuilder::new(self)
-    }
-
-    pub(super) fn add_pipeline<V: VertexInputs>(
-        &mut self,
-        key: impl Into<Option<RawPipelineRef>>,
-        pipeline: wgpu::RenderPipeline,
-    ) -> PipelineRef<V> {
-        match key.into() {
-            Some(key) => {
-                *self.pipelines.get_mut(key).unwrap() = pipeline;
-                key.into()
-            }
-            None => self.pipelines.insert(pipeline).into(),
-        }
     }
 
     #[must_use]
@@ -333,75 +325,140 @@ impl RenderState {
         PartialRenderPass { display, encoder }
     }
 
-    pub fn after_frame(&mut self) {
-        // ...
-        // self.instance_storage.clear();
-    }
+    // pub fn create_offscreen_framebuffer(
+    //     &mut self,
+    //     display: &Display,
+    //     size: Point<u32>,
+    //     format: impl Into<Option<wgpu::TextureFormat>>,
+    // ) -> OffscreenFramebuffer {
+    //     let format = format
+    //         .into()
+    //         .unwrap_or(TextureBuilder::DEFAULT_RENDER_FORMAT);
+    //     let color = self.bind_texture(
+    //         display,
+    //         TextureBuilder::labeled("offscreen_color_target")
+    //             .with_format(format)
+    //             .with_usage(
+    //                 wgpu::TextureUsages::COPY_SRC
+    //                     | wgpu::TextureUsages::TEXTURE_BINDING
+    //                     | wgpu::TextureUsages::RENDER_ATTACHMENT,
+    //             )
+    //             .build(display.device(), size),
+    //     );
+    //     let depth = Some(
+    //         TextureBuilder::depth()
+    //             .with_label("offscreen_depth_target")
+    //             .with_usage(
+    //                 wgpu::TextureUsages::COPY_SRC
+    //                     | wgpu::TextureUsages::TEXTURE_BINDING
+    //                     | wgpu::TextureUsages::RENDER_ATTACHMENT,
+    //             )
+    //             .build(display.device(), size)
+    //             .view
+    //             .into(),
+    //     );
+    //     OffscreenFramebuffer {
+    //         color,
+    //         depth,
+    //         size,
+    //         format,
+    //     }
+    // }
 
-    pub fn create_offscreen_framebuffer(
-        &mut self,
-        display: &Display,
-        size: Point<u32>,
-        format: impl Into<Option<wgpu::TextureFormat>>,
-    ) -> OffscreenFramebuffer {
-        let format = format
-            .into()
-            .unwrap_or(TextureBuilder::DEFAULT_RENDER_FORMAT);
-        let color = self.bind_texture(
-            display,
-            TextureBuilder::labeled("offscreen_color_target")
-                .with_format(format)
-                .with_usage(
-                    wgpu::TextureUsages::COPY_SRC
-                        | wgpu::TextureUsages::TEXTURE_BINDING
-                        | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                )
-                .build(display.device(), size),
-        );
-        let depth = Some(
-            TextureBuilder::depth()
-                .with_label("offscreen_depth_target")
-                .with_usage(
-                    wgpu::TextureUsages::COPY_SRC
-                        | wgpu::TextureUsages::TEXTURE_BINDING
-                        | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                )
-                .build(display.device(), size)
-                .view
-                .into(),
-        );
-        OffscreenFramebuffer {
-            color,
-            depth,
-            size,
-            format,
+    pub fn add_texture(&mut self, t: Texture) -> u32 {
+        if self.textures.len() > 0 {
+            assert_eq!(self.textures[0].format(), t.format());
         }
+        self.textures.push(t);
+        (self.textures.len() - 1) as u32
     }
 
-    fn bgl_for_texture_format(
-        &mut self,
-        device: &wgpu::Device,
-        format: wgpu::TextureFormat,
-    ) -> &wgpu::BindGroupLayout {
-        self.texture_bind_group_layouts
-            .entry(format)
-            .or_insert_with(|| {
-                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some(&format!("texture({:?})", format)),
-                    entries: &texture_bgl_entries(format),
-                })
-            })
+    pub fn commit_textures(&mut self, display: &Display) {
+        assert_eq!(self.texture_array, None, "texture array already bound");
+        assert!(self.textures.len() > 0, "no added textures to commit");
+        let format = self.textures[0].format();
+        let bgl_entries = {
+            let sample_type = format
+                .sample_type(Some(wgpu::TextureAspect::All), None)
+                .expect(&format!(
+                    "non-sampleable texture format {:?} used in binding",
+                    format
+                ));
+            vec![
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type,
+                    },
+                    count: NonZeroU32::new(self.textures.len() as _),
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(if format.has_depth_aspect() {
+                        wgpu::SamplerBindingType::Comparison
+                    } else {
+                        match sample_type {
+                            wgpu::TextureSampleType::Float { filterable: false } => {
+                                wgpu::SamplerBindingType::NonFiltering
+                            }
+                            _ => wgpu::SamplerBindingType::Filtering,
+                        }
+                    }),
+                    count: NonZeroU32::new(self.textures.len() as _),
+                },
+            ]
+        };
+        let layout = display
+            .device()
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some(&format!("texture array({format:?})")),
+                entries: &bgl_entries,
+            });
+        let (views, samplers): (Vec<_>, Vec<_>) =
+            self.textures.iter().map(|t| (&t.view, &t.sampler)).unzip();
+        let _ = self
+            .texture_array
+            .insert(
+                display
+                    .device()
+                    .create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some(&format!("bind group (texture array({format:?})")),
+                        layout: &layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureViewArray(&views),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::SamplerArray(&samplers),
+                            },
+                        ],
+                    }),
+            );
+        let _ = self.texture_array_bgl.insert(layout);
     }
 
     pub fn bind_texture(&mut self, display: &Display, t: Texture) -> BoundTexture {
-        BoundTexture::for_texture(
-            display.device(),
-            self.bgl_for_texture_format(display.device(), t.format()),
-            t,
-        )
+        let bgl = self
+            .texture_bind_group_layouts
+            .entry(t.format())
+            .or_insert_with(|| {
+                display
+                    .device()
+                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some(&format!("texture({:?})", t.format())),
+                        entries: &texture_bgl_entries(t.format()),
+                    })
+            });
+        BoundTexture::for_texture(display.device(), bgl, t)
     }
 
-    pub fn load_texture(&mut self, display: &Display, t: Texture) -> TextureRef {
+    pub fn bind_and_register_texture(&mut self, display: &Display, t: Texture) -> TextureRef {
         let bt = self.bind_texture(display, t);
         self.texture_manager.insert(bt)
     }
@@ -413,16 +470,7 @@ impl RenderState {
             .bind_group()
     }
 
-    pub fn replace_texture(&mut self, display: &Display, texture_ref: TextureRef, value: Texture) {
-        let bt = BoundTexture::for_texture(
-            display.device(),
-            self.bgl_for_texture_format(display.device(), value.format()),
-            value,
-        );
-        *self.texture_manager.get_mut(texture_ref).unwrap() = bt;
-    }
-
-    pub fn prepare_mesh<V: VertexInput>(&mut self, mesh: Mesh<V>) -> MeshRef<V> {
+    pub fn register_mesh<V: VertexInput>(&mut self, mesh: Mesh<V>) -> MeshRef<V> {
         self.mesh_manager.insert(mesh.inner).into()
     }
 
@@ -492,9 +540,8 @@ impl<'a, 'p> RenderPass<'a, 'p> {
         self.draw_raw_mesh_ex(mesh.raw(), 0, None, 0..1)
     }
 
-    pub fn set_pipeline<V: VertexInputs>(&mut self, pipeline: PipelineRef<V>) {
-        let p = self.render_state.pipelines.get(pipeline.raw()).unwrap();
-        self.raw_pass.set_pipeline(p);
+    pub fn set_pipeline<V: VertexInputs>(&mut self, pipeline: &Pipeline<V>) {
+        self.raw_pass.set_pipeline(pipeline.raw());
     }
 
     #[inline]
@@ -507,12 +554,8 @@ impl<'a, 'p> RenderPass<'a, 'p> {
     ) {
         let transform = transform.as_mat4();
         let mesh = self.render_state.quad_mesh.raw();
-        let p = self
-            .render_state
-            .pipelines
-            .get(self.render_state.default_pipeline.raw())
-            .unwrap();
-        self.raw_pass.set_pipeline(p);
+        self.raw_pass
+            .set_pipeline(self.render_state.default_pipeline.raw());
         self.raw_pass.set_bind_group(0, texture, &[]);
         self.raw_pass.set_immediates(
             0,
@@ -556,8 +599,8 @@ impl<'a, 'p> RenderPass<'a, 'p> {
             &[],
         );
         let m = transform.as_mat4();
-        let mut batch =
-            self.draw_instanced(self.render_state.quad_mesh, self.render_state.text_pipeline);
+        let p = &self.render_state.text_pipeline.clone();
+        let mut batch = self.draw_instanced(self.render_state.quad_mesh, p);
         for glyph_data in font.layout_text(s.as_ref(), opts.layout) {
             let transform = m * Mat4::from_scale_rotation_translation(
                 glyph_data.bounds.dim.extend(1.0),
@@ -584,10 +627,11 @@ impl<'a, 'p> RenderPass<'a, 'p> {
     pub fn draw_instanced<'r, V: VertexInput, I: VertexInput>(
         &'r mut self,
         mesh: MeshRef<V>,
-        pipeline: PipelineRef<(V, I)>,
+        // TODO: split the association of the pipeline out into another wrapper method on
+        // RenderPass (maybe ::use_pipeline)?
+        pipeline: &Pipeline<(V, I)>,
     ) -> Batcher<'r, 'a, 'p, V, I> {
-        let p = self.render_state.pipelines.get(pipeline.raw()).unwrap();
-        self.raw_pass.set_pipeline(p);
+        self.raw_pass.set_pipeline(pipeline.raw());
         let num_indices = {
             let m = self.render_state.mesh_manager.get(mesh.raw()).unwrap();
             self.raw_pass

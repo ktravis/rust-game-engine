@@ -200,7 +200,6 @@ impl<A: AppState> ApplicationHandler for App<A> {
                         e => log::warn!("Surface error: {e:?}"),
                     }
                 });
-                ctx.render_state.after_frame();
                 ctx.display.window().request_redraw();
             }
             _ => {}

@@ -7,7 +7,6 @@ use std::{
 use bytemuck::Zeroable;
 use glam::{Mat4, Vec3, Vec4};
 use shadertype_derive::shader_uniform_type;
-use wgpu::{TextureFormat, TextureSampleType};
 
 use crate::{
     camera::Camera,
@@ -120,7 +119,7 @@ impl<const D: u8, const F: bool> Bindable for TextureView<f32, D, F> {
                 ty: wgpu::BindingType::Texture {
                     multisampled: false,
                     view_dimension,
-                    sample_type: TextureSampleType::Float { filterable: F },
+                    sample_type: wgpu::TextureSampleType::Float { filterable: F },
                 },
                 count: None,
             },
@@ -161,7 +160,7 @@ impl<const D: u8, const F: bool> Bindable for TextureView<u32, D, F> {
             ty: wgpu::BindingType::Texture {
                 multisampled: false,
                 view_dimension,
-                sample_type: TextureSampleType::Uint,
+                sample_type: wgpu::TextureSampleType::Uint,
             },
             count: None,
         }]
@@ -190,7 +189,7 @@ impl<const D: u8, const F: bool> Bindable for TextureView<i32, D, F> {
             ty: wgpu::BindingType::Texture {
                 multisampled: false,
                 view_dimension,
-                sample_type: TextureSampleType::Sint,
+                sample_type: wgpu::TextureSampleType::Sint,
             },
             count: None,
         }]
@@ -232,7 +231,7 @@ impl<const D: u8> Bindable for DepthTextureView<D> {
             ty: wgpu::BindingType::Texture {
                 multisampled: false,
                 view_dimension,
-                sample_type: TextureSampleType::Depth,
+                sample_type: wgpu::TextureSampleType::Depth,
             },
             count: None,
         }]
@@ -272,7 +271,7 @@ impl Bindable for DepthTextureArrayView {
             ty: wgpu::BindingType::Texture {
                 multisampled: false,
                 view_dimension: wgpu::TextureViewDimension::D2Array,
-                sample_type: TextureSampleType::Depth,
+                sample_type: wgpu::TextureSampleType::Depth,
             },
             count: None,
         }]
@@ -284,6 +283,61 @@ impl DepthTextureArrayView {
         &self.inner
     }
 }
+
+// #[derive(Clone)]
+// pub struct TextureBlock<const N: usize, const F: bool = true> {
+//     texture_views: [wgpu::TextureView; N],
+//     sampler: wgpu::Sampler,
+// }
+//
+// impl<const N: usize, const F: bool> BindGroup<TextureBlock<N, F>> {
+//     pub fn for_texture_block(
+//         device: &wgpu::Device,
+//         // layout: &wgpu::BindGroupLayout,
+//         resource: Texture,
+//     ) -> Self {
+//     /*
+//     fn entries(&self) -> Vec<wgpu::BindGroupEntry<'_>> {
+//         vec![
+//             wgpu::BindGroupEntry {
+//                 binding: 0,
+//                 resource: wgpu::BindingResource::TextureViewArray(
+//                     &self.texture_views.iter().collect_vec(),
+//                 ),
+//             },
+//             wgpu::BindGroupEntry {
+//                 binding: 1,
+//                 resource: wgpu::BindingResource::Sampler(&self.sampler),
+//             },
+//         ]
+//     }
+//
+//     fn layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
+//         vec![
+//             wgpu::BindGroupLayoutEntry {
+//                 binding: 0,
+//                 visibility: wgpu::ShaderStages::FRAGMENT,
+//                 ty: wgpu::BindingType::Texture {
+//                     multisampled: false,
+//                     view_dimension: wgpu::TextureViewDimension::D2Array,
+//                     sample_type: TextureSampleType::Depth,
+//                 },
+//                 count: N,
+//             },
+//             wgpu::BindGroupLayoutEntry {
+//                 binding: 1,
+//                 visibility: wgpu::ShaderStages::FRAGMENT,
+//                 ty: wgpu::BindingType::Sampler(if F {
+//                     wgpu::SamplerBindingType::Filtering
+//                 } else {
+//                     wgpu::SamplerBindingType::NonFiltering
+//                 }),
+//                 count: None,
+//             },
+//         ]
+//     }
+//     */
+// }
 
 impl From<wgpu::TextureView> for DepthTextureArrayView {
     fn from(inner: wgpu::TextureView) -> Self {
@@ -363,7 +417,7 @@ impl From<wgpu::Sampler> for ComparisonSampler {
     }
 }
 
-pub fn texture_bgl_entries(format: TextureFormat) -> Vec<wgpu::BindGroupLayoutEntry> {
+pub fn texture_bgl_entries(format: wgpu::TextureFormat) -> Vec<wgpu::BindGroupLayoutEntry> {
     let sample_type = format
         .sample_type(Some(wgpu::TextureAspect::All), None)
         .expect(&format!(

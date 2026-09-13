@@ -13,10 +13,11 @@ use crate::{
         shader_type::{create_shader, GlobalUniforms},
         ssao::{BlurUniforms, SSAO_BLUR_SHADER},
         state::BoundTexture,
+        PipelineBuilder,
     },
 };
 
-use super::{bindings::ViewProjectionUniforms, Display, PipelineRef, RenderState, TextureBuilder};
+use super::{bindings::ViewProjectionUniforms, Display, Pipeline, RenderState, TextureBuilder};
 
 mod ssao_shader {
     use crate::renderer::{
@@ -203,13 +204,13 @@ impl SSAOKernel {
 }
 
 pub struct SSAOPass {
-    pipeline: PipelineRef<BasicVertexData>,
+    pipeline: Pipeline<BasicVertexData>,
     output_texture: BoundTexture,
     kernel: UniformBindGroup<SSAOKernel>,
     noise_texture: BindGroup<UnfilteredMaterialGroup>,
     blur_enabled: bool,
     blur_uniforms: UniformBindGroup<BlurUniforms>,
-    blur_pipeline: PipelineRef<BasicVertexData>,
+    blur_pipeline: Pipeline<BasicVertexData>,
     // blur_temp_buffer: TextureRef,
     blur_temp_buffer: BoundTexture,
     scene_depth_buffer: BindGroup<DepthBuffer>,
@@ -292,9 +293,7 @@ impl SSAOPass {
         let output_texture = state.bind_texture(&display, output_texture);
 
         let scene_depth_buffer = BindGroup::new(display.device(), depth_target);
-        let pipeline = state
-            .pipeline_builder()
-            .with_label("SSAO Pipeline")
+        let pipeline = PipelineBuilder::new("SSAO Pipeline")
             .with_bind_group_layouts(vec![
                 &main_texture_bgl,
                 &global_uniform_bgl,
@@ -320,9 +319,7 @@ impl SSAOPass {
                     SSAO_FROM_DEPTH_SHADER.to_string(),
                 ),
             );
-        let blur_pipeline = state
-            .pipeline_builder()
-            .with_label("SSAO Blur Pipeline")
+        let blur_pipeline = PipelineBuilder::new("SSAO Blur Pipeline")
             .with_color_target_states(vec![Some(wgpu::ColorTargetState {
                 blend: None,
                 format: Self::OCCLUSION_MAP_FORMAT,
@@ -402,7 +399,7 @@ impl SSAOPass {
                     r.set_bind_group(3, self.scene_depth_buffer.bind_group(), &[]);
                     r.set_bind_group(4, self.kernel.bind_group(), &[]);
                     r.set_bind_group(5, self.noise_texture.bind_group(), &[]);
-                    r.set_pipeline(self.pipeline);
+                    r.set_pipeline(&self.pipeline);
                     r.draw_mesh(quad);
                 },
             )
@@ -424,7 +421,7 @@ impl SSAOPass {
                         r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
                         r.set_bind_group(3, self.scene_depth_buffer.bind_group(), &[]);
                         r.set_bind_group(4, self.blur_uniforms.bind_group(), &[]);
-                        r.set_pipeline(self.blur_pipeline);
+                        r.set_pipeline(&self.blur_pipeline);
                         r.draw_mesh(quad);
                     },
                 )
@@ -445,7 +442,7 @@ impl SSAOPass {
                         r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
                         r.set_bind_group(3, self.scene_depth_buffer.bind_group(), &[]);
                         r.set_bind_group(4, self.blur_uniforms.bind_group(), &[]);
-                        r.set_pipeline(self.blur_pipeline);
+                        r.set_pipeline(&self.blur_pipeline);
                         r.draw_mesh(quad);
                     },
                 )
