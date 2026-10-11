@@ -2,8 +2,8 @@ use crate::{
     geom::{ModelVertexData, Point},
     renderer::{
         bindings::{
-            create_uniform_bind_group, texture_bgl_entries, DepthTextureView, UniformBindGroup,
-            ViewProjectionUniforms, UNIFORM_BGL_ENTRY,
+            create_uniform_bind_group, DepthTextureView, UniformBindGroup, ViewProjectionUniforms,
+            UNIFORM_BGL_ENTRY,
         },
         instance::InstanceDataWithNormalMatrix,
         shader_type::{create_shader, GlobalUniforms},
@@ -22,14 +22,9 @@ pub const MAX_LIGHTS: usize = 8;
 const SHADOW_MAPPING_SHADER: &'static str = crate::wgsl!(
     r#"
 @group(0) @binding(0)
-var t_diffuse: texture_2d<f32>;
-@group(0) @binding(1)
-var s_diffuse: sampler;
-
-@group(1) @binding(0)
 var<uniform> global_uniforms: GlobalUniforms;
 
-@group(2) @binding(0)
+@group(1) @binding(0)
 var<uniform> view_proj_uniforms: ViewProjectionUniforms;
 
 @vertex
@@ -121,13 +116,6 @@ impl ShadowMappingPass {
         display: &Display,
         depth_bias_state: wgpu::DepthBiasState,
     ) -> Pipeline<(ModelVertexData, InstanceDataWithNormalMatrix)> {
-        let main_texture_bgl =
-            display
-                .device()
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("main texture"),
-                    entries: &texture_bgl_entries(TextureBuilder::DEFAULT_FORMAT),
-                });
         let global_uniform_bgl =
             display
                 .device()
@@ -156,11 +144,7 @@ impl ShadowMappingPass {
                 stencil: Default::default(),
                 bias: depth_bias_state,
             }))
-            .with_bind_group_layouts(vec![
-                &main_texture_bgl,
-                &global_uniform_bgl,
-                &view_proj_uniform_bgl,
-            ])
+            .with_bind_group_layouts(vec![&global_uniform_bgl, &view_proj_uniform_bgl])
             .build(
                 display.device(),
                 &create_shader::<
@@ -199,16 +183,11 @@ impl ShadowMappingPass {
                     Some(&self.shadow_map_target_views[i]),
                     |r| {
                         r.set_pipeline(&self.shadow_map_pipeline);
-                        let default_texture = r.render_state.get_texture(None).clone();
-                        r.set_bind_group(0, &default_texture, &[]);
                         let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
-                        r.set_bind_group(1, &global_uniforms, &[]);
-                        r.set_bind_group(2, self.view_proj_bind_groups[i].bind_group(), &[]);
+                        r.set_bind_group(0, &global_uniforms, &[]);
+                        r.set_bind_group(1, self.view_proj_bind_groups[i].bind_group(), &[]);
                         let mut objects = scene.iter().peekable();
                         while let Some(first) = objects.next() {
-                            // let first = objects.next().unwrap();
-                            // TODO: if textures were bindless, could just partition objects by mesh and
-                            // give each a batcher
                             let mesh = first.mesh;
 
                             let mut b = r.draw_instanced(first.mesh, &self.shadow_map_pipeline);

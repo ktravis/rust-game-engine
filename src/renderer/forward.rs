@@ -6,11 +6,11 @@ use crate::{
     geom::{ModelVertexData, Point},
     renderer::{
         bindings::{
-            create_uniform_bind_group, texture_bgl_entries, BindGroup, Bindable, ComparisonSampler,
+            create_uniform_bind_group, BindGroup, Bindable, ComparisonSampler,
             DepthTextureArrayView, DepthTextureView, MaterialGroup, TextureSampler,
-            UniformBindGroup, UniformBuffer, UNIFORM_BGL_ENTRY,
+            UniformBindGroup, UniformBuffer,
         },
-        instance::InstanceDataWithNormalMatrix,
+        instance::{InstanceDataWithNormalMatrix, InstanceStorage},
         lighting::{LightRaw, LightingUniformsRaw},
         shader_type::{create_shader, GlobalUniforms},
         state::BoundTexture,
@@ -25,11 +25,6 @@ use super::{
 const DEPTH_ONLY_SHADER: &'static str = crate::wgsl!(
     r#"
 @group(0) @binding(0)
-var t_diffuse: texture_2d<f32>;
-@group(0) @binding(1)
-var s_diffuse: sampler;
-
-@group(1) @binding(0)
 var<uniform> view_proj_uniforms: ViewProjectionUniforms;
 
 struct VertexOutput {
@@ -239,6 +234,10 @@ pub struct ForwardGeometryPass {
     pub depth_target_sampler: TextureSampler,
     pub lighting_group: BindGroup<LightingGroup>,
     view_proj_bind_group: UniformBindGroup<ViewProjectionUniforms>,
+
+    // staging_belt: wgpu::util::StagingBelt,
+    // instance_buffer: wgpu::Buffer,
+    instance_storage: InstanceStorage,
 }
 
 impl ForwardGeometryPass {
@@ -268,26 +267,16 @@ impl ForwardGeometryPass {
             stencil: Default::default(),
             bias: Default::default(),
         });
-        let main_texture_bgl =
-            display
-                .device()
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("main texture"),
-                    entries: &texture_bgl_entries(TextureBuilder::DEFAULT_FORMAT),
-                });
         let global_uniform_bgl =
             UniformBuffer::<GlobalUniforms>::create_layout(display.device(), "global uniforms");
-        let view_proj_uniform_bgl =
-            display
-                .device()
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("view proj uniform bg layout"),
-                    entries: &[UNIFORM_BGL_ENTRY],
-                });
+        let view_proj_uniform_bgl = UniformBuffer::<ViewProjectionUniforms>::create_layout(
+            display.device(),
+            "view proj uniform bg layout",
+        );
         let depth_only_pipeline = PipelineBuilder::new("Forward Rendering (Depth Prepass)")
             .with_color_target_states(vec![])
             .with_depth_stencil_state(depth_stencil_state.clone())
-            .with_bind_group_layouts(vec![&main_texture_bgl, &view_proj_uniform_bgl])
+            .with_bind_group_layouts(vec![&view_proj_uniform_bgl])
             .build(
                 display.device(),
                 &create_shader::<
@@ -333,6 +322,7 @@ impl ForwardGeometryPass {
                 >(display, "forward", FORWARD_LIGHTING_SHADER.to_string()),
             );
         let color_target = state.bind_texture(display, color_target);
+        let instance_storage = InstanceStorage::new(display, 512);
         Self {
             pipeline,
             depth_only_pipeline,
@@ -341,6 +331,9 @@ impl ForwardGeometryPass {
             depth_target_sampler: depth_target.sampler.into(),
             lighting_group,
             view_proj_bind_group,
+            instance_storage,
+            // staging_belt,
+            // instance_buffer,
         }
     }
 
@@ -353,6 +346,11 @@ impl ForwardGeometryPass {
     ) {
         self.view_proj_bind_group
             .update(display.queue(), *view_projection);
+        self.instance_storage.clear();
+        for o in scene {
+            self.instance_storage.add(&o.instance);
+        }
+        self.instance_storage.update_buffer(display);
         state
             .render_pass(
                 &display,
@@ -360,26 +358,26 @@ impl ForwardGeometryPass {
                 &[],
                 Some(&self.depth_target_view),
                 |r| {
+                    let mut draw_offset = 0;
                     r.set_pipeline(&self.depth_only_pipeline);
-                    let default_texture = r.render_state.get_texture(None).clone();
-                    r.set_bind_group(0, &default_texture, &[]);
-                    r.set_bind_group(1, self.view_proj_bind_group.bind_group(), &[]);
-                    let mut objects = scene.iter().peekable();
-                    while let Some(first) = objects.next() {
-                        // let first = objects.next().unwrap();
-                        // TODO: if textures were bindless, could just partition objects by mesh and
-                        // give each a batcher
-                        let mesh = first.mesh;
-
-                        let mut b = r.draw_instanced(first.mesh, &self.depth_only_pipeline);
-                        b.add(first);
-                        while let Some(object) = objects.peek() {
-                            if object.mesh != mesh {
-                                break;
-                            }
-                            b.add(&object.instance);
-                            objects.next();
-                        }
+                    r.set_bind_group(0, self.view_proj_bind_group.bind_group(), &[]);
+                    r.set_vertex_buffer(1, self.instance_storage.buffer().slice(..));
+                    // for (mesh, group) in &scene.iter().group_by(|i| i.mesh) {
+                    //     let mut b = r.draw_instanced(mesh, &self.depth_only_pipeline);
+                    //     for object in group {
+                    //         b.add(object);
+                    //     }
+                    // }
+                    for (mesh, group) in &scene.iter().group_by(|i| i.mesh) {
+                        let num_indices = {
+                            let m = r.render_state.get_mesh(mesh);
+                            r.set_vertex_buffer(0, m.vertex_buffer.slice(..));
+                            r.set_index_buffer(m.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                            m.num_indices
+                        };
+                        let start = draw_offset;
+                        draw_offset += group.count() as u32;
+                        r.draw_indexed(0..num_indices, 0, start..draw_offset);
                     }
                 },
             )
@@ -397,8 +395,7 @@ impl ForwardGeometryPass {
         if scene.len() == 0 {
             return;
         }
-        let occlusion_map =
-            occlusion_map.unwrap_or_else(|| state.get_texture(state.default_texture()).clone());
+        let occlusion_map = occlusion_map.unwrap_or_else(|| state.default_texture().clone());
         self.view_proj_bind_group
             .update(display.queue(), *view_projection);
         state
@@ -408,7 +405,9 @@ impl ForwardGeometryPass {
                 &[&self.color_target.resource.view],
                 Some(&self.depth_target_view),
                 |r| {
+                    let mut draw_offset = 0;
                     r.set_pipeline(&self.pipeline);
+                    r.set_vertex_buffer(1, self.instance_storage.buffer().slice(..));
                     let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
                     let ta = r.render_state.texture_array.as_ref().unwrap().clone();
                     r.set_bind_group(0, &ta, &[]);
@@ -417,10 +416,15 @@ impl ForwardGeometryPass {
                     r.set_bind_group(3, self.lighting_group.bind_group(), &[]);
                     r.set_bind_group(4, &occlusion_map, &[]);
                     for (mesh, group) in &scene.iter().group_by(|i| i.mesh) {
-                        let mut b = r.draw_instanced(mesh, &self.pipeline);
-                        for object in group {
-                            b.add(object);
-                        }
+                        let num_indices = {
+                            let m = r.render_state.get_mesh(mesh);
+                            r.set_vertex_buffer(0, m.vertex_buffer.slice(..));
+                            r.set_index_buffer(m.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                            m.num_indices
+                        };
+                        let start = draw_offset;
+                        draw_offset += group.count() as u32;
+                        r.draw_indexed(0..num_indices, 0, start..draw_offset);
                     }
                 },
             )

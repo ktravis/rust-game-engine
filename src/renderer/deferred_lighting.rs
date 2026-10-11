@@ -232,8 +232,7 @@ impl LightingPass {
         );
         self.view_proj_bind_group
             .update(display.queue(), *view_projection);
-        let occlusion_map =
-            occlusion_map.unwrap_or_else(|| state.get_texture(state.default_texture()).clone());
+        let occlusion_map = occlusion_map.unwrap_or_else(|| state.default_texture().clone());
         let quad = state.quad_mesh();
         state
             .render_pass(display, "Lighting Pass", &[destination], None, |r| {

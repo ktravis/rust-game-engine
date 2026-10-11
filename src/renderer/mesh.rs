@@ -41,7 +41,7 @@ impl<V> From<RawMeshRef> for MeshRef<V> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Mesh<V = BasicVertexData> {
     pub inner: UntypedMesh,
     _marker: PhantomData<V>,
@@ -61,7 +61,7 @@ impl<V> DerefMut for Mesh<V> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct UntypedMesh {
     pub vertex_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,

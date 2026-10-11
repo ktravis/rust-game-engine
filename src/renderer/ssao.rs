@@ -22,14 +22,9 @@ use super::{bindings::ViewProjectionUniforms, Display, Pipeline, RenderState, Te
 const SSAO_SHADER: &'static str = crate::wgsl!(
     r#"
 @group(0) @binding(0)
-var t_diffuse: texture_2d<f32>;
-@group(0) @binding(1)
-var s_diffuse: sampler;
-
-@group(1) @binding(0)
 var<uniform> global_uniforms: GlobalUniforms;
 
-@group(2) @binding(0)
+@group(1) @binding(0)
 var<uniform> view_proj_uniforms: ViewProjectionUniforms;
 
 struct VertexOutput {
@@ -53,25 +48,25 @@ fn vs_main(
     return out;
 }
 
-@group(3) @binding(0)
+@group(2) @binding(0)
 var g_position: texture_2d<f32>;
-@group(3) @binding(1)
+@group(2) @binding(1)
 var g_position_sampler: sampler;
-@group(3) @binding(2)
+@group(2) @binding(2)
 var g_normal: texture_2d<f32>;
-@group(3) @binding(3)
+@group(2) @binding(3)
 var g_normal_sampler: sampler;
-@group(3) @binding(4)
+@group(2) @binding(4)
 var g_albedo_spec: texture_2d<f32>;
-@group(3) @binding(5)
+@group(2) @binding(5)
 var g_albedo_spec_sampler: sampler;
 
-@group(4) @binding(0)
+@group(3) @binding(0)
 var<uniform> kernel: SSAOKernel;
 
-@group(5) @binding(0)
+@group(4) @binding(0)
 var ssao_noise: texture_2d<f32>;
-@group(5) @binding(1)
+@group(4) @binding(1)
 var ssao_noise_sampler: sampler;
 
 @fragment
@@ -339,7 +334,6 @@ impl SSAOPass {
             GeometryBuffers::create_layout(display.device(), "geometry buffers");
         let pipeline = PipelineBuilder::new("SSAO Pipeline")
             .with_bind_group_layouts(vec![
-                &main_texture_bgl,
                 &global_uniform_bgl,
                 &view_proj_uniform_bgl,
                 &geometry_buffers_bgl,
@@ -429,14 +423,12 @@ impl SSAOPass {
                 &[&self.output_texture.resource.view],
                 None,
                 |r| {
-                    let default_texture = r.render_state.get_texture(None).clone();
-                    r.set_bind_group(0, &default_texture, &[]);
                     let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
-                    r.set_bind_group(1, &global_uniforms, &[]);
-                    r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
-                    r.set_bind_group(3, geometry_buffers.bind_group(), &[]);
-                    r.set_bind_group(4, self.kernel.bind_group(), &[]);
-                    r.set_bind_group(5, self.noise_texture.bind_group(), &[]);
+                    r.set_bind_group(0, &global_uniforms, &[]);
+                    r.set_bind_group(1, self.view_proj_bind_group.bind_group(), &[]);
+                    r.set_bind_group(2, geometry_buffers.bind_group(), &[]);
+                    r.set_bind_group(3, self.kernel.bind_group(), &[]);
+                    r.set_bind_group(4, self.noise_texture.bind_group(), &[]);
                     r.set_pipeline(&self.pipeline);
                     r.draw_mesh(quad);
                 },

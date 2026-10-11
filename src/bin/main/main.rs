@@ -90,6 +90,7 @@ struct State {
 
     model_meshes: Vec<(MeshRef<ModelVertexData>, Option<tobj::Material>)>,
     cubes: Vec<Transform3D>,
+    sponza_meshes: Vec<(MeshRef<ModelVertexData>, Option<tobj::Material>)>,
 
     scene: Scene,
 }
@@ -121,6 +122,7 @@ impl State {
 enum Scene {
     Cubes,
     Model,
+    Sponza,
 }
 
 impl AppState for State {
@@ -175,13 +177,20 @@ impl AppState for State {
             .load_model("./res/models/room_thickwalls.obj")
             .unwrap();
 
-        // let sponza = ctx
-        //     .display
-        //     .device()
-        //     .load_model("./res/models/sponza/sponza.obj")
-        //     .unwrap();
-
         let model_meshes = model
+            .meshes
+            .into_iter()
+            .map(|m| (ctx.render_state.register_mesh(m.mesh), m.material))
+            .collect();
+
+        let sponza = ctx
+            .display
+            .device()
+            .load_model("./res/models/sponza/sponza.obj")
+            .unwrap();
+
+        println!("sponza_meshes count: {}", sponza.meshes.len());
+        let sponza_meshes = sponza
             .meshes
             .into_iter()
             .map(|m| (ctx.render_state.register_mesh(m.mesh), m.material))
@@ -283,6 +292,7 @@ impl AppState for State {
             // offscreen_framebuffer,
             // render_pipelines: Default::default(),
             model_meshes,
+            sponza_meshes,
             // deferred_lighting_pass,
             cubes,
             scene: Scene::Model,
@@ -440,15 +450,36 @@ impl AppState for State {
                     });
                 }
             }
+            Scene::Sponza => {
+                for (mesh, mat) in &self.sponza_meshes {
+                    scene.push(InstanceRenderData {
+                        mesh: *mesh,
+                        instance: InstanceDataWithNormalMatrix::from_basic(
+                            BasicInstanceData {
+                                tint: mat.as_ref().map(|m| m.diffuse.into()).unwrap_or_default(),
+                                transform: Transform3D {
+                                    // position: vec3(0.0, 0.0, 5.0),
+                                    scale: vec3(0.02, 0.02, 0.02),
+                                    ..Default::default()
+                                }
+                                .as_mat4(),
+                                ..Default::default()
+                            },
+                            view_projection.view,
+                        ),
+                        texture: None,
+                    });
+                }
+            }
         }
 
         // Populate G buffers
-        self.geometry_pass.run(
-            &mut ctx.render_state,
-            &ctx.display,
-            &view_projection,
-            &scene,
-        );
+        // self.geometry_pass.run(
+        //     &mut ctx.render_state,
+        //     &ctx.display,
+        //     &view_projection,
+        //     &scene,
+        // );
 
         self.forward_pass.depth_prepass(
             &mut ctx.render_state,
@@ -627,6 +658,7 @@ impl AppState for State {
                                 .show_ui(ui, |ui| {
                                     ui.selectable_value(&mut self.scene, Scene::Cubes, "cubes");
                                     ui.selectable_value(&mut self.scene, Scene::Model, "model");
+                                    ui.selectable_value(&mut self.scene, Scene::Sponza, "sponza");
                                 });
 
                             ui.separator();

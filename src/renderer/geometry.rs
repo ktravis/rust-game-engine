@@ -226,7 +226,7 @@ impl GeometryPass {
                 Some(&self.depth_target_view),
                 |r| {
                     r.set_pipeline(&self.pipeline);
-                    let default_texture = r.render_state.get_texture(None).clone();
+                    let default_texture = r.render_state.default_texture().clone();
                     r.set_bind_group(0, &default_texture, &[]);
                     let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
                     r.set_bind_group(1, &global_uniforms, &[]);

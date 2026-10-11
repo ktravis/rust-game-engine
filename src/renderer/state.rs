@@ -17,7 +17,7 @@ use super::{
     shader_type::GlobalUniforms,
     text::{RenderableFont, TextDisplayOptions},
     texture::{Texture, TextureBuilder},
-    MeshRef, Pipeline, PipelineBuilder, TextureRef, DEFAULT_TEXTURE_DATA,
+    MeshRef, Pipeline, PipelineBuilder, DEFAULT_TEXTURE_DATA,
 };
 use crate::{
     color::Color,
@@ -162,10 +162,9 @@ pub struct RenderState {
     instance_storage: InstanceStorage,
 
     texture_bind_group_layouts: HashMap<wgpu::TextureFormat, wgpu::BindGroupLayout>,
-    texture_manager: SlotMap<TextureRef, BoundTexture>,
-    default_texture: TextureRef,
+    default_texture: BoundTexture,
 
-    mesh_manager: SlotMap<RawMeshRef, UntypedMesh>,
+    pub mesh_manager: SlotMap<RawMeshRef, UntypedMesh>,
     default_pipeline: Pipeline<BasicVertexData>,
     text_pipeline: Pipeline<(BasicVertexData, BasicInstanceData)>,
 
@@ -181,7 +180,7 @@ impl RenderState {
         let device = display.device();
 
         let global_uniforms = create_uniform_bind_group(device, GlobalUniforms::zeroed());
-        let mesh_manager = SlotMap::with_key();
+        let mut mesh_manager: SlotMap<RawMeshRef, UntypedMesh> = SlotMap::with_key();
         let instance_storage = InstanceStorage::new(display, 1024);
 
         let view_proj_uniform_bgl =
@@ -211,23 +210,10 @@ impl RenderState {
             .with_bind_group_layouts(vec![&main_texture_bgl, &view_proj_uniform_bgl])
             .build(display.device(), &text_shader);
 
-        let mut s = Self {
-            texture_manager: SlotMap::with_key(),
-            mesh_manager,
-            global_uniforms,
-            instance_storage,
-            texture_bind_group_layouts: Default::default(),
-            quad_mesh: Default::default(),
-            default_pipeline,
-            text_pipeline,
-            default_texture: Default::default(),
-            textures: vec![],
-            texture_array: None,
-            texture_array_bgl: None,
-        };
-
-        // let default_texture = TextureBuilder::render_target()
-        let default_texture = TextureBuilder::default()
+        let quad_mesh = mesh_manager
+            .insert(display.device().load_quad_mesh().inner)
+            .into();
+        let t = TextureBuilder::default()
             .with_label("default_texture")
             .from_raw_bytes(
                 display.device(),
@@ -235,21 +221,29 @@ impl RenderState {
                 &DEFAULT_TEXTURE_DATA,
                 Point::new(2, 2),
             );
-        s.add_texture(default_texture);
+        let default_texture = {
+            let bgl = display
+                .device()
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some(&format!("texture({:?})", t.format())),
+                    entries: &texture_bgl_entries(t.format()),
+                });
+            BoundTexture::for_texture(display.device(), &bgl, t.clone())
+        };
 
-        s.default_texture = s.bind_and_register_texture(
-            display,
-            TextureBuilder::render_target()
-                .with_label("default_texture")
-                .from_raw_bytes(
-                    display.device(),
-                    display.queue(),
-                    &DEFAULT_TEXTURE_DATA,
-                    Point::new(2, 2),
-                ),
-        );
-        s.quad_mesh = s.register_mesh(display.device().load_quad_mesh());
-        s
+        Self {
+            mesh_manager,
+            global_uniforms,
+            instance_storage,
+            texture_bind_group_layouts: Default::default(),
+            quad_mesh,
+            default_pipeline,
+            text_pipeline,
+            default_texture,
+            textures: vec![t],
+            texture_array: None,
+            texture_array_bgl: None,
+        }
     }
 
     pub fn quad_mesh(&self) -> MeshRef<BasicVertexData> {
@@ -301,13 +295,6 @@ impl RenderState {
                 label: Some(name),
                 color_attachments: &color_attachments[..color_targets.len()],
                 depth_stencil_attachment: depth_target.map(|target| {
-                    // target.
-                    // let view = match target {
-                    //     RenderTarget::TextureView(view) => view,
-                    //     RenderTarget::TextureRef(texture) => {
-                    //         &self.texture_manager.get(texture).unwrap().resource.view
-                    //     }
-                    // };
                     wgpu::RenderPassDepthStencilAttachment {
                         view: target.raw(),
                         depth_ops: Some(wgpu::Operations {
@@ -458,24 +445,16 @@ impl RenderState {
         BoundTexture::for_texture(display.device(), bgl, t)
     }
 
-    pub fn bind_and_register_texture(&mut self, display: &Display, t: Texture) -> TextureRef {
-        let bt = self.bind_texture(display, t);
-        self.texture_manager.insert(bt)
-    }
-
-    pub fn get_texture(&self, texture: impl Into<Option<TextureRef>>) -> &wgpu::BindGroup {
-        self.texture_manager
-            .get(texture.into().unwrap_or(self.default_texture))
-            .unwrap()
-            .bind_group()
-    }
-
     pub fn register_mesh<V: VertexInput>(&mut self, mesh: Mesh<V>) -> MeshRef<V> {
         self.mesh_manager.insert(mesh.inner).into()
     }
 
-    pub fn default_texture(&self) -> TextureRef {
-        self.default_texture
+    pub fn get_mesh<V: VertexInput>(&mut self, mesh: MeshRef<V>) -> UntypedMesh {
+        self.mesh_manager.get(mesh.raw()).unwrap().clone()
+    }
+
+    pub fn default_texture(&self) -> &wgpu::BindGroup {
+        self.default_texture.bind_group()
     }
 }
 
