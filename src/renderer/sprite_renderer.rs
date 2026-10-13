@@ -1,23 +1,24 @@
 use crate::{
-    geom::BasicVertexData,
+    geom::ModelVertexData,
     renderer::{
         bindings::{texture_bgl_entries, UNIFORM_BGL_ENTRY},
         instance::BasicInstanceData,
         shader_type::create_shader,
         state::BoundTexture,
-        Display, MeshRef, Pipeline, PipelineBuilder, RenderPass, RenderState, Texture,
+        state::MeshRef,
+        Display, Pipeline, PipelineBuilder, RenderPass, RenderState, Texture,
     },
 };
 
 pub struct SpriteRenderer {
-    pipeline: Pipeline<(BasicVertexData, BasicInstanceData)>,
+    pipeline: Pipeline<(ModelVertexData, BasicInstanceData)>,
     sprite_atlas_texture: BoundTexture,
-    quad_mesh: MeshRef<BasicVertexData>,
+    quad_mesh: MeshRef,
 }
 
 impl SpriteRenderer {
     pub fn new(state: &mut RenderState, display: &Display, sprite_atlas: Texture) -> Self {
-        let sprite_shader = &create_shader::<(), (BasicVertexData, BasicInstanceData)>(
+        let sprite_shader = &create_shader::<(), (ModelVertexData, BasicInstanceData)>(
             display,
             "instanced",
             SPRITE_SHADER.to_string(),
@@ -54,7 +55,7 @@ impl SpriteRenderer {
         sprites: impl Iterator<Item = &'a BasicInstanceData>,
     ) {
         r.set_bind_group(0, self.sprite_atlas_texture.bind_group(), &[]);
-        let mut b = r.draw_instanced(self.quad_mesh, &self.pipeline);
+        let mut b = r.draw_instanced_scene(self.quad_mesh, &self.pipeline);
         for s in sprites {
             b.add(s);
         }
@@ -84,7 +85,7 @@ struct VertexOutput {
 
 @vertex
 fn vs_main(
-    vertex: BasicVertexData,
+    vertex: ModelVertexData,
     instance: BasicInstanceData,
 ) -> VertexOutput {
     let model_transform = mat4x4<f32>(

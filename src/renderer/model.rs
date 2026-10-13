@@ -1,11 +1,14 @@
 use crate::geom::ModelVertexData;
-use crate::renderer::mesh::Mesh;
 
-use super::mesh::LoadMesh;
+#[derive(Clone, Debug, Default)]
+pub struct MeshData {
+    pub vertices: Vec<ModelVertexData>,
+    pub indices: Vec<u16>,
+}
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ModelMesh {
-    pub mesh: Mesh<ModelVertexData>,
+    pub mesh_data: MeshData,
     pub material: Option<tobj::Material>,
 }
 
@@ -14,23 +17,16 @@ pub struct Model {
     pub meshes: Vec<ModelMesh>,
 }
 
-pub trait LoadModel {
-    type Error: std::fmt::Debug;
-
-    fn load_model(&self, path: impl AsRef<str>) -> Result<Model, Self::Error>;
-}
-
-impl LoadModel for wgpu::Device {
-    type Error = tobj::LoadError;
-
-    fn load_model(&self, path: impl AsRef<str>) -> Result<Model, Self::Error> {
+impl Model {
+    pub fn load(path: impl AsRef<str>) -> Result<Self, tobj::LoadError> {
         let (models, mtls) = tobj::load_obj(path.as_ref(), &tobj::GPU_LOAD_OPTIONS)?;
         let mtls = mtls?;
         let mut meshes = vec![];
         for m in models {
             let raw_mesh = m.mesh;
-            let material = raw_mesh.material_id.map(|id| mtls[id].clone());
-            let vertices = raw_mesh
+            let mut model_mesh = ModelMesh::default();
+            model_mesh.material = raw_mesh.material_id.map(|id| mtls[id].clone());
+            model_mesh.mesh_data.vertices = raw_mesh
                 .positions
                 .iter()
                 .enumerate()
@@ -72,15 +68,14 @@ impl LoadModel for wgpu::Device {
                     ..Default::default()
                 })
                 .collect::<Vec<_>>();
-            let indices = raw_mesh
+            model_mesh.mesh_data.indices = raw_mesh
                 .indices
                 // rewind faces to Ccw
                 .chunks_exact(3)
                 .map(|x| [x[0] as u16, x[2] as u16, x[1] as u16])
                 .flatten()
                 .collect::<Vec<_>>();
-            let mesh = self.load_mesh(&vertices, &indices).unwrap();
-            meshes.push(ModelMesh { mesh, material })
+            meshes.push(model_mesh);
         }
 
         Ok(Model { meshes })

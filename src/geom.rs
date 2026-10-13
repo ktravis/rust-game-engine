@@ -141,6 +141,8 @@ impl Default for Rect {
 }
 
 pub mod quad {
+    use glam::vec3;
+
     use super::*;
 
     #[inline]
@@ -151,23 +153,27 @@ pub mod quad {
         h: f32,
         uv1: (f32, f32),
         uv2: (f32, f32),
-    ) -> [BasicVertexData; 4] {
+    ) -> [ModelVertexData; 4] {
         [
-            BasicVertexData {
+            ModelVertexData {
                 position: [x, y, 0.0, 1.0].into(),
                 tex_coords: [uv1.0, uv2.1].into(),
+                normal: Vec3::Z,
             },
-            BasicVertexData {
+            ModelVertexData {
                 position: [x, y + h, 0.0, 1.0].into(),
                 tex_coords: [uv1.0, uv1.1].into(),
+                normal: Vec3::Z,
             },
-            BasicVertexData {
+            ModelVertexData {
                 position: [x + w, y + h, 0.0, 1.0].into(),
                 tex_coords: [uv2.0, uv1.1].into(),
+                normal: Vec3::Z,
             },
-            BasicVertexData {
+            ModelVertexData {
                 position: [x + w, y, 0.0, 1.0].into(),
                 tex_coords: [uv2.0, uv2.1].into(),
+                normal: Vec3::Z,
             },
         ]
     }

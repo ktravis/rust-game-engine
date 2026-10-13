@@ -210,7 +210,7 @@ impl GeometryPass {
         state: &mut RenderState,
         display: &Display,
         view_projection: &ViewProjectionUniforms,
-        scene: &[InstanceRenderData<ModelVertexData, InstanceDataWithNormalMatrix>],
+        scene: &[InstanceRenderData<InstanceDataWithNormalMatrix>],
     ) {
         self.view_proj_bind_group
             .update(display.queue(), *view_projection);
@@ -231,6 +231,7 @@ impl GeometryPass {
                     let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
                     r.set_bind_group(1, &global_uniforms, &[]);
                     r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
+                    r.set_scene_buffers();
                     for render_data in scene {
                         let tex = default_texture.clone();
                         // TODO: update for bindless textures
@@ -251,7 +252,8 @@ impl GeometryPass {
                                 material: render_data.material,
                             }),
                         );
-                        r.draw_mesh(render_data.mesh);
+                        r.draw_scene_mesh(render_data.mesh.clone(), 0..1);
+                        // r.draw_mesh(render_data.mesh);
                     }
                 },
             )

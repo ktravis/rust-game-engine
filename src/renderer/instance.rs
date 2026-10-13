@@ -4,20 +4,22 @@ use glam::{Mat3, Mat4};
 use shadertype_derive::{ShaderType, VertexInput};
 
 use crate::color::Color;
-use crate::geom::{BasicVertexData, Rect};
+use crate::geom::Rect;
 use crate::renderer::shader_type::VertexInput;
+use crate::renderer::state::MeshRef;
 use crate::transform::Transform;
 
-use super::{Display, MeshRef};
+use super::Display;
 
 #[derive(Debug)]
-pub struct InstanceRenderData<V = BasicVertexData, I = BasicInstanceData> {
-    pub mesh: MeshRef<V>,
+pub struct InstanceRenderData<I = BasicInstanceData> {
+    pub mesh: MeshRef,
     pub instance: I,
     pub texture: Option<u32>,
+    pub casts_shadow: bool,
 }
 
-impl<V, I> Deref for InstanceRenderData<V, I> {
+impl<I> Deref for InstanceRenderData<I> {
     type Target = I;
 
     fn deref(&self) -> &Self::Target {

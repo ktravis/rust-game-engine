@@ -1,5 +1,7 @@
+use std::num::NonZero;
+
 use itertools::Itertools;
-use wgpu::TextureUsages;
+use wgpu::{wgt::DrawIndexedIndirectArgs, TextureUsages};
 
 use crate::{
     define_bind_group,
@@ -10,7 +12,7 @@ use crate::{
             DepthTextureArrayView, DepthTextureView, MaterialGroup, TextureSampler,
             UniformBindGroup, UniformBuffer,
         },
-        instance::{InstanceDataWithNormalMatrix, InstanceStorage},
+        instance::InstanceDataWithNormalMatrix,
         lighting::{LightRaw, LightingUniformsRaw},
         shader_type::{create_shader, GlobalUniforms},
         state::BoundTexture,
@@ -226,6 +228,7 @@ define_bind_group! {
     }
 }
 
+// TODO: factor out lighting_group?
 pub struct ForwardGeometryPass {
     pipeline: Pipeline<(ModelVertexData, InstanceDataWithNormalMatrix)>,
     depth_only_pipeline: Pipeline<(ModelVertexData, InstanceDataWithNormalMatrix)>,
@@ -234,11 +237,11 @@ pub struct ForwardGeometryPass {
     pub depth_target_sampler: TextureSampler,
     pub lighting_group: BindGroup<LightingGroup>,
     view_proj_bind_group: UniformBindGroup<ViewProjectionUniforms>,
-
-    // staging_belt: wgpu::util::StagingBelt,
-    // instance_buffer: wgpu::Buffer,
-    instance_storage: InstanceStorage,
+    indirect_command_buffer: wgpu::Buffer,
 }
+
+const CMD_BUFFER_SIZE: u64 =
+    64000 * std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>() as u64;
 
 impl ForwardGeometryPass {
     pub fn new(
@@ -322,7 +325,13 @@ impl ForwardGeometryPass {
                 >(display, "forward", FORWARD_LIGHTING_SHADER.to_string()),
             );
         let color_target = state.bind_texture(display, color_target);
-        let instance_storage = InstanceStorage::new(display, 512);
+
+        let indirect_command_buffer = display.device().create_buffer(&wgpu::BufferDescriptor {
+            label: Some("forward pass command buffer"),
+            size: CMD_BUFFER_SIZE,
+            usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         Self {
             pipeline,
             depth_only_pipeline,
@@ -331,10 +340,49 @@ impl ForwardGeometryPass {
             depth_target_sampler: depth_target.sampler.into(),
             lighting_group,
             view_proj_bind_group,
-            instance_storage,
-            // staging_belt,
-            // instance_buffer,
+            indirect_command_buffer,
         }
+    }
+
+    fn write_draw_calls(
+        &mut self,
+        display: &Display,
+        scene: &[InstanceRenderData<InstanceDataWithNormalMatrix>],
+        draw_non_shadow_casters: bool,
+    ) -> u32 {
+        let mut draw_offset = 0;
+        let mut draw_calls = 0;
+        let mut n = 0;
+        {
+            let mut buf = display
+                .queue()
+                .write_buffer_with(
+                    &self.indirect_command_buffer,
+                    0,
+                    NonZero::new(CMD_BUFFER_SIZE).unwrap(),
+                )
+                .unwrap();
+
+            for (mesh, group) in &scene
+                .iter()
+                .filter(|i| draw_non_shadow_casters || i.casts_shadow)
+                .group_by(|i| &i.mesh)
+            {
+                let draw_call = DrawIndexedIndirectArgs {
+                    base_vertex: mesh.base_vertex,
+                    first_index: mesh.index_start,
+                    index_count: mesh.index_end - mesh.index_start,
+                    first_instance: draw_offset,
+                    instance_count: group.count() as u32,
+                };
+                draw_offset += draw_call.instance_count as u32;
+                let b = bytemuck::bytes_of(&draw_call);
+                buf.slice(n..n + b.len()).copy_from_slice(b);
+                n += b.len();
+                draw_calls += 1;
+            }
+        }
+        draw_calls
     }
 
     pub fn depth_prepass(
@@ -342,15 +390,12 @@ impl ForwardGeometryPass {
         state: &mut RenderState,
         display: &Display,
         view_projection: &ViewProjectionUniforms,
-        scene: &[InstanceRenderData<ModelVertexData, InstanceDataWithNormalMatrix>],
+        scene: &[InstanceRenderData<InstanceDataWithNormalMatrix>],
+        instance_buffer: &wgpu::Buffer,
     ) {
         self.view_proj_bind_group
             .update(display.queue(), *view_projection);
-        self.instance_storage.clear();
-        for o in scene {
-            self.instance_storage.add(&o.instance);
-        }
-        self.instance_storage.update_buffer(display);
+        let count = self.write_draw_calls(display, scene, false);
         state
             .render_pass(
                 &display,
@@ -358,27 +403,11 @@ impl ForwardGeometryPass {
                 &[],
                 Some(&self.depth_target_view),
                 |r| {
-                    let mut draw_offset = 0;
                     r.set_pipeline(&self.depth_only_pipeline);
                     r.set_bind_group(0, self.view_proj_bind_group.bind_group(), &[]);
-                    r.set_vertex_buffer(1, self.instance_storage.buffer().slice(..));
-                    // for (mesh, group) in &scene.iter().group_by(|i| i.mesh) {
-                    //     let mut b = r.draw_instanced(mesh, &self.depth_only_pipeline);
-                    //     for object in group {
-                    //         b.add(object);
-                    //     }
-                    // }
-                    for (mesh, group) in &scene.iter().group_by(|i| i.mesh) {
-                        let num_indices = {
-                            let m = r.render_state.get_mesh(mesh);
-                            r.set_vertex_buffer(0, m.vertex_buffer.slice(..));
-                            r.set_index_buffer(m.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                            m.num_indices
-                        };
-                        let start = draw_offset;
-                        draw_offset += group.count() as u32;
-                        r.draw_indexed(0..num_indices, 0, start..draw_offset);
-                    }
+                    r.set_scene_buffers();
+                    r.set_vertex_buffer(1, instance_buffer.slice(..));
+                    r.multi_draw_indexed_indirect(&self.indirect_command_buffer, 0, count);
                 },
             )
             .submit();
@@ -389,8 +418,9 @@ impl ForwardGeometryPass {
         state: &mut RenderState,
         display: &Display,
         view_projection: &ViewProjectionUniforms,
-        scene: &[InstanceRenderData<ModelVertexData, InstanceDataWithNormalMatrix>],
+        scene: &[InstanceRenderData<InstanceDataWithNormalMatrix>],
         occlusion_map: Option<wgpu::BindGroup>,
+        instance_buffer: &wgpu::Buffer,
     ) {
         if scene.len() == 0 {
             return;
@@ -398,6 +428,7 @@ impl ForwardGeometryPass {
         let occlusion_map = occlusion_map.unwrap_or_else(|| state.default_texture().clone());
         self.view_proj_bind_group
             .update(display.queue(), *view_projection);
+        let count = self.write_draw_calls(display, scene, true);
         state
             .render_pass(
                 &display,
@@ -405,27 +436,17 @@ impl ForwardGeometryPass {
                 &[&self.color_target.resource.view],
                 Some(&self.depth_target_view),
                 |r| {
-                    let mut draw_offset = 0;
                     r.set_pipeline(&self.pipeline);
-                    r.set_vertex_buffer(1, self.instance_storage.buffer().slice(..));
+                    r.set_scene_buffers();
+                    r.set_vertex_buffer(1, instance_buffer.slice(..));
                     let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
-                    let ta = r.render_state.texture_array.as_ref().unwrap().clone();
+                    let ta = r.render_state.texture_array_bind_group().clone();
                     r.set_bind_group(0, &ta, &[]);
                     r.set_bind_group(1, &global_uniforms, &[]);
                     r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
                     r.set_bind_group(3, self.lighting_group.bind_group(), &[]);
                     r.set_bind_group(4, &occlusion_map, &[]);
-                    for (mesh, group) in &scene.iter().group_by(|i| i.mesh) {
-                        let num_indices = {
-                            let m = r.render_state.get_mesh(mesh);
-                            r.set_vertex_buffer(0, m.vertex_buffer.slice(..));
-                            r.set_index_buffer(m.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                            m.num_indices
-                        };
-                        let start = draw_offset;
-                        draw_offset += group.count() as u32;
-                        r.draw_indexed(0..num_indices, 0, start..draw_offset);
-                    }
+                    r.multi_draw_indexed_indirect(&self.indirect_command_buffer, 0, count);
                 },
             )
             .submit();

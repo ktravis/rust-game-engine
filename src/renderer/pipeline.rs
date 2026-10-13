@@ -6,10 +6,6 @@ use crate::renderer::shader_type::VertexInputs;
 
 use super::TextureBuilder;
 
-slotmap::new_key_type! {
-    pub(super) struct RawPipelineRef;
-}
-
 #[derive(Clone)]
 pub struct Pipeline<V> {
     raw: wgpu::RenderPipeline,

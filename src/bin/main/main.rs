@@ -1,7 +1,7 @@
 use std::ops::DerefMut;
 
 use bytemuck::Zeroable;
-use glam::{vec2, vec3, Mat4};
+use glam::{vec2, vec3, Mat3, Mat4};
 use itertools::Itertools;
 use rust_game_engine::app::{App, AppState, Context};
 use rust_game_engine::color::Color;
@@ -10,26 +10,29 @@ use rust_game_engine::renderer::bindings::{
 };
 use rust_game_engine::renderer::forward::ForwardGeometryPass;
 use rust_game_engine::renderer::geometry::GeometryPass;
-use rust_game_engine::renderer::instance::{BasicInstanceData, InstanceDataWithNormalMatrix};
+use rust_game_engine::renderer::instance::{
+    BasicInstanceData, InstanceDataWithNormalMatrix, InstanceStorage,
+};
 use rust_game_engine::renderer::lighting::{Light, LightKind};
-use rust_game_engine::renderer::model::LoadModel;
+use rust_game_engine::renderer::model::Model;
 use rust_game_engine::renderer::shader_type::GlobalUniforms;
 use rust_game_engine::renderer::shadow_mapping::ShadowMappingPass;
 use rust_game_engine::renderer::sprite_renderer::SpriteRenderer;
 use rust_game_engine::renderer::ssao_from_depth::SSAOPass;
+use rust_game_engine::renderer::state::MeshRef;
 use rust_game_engine::renderer::text::RenderableFont;
-use rust_game_engine::renderer::{DisplaySurfaceError, MeshRef};
+use rust_game_engine::renderer::DisplaySurfaceError;
 use winit::dpi::PhysicalSize;
 use winit::event_loop::EventLoop;
 
 use controlset_derive::ControlSet;
 use rust_game_engine::assets::AssetManager;
 use rust_game_engine::camera::Camera;
-use rust_game_engine::geom::{ModelVertexData, Point, Rect};
+use rust_game_engine::geom::{cube, Point, Rect};
 use rust_game_engine::input::{Axis, Button, Key, Toggle};
 use rust_game_engine::renderer::{
-    instance::InstanceRenderData, mesh::LoadMesh, text::TextDisplayOptions, Display, ScalingMode,
-    TextureBuilder, ViewProjectionUniforms,
+    instance::InstanceRenderData, text::TextDisplayOptions, Display, ScalingMode, TextureBuilder,
+    ViewProjectionUniforms,
 };
 use rust_game_engine::sprite_manager::SpriteManager;
 use rust_game_engine::transform::{Transform, Transform2D, Transform3D};
@@ -79,6 +82,7 @@ struct State {
     // deferred_lighting_pass: LightingPass,
     forward_pass: ForwardGeometryPass,
     proj_matrix_bind_group: UniformBindGroup<Mat4>,
+    instance_storage: InstanceStorage,
 
     // "game" state
     camera: Camera,
@@ -86,11 +90,11 @@ struct State {
     sprite_instances: Vec<BasicInstanceData>,
     crate_texture: u32,
     cat_texture: u32,
-    cube_mesh: MeshRef<ModelVertexData>,
+    cube_mesh: MeshRef,
 
-    model_meshes: Vec<(MeshRef<ModelVertexData>, Option<tobj::Material>)>,
+    model_meshes: Vec<(MeshRef, Option<tobj::Material>)>,
     cubes: Vec<Transform3D>,
-    sponza_meshes: Vec<(MeshRef<ModelVertexData>, Option<tobj::Material>)>,
+    sponza_meshes: Vec<(MeshRef, Option<tobj::Material>)>,
 
     scene: Scene,
 }
@@ -135,7 +139,7 @@ impl AppState for State {
 
         let cube_mesh = ctx
             .render_state
-            .register_mesh(ctx.display.device().load_cube_mesh());
+            .add_mesh_data(&cube::VERTICES, &cube::INDICES);
 
         let crate_texture = ctx.render_state.add_texture(
             ctx.display
@@ -157,7 +161,7 @@ impl AppState for State {
                 .unwrap(),
         );
 
-        ctx.render_state.commit_textures(&ctx.display);
+        ctx.render_state.upload_textures(&ctx.display);
 
         asset_manager.track_glob("./res/sprites/*.aseprite", |state, path, f| {
             state.sprites.add_sprite_file(path.to_path_buf(), f);
@@ -170,31 +174,39 @@ impl AppState for State {
         let sprite_renderer =
             SpriteRenderer::new(&mut ctx.render_state, &ctx.display, sprite_atlas);
 
-        let model = ctx
-            .display
-            .device()
-            // .load_model("./res/models/jeep.obj")
-            .load_model("./res/models/room_thickwalls.obj")
-            .unwrap();
+        let model = Model::load(
+            // "./res/models/jeep.obj",
+            "./res/models/room_thickwalls.obj",
+        )
+        .unwrap();
 
         let model_meshes = model
             .meshes
             .into_iter()
-            .map(|m| (ctx.render_state.register_mesh(m.mesh), m.material))
+            .map(|m| {
+                (
+                    ctx.render_state
+                        .add_mesh_data(&m.mesh_data.vertices, &m.mesh_data.indices),
+                    m.material,
+                )
+            })
             .collect();
 
-        let sponza = ctx
-            .display
-            .device()
-            .load_model("./res/models/sponza/sponza.obj")
-            .unwrap();
+        let sponza = Model::load("./res/models/sponza/sponza.obj").unwrap();
 
         println!("sponza_meshes count: {}", sponza.meshes.len());
         let sponza_meshes = sponza
             .meshes
             .into_iter()
-            .map(|m| (ctx.render_state.register_mesh(m.mesh), m.material))
+            .map(|m| {
+                (
+                    ctx.render_state
+                        .add_mesh_data(&m.mesh_data.vertices, &m.mesh_data.indices),
+                    m.material,
+                )
+            })
             .collect();
+        ctx.render_state.upload_meshes(&ctx.display);
 
         let fb_size = Point::from((
             (WINDOW_SIZE.width as f32 / RENDER_SCALE) as u32,
@@ -241,6 +253,9 @@ impl AppState for State {
         }
         let proj_matrix_bind_group =
             create_uniform_bind_group(ctx.display.device(), Default::default());
+
+        let instance_storage = InstanceStorage::new(&ctx.display, 512);
+
         Self {
             asset_manager,
             crate_texture,
@@ -298,6 +313,7 @@ impl AppState for State {
             scene: Scene::Model,
             show_light_volumes: true,
             proj_matrix_bind_group,
+            instance_storage,
         }
     }
 
@@ -361,7 +377,7 @@ impl AppState for State {
         let mut scene = vec![
             InstanceRenderData {
                 texture: Some(self.crate_texture),
-                mesh: self.cube_mesh,
+                mesh: self.cube_mesh.clone(),
                 instance: InstanceDataWithNormalMatrix {
                     texture: self.crate_texture,
                     ..InstanceDataWithNormalMatrix::from_basic(
@@ -369,6 +385,7 @@ impl AppState for State {
                         view_projection.view,
                     )
                 },
+                casts_shadow: true,
             },
             // InstanceRenderData {
             //     mesh: self.cube_mesh,
@@ -392,7 +409,7 @@ impl AppState for State {
             //     pipeline: None,
             // },
             InstanceRenderData {
-                mesh: self.cube_mesh,
+                mesh: self.cube_mesh.clone(),
                 texture: None,
                 instance: InstanceDataWithNormalMatrix {
                     texture: self.cat_texture,
@@ -411,6 +428,7 @@ impl AppState for State {
                         view_projection.view,
                     )
                 },
+                casts_shadow: true,
                 // texture: None,
                 // pipeline: None,
             },
@@ -418,7 +436,7 @@ impl AppState for State {
         match self.scene {
             Scene::Cubes => {
                 scene.extend(self.cubes.iter().map(|t| InstanceRenderData {
-                    mesh: self.cube_mesh,
+                    mesh: self.cube_mesh.clone(),
                     instance: InstanceDataWithNormalMatrix::from_basic(
                         BasicInstanceData {
                             transform: t.as_mat4(),
@@ -427,12 +445,13 @@ impl AppState for State {
                         view_projection.view,
                     ),
                     texture: None,
+                    casts_shadow: true,
                 }));
             }
             Scene::Model => {
                 for (mesh, mat) in &self.model_meshes {
                     scene.push(InstanceRenderData {
-                        mesh: *mesh,
+                        mesh: mesh.clone(),
                         instance: InstanceDataWithNormalMatrix::from_basic(
                             BasicInstanceData {
                                 tint: mat.as_ref().map(|m| m.diffuse.into()).unwrap_or_default(),
@@ -447,13 +466,14 @@ impl AppState for State {
                             view_projection.view,
                         ),
                         texture: None,
+                        casts_shadow: true,
                     });
                 }
             }
             Scene::Sponza => {
                 for (mesh, mat) in &self.sponza_meshes {
                     scene.push(InstanceRenderData {
-                        mesh: *mesh,
+                        mesh: mesh.clone(),
                         instance: InstanceDataWithNormalMatrix::from_basic(
                             BasicInstanceData {
                                 tint: mat.as_ref().map(|m| m.diffuse.into()).unwrap_or_default(),
@@ -468,62 +488,16 @@ impl AppState for State {
                             view_projection.view,
                         ),
                         texture: None,
+                        casts_shadow: true,
                     });
                 }
             }
         }
 
-        // Populate G buffers
-        // self.geometry_pass.run(
-        //     &mut ctx.render_state,
-        //     &ctx.display,
-        //     &view_projection,
-        //     &scene,
-        // );
-
-        self.forward_pass.depth_prepass(
-            &mut ctx.render_state,
-            &ctx.display,
-            &view_projection,
-            &scene,
-        );
-
-        let occlusion_map = self.ssao_enabled.then(|| {
-            self.occlusion_pass
-                .run(&mut ctx.render_state, &ctx.display, &view_projection)
-                .bind_group()
-                .clone()
-        });
-
-        // self.lights
-        //     .iter_mut()
-        //     .enumerate()
-        //     .for_each(|(i, light)| match &mut light.kind {
-        //         LightKind::Directional { .. } => todo!(),
-        //         LightKind::Spot { direction, .. } => {
-        //             *direction = Mat3::from_rotation_y((i as f32 + 0.5) * 0.01) * *direction;
-        //         }
-        //     });
-
-        self.forward_pass
-            .lighting_group
-            .lights
-            .update_with(ctx.display.queue(), |u| {
-                u.lights = self.lights.clone();
-                u.view_frustum = self.camera.frustum();
-            });
-
-        self.shadow_mapping_pass.run(
-            &mut ctx.render_state,
-            &ctx.display,
-            &self.forward_pass.lighting_group.lights,
-            &scene,
-        );
-
         if ctx.input.debug.on && self.show_light_volumes {
             for light in &self.lights {
                 scene.push(InstanceRenderData {
-                    mesh: self.cube_mesh,
+                    mesh: self.cube_mesh.clone(),
                     instance: InstanceDataWithNormalMatrix {
                         material: 1,
                         ..InstanceDataWithNormalMatrix::from_basic(
@@ -541,16 +515,74 @@ impl AppState for State {
                         )
                     },
                     texture: None,
+                    casts_shadow: false,
                 });
             }
         }
+
+        self.instance_storage.clear();
+        for o in &scene {
+            self.instance_storage.add(&o.instance);
+        }
+        self.instance_storage.update_buffer(&ctx.display);
+
+        // Populate G buffers
+        // self.geometry_pass.run(
+        //     &mut ctx.render_state,
+        //     &ctx.display,
+        //     &view_projection,
+        //     &scene,
+        // );
+
+        self.forward_pass.depth_prepass(
+            &mut ctx.render_state,
+            &ctx.display,
+            &view_projection,
+            &scene,
+            self.instance_storage.buffer(),
+        );
+
+        let occlusion_map = self.ssao_enabled.then(|| {
+            self.occlusion_pass
+                .run(&mut ctx.render_state, &ctx.display, &view_projection)
+                .bind_group()
+                .clone()
+        });
+
+        // Rotate spotlights
+        self.lights
+            .iter_mut()
+            .enumerate()
+            .for_each(|(i, light)| match &mut light.kind {
+                LightKind::Directional { .. } => todo!(),
+                LightKind::Spot { direction, .. } => {
+                    *direction = Mat3::from_rotation_y((i as f32 + 0.5) * 0.01) * *direction;
+                }
+            });
+
+        self.forward_pass
+            .lighting_group
+            .lights
+            .update_with(ctx.display.queue(), |u| {
+                u.lights = self.lights.clone();
+                u.view_frustum = self.camera.frustum();
+            });
+
+        self.shadow_mapping_pass.run(
+            &mut ctx.render_state,
+            &ctx.display,
+            &self.forward_pass.lighting_group.lights,
+            &scene,
+            self.instance_storage.buffer(),
+        );
 
         self.forward_pass.run(
             &mut ctx.render_state,
             &ctx.display,
             &view_projection,
             &scene,
-            occlusion_map,
+            occlusion_map.clone(),
+            self.instance_storage.buffer(),
         );
 
         self.proj_matrix_bind_group
@@ -606,14 +638,15 @@ impl AppState for State {
                     );
 
                     // r.draw_quad(
-                    //     // self.shadow_mapping_pass.shadow_map_debug_textures[0],
-                    //     occlusion_map,
+                    //     // self.shadow_mapping_pass.shadow_map_debug_textures[0].bind_group(),
+                    //     occlusion_map.as_ref(),
                     //     Transform2D {
                     //         position: vec2(ctx.display.size_pixels().x as f32 - 266.0, 10.0),
-                    //         // position: ctx.display.size_pixels().as_vec2() - vec2(256.0, 256.0),
                     //         scale: Vec2::splat(256.0),
                     //         ..Default::default()
                     //     },
+                    //     Color::WHITE,
+                    //     Rect::new(0.0, 0.0, 1.0, 1.0),
                     // );
                 },
             )

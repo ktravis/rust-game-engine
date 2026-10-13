@@ -6,7 +6,6 @@ pub mod forward;
 pub mod geometry;
 pub mod instance;
 pub mod lighting;
-pub mod mesh;
 pub mod model;
 pub mod pipeline;
 #[macro_use]
@@ -23,8 +22,7 @@ mod renderer;
 
 pub use bindings::ViewProjectionUniforms;
 pub use display::*;
-pub use mesh::MeshRef;
 pub use pipeline::*;
 pub use renderer::*;
-pub use state::{RenderPass, RenderState};
+pub use state::{MeshRef, RenderPass, RenderState};
 pub use texture::*;

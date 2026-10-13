@@ -114,6 +114,7 @@ impl Display {
                     | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
                     | wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER
                     | wgpu::Features::DEPTH_CLIP_CONTROL
+                    | wgpu::Features::INDIRECT_FIRST_INSTANCE
                     | wgpu::Features::IMMEDIATES,
                 // WebGL doesn't support all of wgpu's features, so if
                 // we're building for the web we'll have to disable some.

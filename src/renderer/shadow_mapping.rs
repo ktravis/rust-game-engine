@@ -1,3 +1,5 @@
+use itertools::Itertools;
+
 use crate::{
     geom::{ModelVertexData, Point},
     renderer::{
@@ -163,7 +165,8 @@ impl ShadowMappingPass {
         state: &mut RenderState,
         display: &Display,
         lights_uniform: &LightsUniform,
-        scene: &[InstanceRenderData<ModelVertexData, InstanceDataWithNormalMatrix>],
+        scene: &[InstanceRenderData<InstanceDataWithNormalMatrix>],
+        instance_buffer: &wgpu::Buffer,
     ) {
         if self.depth_bias_state != self.last_depth_bias_state {
             Self::build_shadow_map_pipeline(display, self.depth_bias_state);
@@ -186,20 +189,34 @@ impl ShadowMappingPass {
                         let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
                         r.set_bind_group(0, &global_uniforms, &[]);
                         r.set_bind_group(1, self.view_proj_bind_groups[i].bind_group(), &[]);
-                        let mut objects = scene.iter().peekable();
-                        while let Some(first) = objects.next() {
-                            let mesh = first.mesh;
+                        r.set_scene_buffers();
+                        r.set_vertex_buffer(1, instance_buffer.slice(..));
 
-                            let mut b = r.draw_instanced(first.mesh, &self.shadow_map_pipeline);
-                            b.add(first);
-                            while let Some(object) = objects.peek() {
-                                if object.mesh != mesh {
-                                    break;
-                                }
-                                b.add(&object.instance);
-                                objects.next();
-                            }
+                        let mut draw_offset = 0;
+                        for (mesh, group) in &scene
+                            .iter()
+                            .filter(|i| i.casts_shadow)
+                            .group_by(|i| &i.mesh)
+                        {
+                            let start = draw_offset;
+                            draw_offset += group.count() as u32;
+                            r.draw_indexed(mesh.indices(), mesh.base_vertex, start..draw_offset);
                         }
+                        // let mut objects = scene.iter().peekable();
+                        // while let Some(first) = objects.next() {
+                        //     let mut b = r.draw_instanced_scene(
+                        //         first.mesh.clone(),
+                        //         &self.shadow_map_pipeline,
+                        //     );
+                        //     b.add(first);
+                        //     while let Some(object) = objects.peek() {
+                        //         if object.mesh != first.mesh {
+                        //             break;
+                        //         }
+                        //         b.add(&object.instance);
+                        //         objects.next();
+                        //     }
+                        // }
                     },
                 )
                 .command_buffer()

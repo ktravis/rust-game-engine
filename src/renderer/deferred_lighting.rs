@@ -1,5 +1,5 @@
 use crate::{
-    geom::BasicVertexData,
+    geom::ModelVertexData,
     renderer::{
         bindings::{
             create_uniform_bind_group, texture_bgl_entries, BindGroup, Bindable, UniformBindGroup,
@@ -39,7 +39,7 @@ struct VertexOutput {
 
 @vertex
 fn vs_main(
-    vertex: BasicVertexData,
+    vertex: ModelVertexData,
     instance: BasicInstanceData,
 ) -> VertexOutput {
     let model_transform = mat4x4<f32>(
@@ -148,7 +148,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 );
 
 pub struct LightingPass {
-    pipeline: Pipeline<(BasicVertexData, BasicInstanceData)>,
+    pipeline: Pipeline<(ModelVertexData, BasicInstanceData)>,
     lights_uniform: UniformBindGroup<LightsUniform>,
     view_proj_bind_group: UniformBindGroup<ViewProjectionUniforms>,
 }
@@ -197,7 +197,7 @@ impl LightingPass {
                         LightRaw,
                         LightingUniformsRaw,
                     ),
-                    (BasicVertexData, BasicInstanceData),
+                    (ModelVertexData, BasicInstanceData),
                 >(
                     display,
                     "deferred_lighting",
@@ -243,7 +243,7 @@ impl LightingPass {
                 r.set_bind_group(3, geometry_buffers.bind_group(), &[]);
                 r.set_bind_group(4, self.lights_uniform.bind_group(), &[]);
                 r.set_pipeline(&self.pipeline);
-                r.draw_mesh(quad);
+                r.draw_scene_mesh(quad, 0..1);
             })
             .submit();
     }

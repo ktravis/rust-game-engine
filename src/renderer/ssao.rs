@@ -3,7 +3,7 @@ use glam::{vec2, vec4, Vec2, Vec4};
 use shadertype_derive::shader_uniform_type;
 
 use crate::{
-    geom::{BasicVertexData, Point},
+    geom::{ModelVertexData, Point},
     renderer::{
         bindings::{
             create_uniform_bind_group, texture_bgl_entries, BindGroup, Bindable,
@@ -36,7 +36,7 @@ var<immediate> model_data: ModelData;
 
 @vertex
 fn vs_main(
-    vertex: BasicVertexData,
+    vertex: ModelVertexData,
 ) -> VertexOutput {
     var out: VertexOutput;
     out.tex_coords = vertex.tex_coords;
@@ -126,7 +126,7 @@ struct VertexOutput {
 
 @vertex
 fn vs_main(
-    vertex: BasicVertexData,
+    vertex: ModelVertexData,
 ) -> VertexOutput {
     var out: VertexOutput;
     out.tex_coords = vertex.tex_coords;
@@ -252,13 +252,13 @@ impl Default for BlurUniforms {
 }
 
 pub struct SSAOPass {
-    pipeline: Pipeline<(BasicVertexData, BasicInstanceData)>,
+    pipeline: Pipeline<(ModelVertexData, BasicInstanceData)>,
     output_texture: BoundTexture,
     kernel: UniformBindGroup<SSAOKernel>,
     noise_texture: BindGroup<UnfilteredMaterialGroup>,
     blur_enabled: bool,
     blur_uniforms: UniformBindGroup<BlurUniforms>,
-    blur_pipeline: Pipeline<(BasicVertexData, BasicInstanceData)>,
+    blur_pipeline: Pipeline<(ModelVertexData, BasicInstanceData)>,
     blur_temp_buffer: BoundTexture,
     view_proj_bind_group: UniformBindGroup<ViewProjectionUniforms>,
 }
@@ -350,7 +350,7 @@ impl SSAOPass {
                 display.device(),
                 &create_shader::<
                     (GlobalUniforms, ViewProjectionUniforms, SSAOKernel),
-                    BasicVertexData,
+                    ModelVertexData,
                 >(display, "ssao", SSAO_SHADER.to_string()),
             );
         let blur_pipeline = PipelineBuilder::new("SSAO Blur Pipeline")
@@ -371,7 +371,7 @@ impl SSAOPass {
                 display.device(),
                 &create_shader::<
                     (GlobalUniforms, ViewProjectionUniforms, BlurUniforms),
-                    BasicVertexData,
+                    ModelVertexData,
                 >(display, "ssao_blur", SSAO_BLUR_SHADER.to_string()),
             );
         let blur_temp_buffer = state.bind_texture(
@@ -430,7 +430,7 @@ impl SSAOPass {
                     r.set_bind_group(3, self.kernel.bind_group(), &[]);
                     r.set_bind_group(4, self.noise_texture.bind_group(), &[]);
                     r.set_pipeline(&self.pipeline);
-                    r.draw_mesh(quad);
+                    r.draw_scene_mesh(quad, 0..1);
                 },
             )
             .submit();
@@ -452,7 +452,7 @@ impl SSAOPass {
                         r.set_bind_group(3, geometry_buffers.bind_group(), &[]);
                         r.set_bind_group(4, self.blur_uniforms.bind_group(), &[]);
                         r.set_pipeline(&self.blur_pipeline);
-                        r.draw_mesh(quad);
+                        r.draw_scene_mesh(quad, 0..1);
                     },
                 )
                 .submit();
@@ -473,7 +473,7 @@ impl SSAOPass {
                         r.set_bind_group(3, geometry_buffers.bind_group(), &[]);
                         r.set_bind_group(4, self.blur_uniforms.bind_group(), &[]);
                         r.set_pipeline(&self.blur_pipeline);
-                        r.draw_mesh(quad);
+                        r.draw_scene_mesh(quad, 0..1);
                     },
                 )
                 .submit();
