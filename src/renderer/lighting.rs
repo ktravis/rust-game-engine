@@ -269,8 +269,8 @@ impl Default for LightsUniform {
             view_frustum: Default::default(),
             shadow_bias_minimum: 0.005,
             shadow_bias_factor: 0.0,
-            shadow_blur_half_kernel_size: 2,
-            ambient_color: Color::from(Vec4::splat(0.1)),
+            shadow_blur_half_kernel_size: 1,
+            ambient_color: Color::from(Vec4::splat(0.4)),
         }
     }
 }

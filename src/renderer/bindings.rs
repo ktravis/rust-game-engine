@@ -7,6 +7,7 @@ use std::{
 use bytemuck::Zeroable;
 use glam::{Mat4, Vec3, Vec4};
 use shadertype_derive::shader_uniform_type;
+use wgpu::util::DeviceExt;
 
 use crate::{
     camera::Camera,
@@ -26,23 +27,12 @@ use crate::{
 // [ ] when drawing, each pipeline/pass should accept anything that can be `Into` its required data
 // type (instance data etc)
 
-pub const UNIFORM_BGL_ENTRY: wgpu::BindGroupLayoutEntry = wgpu::BindGroupLayoutEntry {
-    binding: 0,
-    visibility: wgpu::ShaderStages::all(),
-    ty: wgpu::BindingType::Buffer {
-        ty: wgpu::BufferBindingType::Uniform,
-        has_dynamic_offset: false,
-        min_binding_size: None,
-    },
-    count: None,
-};
-
 pub fn create_uniform_bind_group<U: UniformData>(
     device: &wgpu::Device,
     uniform: U,
 ) -> UniformBindGroup<U> {
     let resource = UniformBuffer::new(device, uniform);
-    <BindGroup<UniformBuffer<U>>>::new(device, resource)
+    BindGroup::<UniformBuffer<U>>::new(device, resource)
 }
 
 #[shader_uniform_type]
@@ -696,13 +686,11 @@ impl<U: UniformData> DerefMut for UniformBuffer<U> {
 
 impl<U: UniformData> UniformBuffer<U> {
     pub fn new(device: &wgpu::Device, uniform: U) -> Self {
-        let n = std::mem::size_of::<U::Raw>();
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(&format!("Uniform Buffer ({})", std::any::type_name::<U>())),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             // pad to 16 bytes, which will be required in the shader
-            size: n.next_multiple_of(16) as u64,
-            mapped_at_creation: false,
+            contents: bytemuck::bytes_of(&uniform.raw()),
         });
         Self { uniform, buffer }
     }
@@ -730,7 +718,16 @@ impl<U: UniformData> Bindable for UniformBuffer<U> {
     }
 
     fn layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
-        vec![UNIFORM_BGL_ENTRY]
+        vec![wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::all(),
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }]
     }
 }
 

@@ -5,13 +5,13 @@ use crate::{
     geom::{ModelVertexData, Point},
     renderer::{
         bindings::{
-            create_uniform_bind_group, texture_bgl_entries, BindGroup, Bindable, DepthTextureView,
-            NonFilteringSampler, TextureView, UniformBindGroup, ViewProjectionUniforms,
-            UNIFORM_BGL_ENTRY,
+            create_uniform_bind_group, BindGroup, Bindable, DepthTextureView, MaterialGroup,
+            NonFilteringSampler, TextureView, UniformBindGroup, UniformBuffer,
+            ViewProjectionUniforms,
         },
         instance::InstanceDataWithNormalMatrix,
         shader_type::{create_shader, GlobalUniforms},
-        state::ModelData,
+        state::{ColorTarget, ModelData},
     },
 };
 
@@ -121,27 +121,15 @@ impl GeometryPass {
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             )
             .build(display.device(), size);
-        let main_texture_bgl =
-            display
-                .device()
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("main texture"),
-                    entries: &texture_bgl_entries(TextureBuilder::DEFAULT_FORMAT),
-                });
-        let global_uniform_bgl =
-            display
-                .device()
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("global uniform bg layout"),
-                    entries: &[UNIFORM_BGL_ENTRY],
-                });
-        let view_proj_uniform_bgl =
-            display
-                .device()
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("view proj uniform bg layout"),
-                    entries: &[UNIFORM_BGL_ENTRY],
-                });
+        let main_texture_bgl = MaterialGroup::create_layout(display.device(), "main texture");
+        let global_uniform_bgl = UniformBuffer::<GlobalUniforms>::create_layout(
+            display.device(),
+            "global uniform bg layout",
+        );
+        let view_proj_uniform_bgl = UniformBuffer::<ViewProjectionUniforms>::create_layout(
+            display.device(),
+            "view proj uniform bg layout",
+        );
         let pipeline = PipelineBuilder::new("Geometry Pass Pipeline")
             .with_color_target_states(vec![
                 Some(wgpu::ColorTargetState {
@@ -219,19 +207,18 @@ impl GeometryPass {
                 &display,
                 "Geometry Pass",
                 &[
-                    &self.bind_group.position_view.raw(),
-                    &self.bind_group.normal_view.raw(),
-                    &self.bind_group.albedo_spec_view.raw(),
+                    ColorTarget::from(self.bind_group.position_view.raw()),
+                    ColorTarget::from(self.bind_group.normal_view.raw()),
+                    ColorTarget::from(self.bind_group.albedo_spec_view.raw()),
                 ],
                 Some(&self.depth_target_view),
                 |r| {
                     r.set_pipeline(&self.pipeline);
-                    let default_texture = r.render_state.default_texture().clone();
+                    let default_texture = r.render_state.default_texture_bind_group().clone();
                     r.set_bind_group(0, &default_texture, &[]);
                     let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
                     r.set_bind_group(1, &global_uniforms, &[]);
                     r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
-                    r.set_scene_buffers();
                     for render_data in scene {
                         let tex = default_texture.clone();
                         // TODO: update for bindless textures

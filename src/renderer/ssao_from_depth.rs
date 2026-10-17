@@ -7,12 +7,12 @@ use crate::{
     geom::{ModelVertexData, Point},
     renderer::{
         bindings::{
-            create_uniform_bind_group, BindGroup, DepthBuffer, UnfilteredMaterialGroup,
-            UniformBindGroup, UNIFORM_BGL_ENTRY,
+            create_uniform_bind_group, BindGroup, Bindable, DepthBuffer, UnfilteredMaterialGroup,
+            UniformBindGroup, UniformBuffer,
         },
         shader_type::{create_shader, GlobalUniforms},
         ssao::{BlurUniforms, SSAO_BLUR_SHADER},
-        state::BoundTexture,
+        state::{BoundTexture, ColorTarget},
         PipelineBuilder,
     },
 };
@@ -254,20 +254,14 @@ impl SSAOPass {
             display.device(),
             SSAOKernel::new(size.as_vec2() / Self::NOISE_SCALE as f32, camera),
         );
-        let global_uniform_bgl =
-            display
-                .device()
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("global uniform bg layout"),
-                    entries: &[UNIFORM_BGL_ENTRY],
-                });
-        let view_proj_uniform_bgl =
-            display
-                .device()
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("view proj uniform bg layout"),
-                    entries: &[UNIFORM_BGL_ENTRY],
-                });
+        let global_uniform_bgl = UniformBuffer::<GlobalUniforms>::create_layout(
+            display.device(),
+            "global uniform bg layout",
+        );
+        let view_proj_uniform_bgl = UniformBuffer::<ViewProjectionUniforms>::create_layout(
+            display.device(),
+            "view proj uniform bg layout",
+        );
         let output_texture = TextureBuilder::render_target()
             .with_label("ssao")
             .with_format(Self::OCCLUSION_MAP_FORMAT)
@@ -375,7 +369,7 @@ impl SSAOPass {
             .render_pass(
                 &display,
                 "SSAO Pass",
-                &[&self.output_texture.resource.view],
+                &[ColorTarget::from(&self.output_texture.resource.view)],
                 None,
                 |r| {
                     let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
@@ -397,7 +391,7 @@ impl SSAOPass {
                 .render_pass(
                     display,
                     "SSAO Blur Pass - X",
-                    &[&self.blur_temp_buffer.resource.view],
+                    &[ColorTarget::from(&self.blur_temp_buffer.resource.view)],
                     None,
                     |r| {
                         r.set_bind_group(0, self.output_texture.bind_group(), &[]);
@@ -418,7 +412,7 @@ impl SSAOPass {
                 .render_pass(
                     display,
                     "SSAO Blur Pass - Y",
-                    &[&self.output_texture.resource.view],
+                    &[ColorTarget::from(&self.output_texture.resource.view)],
                     None,
                     |r| {
                         r.set_bind_group(0, self.blur_temp_buffer.bind_group(), &[]);

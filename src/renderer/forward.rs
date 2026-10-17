@@ -1,7 +1,5 @@
-use std::num::NonZero;
-
-use itertools::Itertools;
-use wgpu::{wgt::DrawIndexedIndirectArgs, TextureUsages};
+use glam::Vec3;
+use wgpu::TextureUsages;
 
 use crate::{
     define_bind_group,
@@ -12,17 +10,45 @@ use crate::{
             DepthTextureArrayView, DepthTextureView, MaterialGroup, TextureSampler,
             UniformBindGroup, UniformBuffer,
         },
-        instance::InstanceDataWithNormalMatrix,
+        instance::{InstanceDataWithNormalMatrix, ObjectData},
         lighting::{LightRaw, LightingUniformsRaw},
         shader_type::{create_shader, GlobalUniforms},
-        state::BoundTexture,
+        state::{write_scene_draw_calls, BoundTexture, ColorTarget},
     },
+    transform::Transform,
 };
 
 use super::{
-    bindings::ViewProjectionUniforms, instance::InstanceRenderData, lighting::LightsUniform,
-    Display, Pipeline, PipelineBuilder, RenderState, TextureBuilder,
+    bindings::ViewProjectionUniforms, lighting::LightsUniform, Display, Pipeline, PipelineBuilder,
+    RenderState, TextureBuilder,
 };
+
+const SKYBOX_SHADER: &'static str = crate::wgsl!(
+    r#"
+@group(0) @binding(0)
+var<uniform> view_proj_uniforms: ViewProjectionUniforms;
+
+@group(1) @binding(3)
+var<uniform> skybox_color: vec3<f32>;
+
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+}
+
+@vertex
+fn vs_main(
+    vertex: ModelVertexData,
+) -> VertexOutput {
+    var out: VertexOutput;
+    out.clip_position = vec4(2.0 * (vertex.position.xy - vec2(0.5, 0.5)), 0.0, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    return vec4(skybox_color, 1.0);
+}"#
+);
 
 const DEPTH_ONLY_SHADER: &'static str = crate::wgsl!(
     r#"
@@ -115,6 +141,8 @@ var<uniform> lights: LightingUniformsRaw;
 var shadow_map: texture_depth_2d_array;
 @group(3) @binding(2)
 var shadow_map_sampler: sampler_comparison;
+@group(3) @binding(3)
+var<uniform> skybox_color: vec3<f32>;
 
 @group(4) @binding(0)
 var occlusion_map: texture_2d<f32>;
@@ -225,6 +253,7 @@ define_bind_group! {
         pub lights: UniformBuffer<LightsUniform>,
         pub shadow_maps_view: DepthTextureArrayView,
         pub shadow_maps_sampler: ComparisonSampler,
+        pub skybox_color: UniformBuffer<Vec3>,
     }
 }
 
@@ -232,6 +261,7 @@ define_bind_group! {
 pub struct ForwardGeometryPass {
     pipeline: Pipeline<(ModelVertexData, InstanceDataWithNormalMatrix)>,
     depth_only_pipeline: Pipeline<(ModelVertexData, InstanceDataWithNormalMatrix)>,
+    skybox_pipeline: Pipeline<ModelVertexData>,
     pub color_target: BoundTexture,
     pub depth_target_view: DepthTextureView,
     pub depth_target_sampler: TextureSampler,
@@ -294,8 +324,25 @@ impl ForwardGeometryPass {
                 lights: UniformBuffer::new(display.device(), LightsUniform::default()),
                 shadow_maps_view: shadow_maps_view.into(),
                 shadow_maps_sampler: shadow_maps_sampler.into(),
+                skybox_color: UniformBuffer::new(display.device(), Vec3::new(0.4, 0.4, 0.6)),
             },
         );
+        let skybox_pipeline = PipelineBuilder::new("Skybox")
+            .with_color_target_states(vec![Some(wgpu::ColorTargetState {
+                format: color_target.format(),
+                blend: Some(PipelineBuilder::DEFAULT_BLEND),
+                write_mask: wgpu::ColorWrites::ALL,
+            })])
+            .with_depth_stencil_state(None)
+            .with_bind_group_layouts(vec![&view_proj_uniform_bgl, lighting_group.layout()])
+            .build(
+                display.device(),
+                &create_shader::<ViewProjectionUniforms, ModelVertexData>(
+                    display,
+                    "skybox",
+                    SKYBOX_SHADER.to_string(),
+                ),
+            );
         let view_proj_bind_group =
             create_uniform_bind_group(display.device(), ViewProjectionUniforms::default());
         let pipeline = PipelineBuilder::new("Forward Rendering")
@@ -335,6 +382,7 @@ impl ForwardGeometryPass {
         Self {
             pipeline,
             depth_only_pipeline,
+            skybox_pipeline,
             color_target,
             depth_target_view: depth_target.view.into(),
             depth_target_sampler: depth_target.sampler.into(),
@@ -344,58 +392,17 @@ impl ForwardGeometryPass {
         }
     }
 
-    fn write_draw_calls(
-        &mut self,
-        display: &Display,
-        scene: &[InstanceRenderData<InstanceDataWithNormalMatrix>],
-        draw_non_shadow_casters: bool,
-    ) -> u32 {
-        let mut draw_offset = 0;
-        let mut draw_calls = 0;
-        let mut n = 0;
-        {
-            let mut buf = display
-                .queue()
-                .write_buffer_with(
-                    &self.indirect_command_buffer,
-                    0,
-                    NonZero::new(CMD_BUFFER_SIZE).unwrap(),
-                )
-                .unwrap();
-
-            for (mesh, group) in &scene
-                .iter()
-                .filter(|i| draw_non_shadow_casters || i.casts_shadow)
-                .group_by(|i| &i.mesh)
-            {
-                let draw_call = DrawIndexedIndirectArgs {
-                    base_vertex: mesh.base_vertex,
-                    first_index: mesh.index_start,
-                    index_count: mesh.index_end - mesh.index_start,
-                    first_instance: draw_offset,
-                    instance_count: group.count() as u32,
-                };
-                draw_offset += draw_call.instance_count as u32;
-                let b = bytemuck::bytes_of(&draw_call);
-                buf.slice(n..n + b.len()).copy_from_slice(b);
-                n += b.len();
-                draw_calls += 1;
-            }
-        }
-        draw_calls
-    }
-
-    pub fn depth_prepass(
+    pub fn depth_prepass<T: Transform>(
         &mut self,
         state: &mut RenderState,
         display: &Display,
         view_projection: &ViewProjectionUniforms,
-        scene: &[InstanceRenderData<InstanceDataWithNormalMatrix>],
+        scene: &[ObjectData<T>],
         instance_buffer: &wgpu::Buffer,
     ) {
         self.view_proj_bind_group
             .update(display.queue(), *view_projection);
-        let count = self.write_draw_calls(display, scene, false);
+        let count = write_scene_draw_calls(display, &self.indirect_command_buffer, scene, false);
         state
             .render_pass(
                 &display,
@@ -405,7 +412,6 @@ impl ForwardGeometryPass {
                 |r| {
                     r.set_pipeline(&self.depth_only_pipeline);
                     r.set_bind_group(0, self.view_proj_bind_group.bind_group(), &[]);
-                    r.set_scene_buffers();
                     r.set_vertex_buffer(1, instance_buffer.slice(..));
                     r.multi_draw_indexed_indirect(&self.indirect_command_buffer, 0, count);
                 },
@@ -413,31 +419,51 @@ impl ForwardGeometryPass {
             .submit();
     }
 
-    pub fn run(
+    pub fn run<T: Transform>(
         &mut self,
         state: &mut RenderState,
         display: &Display,
         view_projection: &ViewProjectionUniforms,
-        scene: &[InstanceRenderData<InstanceDataWithNormalMatrix>],
+        scene: &[ObjectData<T>],
         occlusion_map: Option<wgpu::BindGroup>,
         instance_buffer: &wgpu::Buffer,
     ) {
         if scene.len() == 0 {
             return;
         }
-        let occlusion_map = occlusion_map.unwrap_or_else(|| state.default_texture().clone());
+        let occlusion_map =
+            occlusion_map.unwrap_or_else(|| state.default_texture_bind_group().clone());
         self.view_proj_bind_group
             .update(display.queue(), *view_projection);
-        let count = self.write_draw_calls(display, scene, true);
+        state
+            .render_pass(
+                &display,
+                "Skybox pass",
+                &[ColorTarget::from(&self.color_target.resource.view)],
+                None,
+                |r| {
+                    r.set_pipeline(&self.skybox_pipeline);
+                    r.set_bind_group(0, self.view_proj_bind_group.bind_group(), &[]);
+                    r.set_bind_group(1, self.lighting_group.bind_group(), &[]);
+                    r.draw_scene_mesh(r.render_state.quad_mesh(), 0..1);
+                },
+            )
+            .submit();
+        let count = write_scene_draw_calls(display, &self.indirect_command_buffer, scene, true);
         state
             .render_pass(
                 &display,
                 "Forward Rendering Pass",
-                &[&self.color_target.resource.view],
+                &[ColorTarget::WithOps {
+                    view: &self.color_target.resource.view,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                }],
                 Some(&self.depth_target_view),
                 |r| {
                     r.set_pipeline(&self.pipeline);
-                    r.set_scene_buffers();
                     r.set_vertex_buffer(1, instance_buffer.slice(..));
                     let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
                     let ta = r.render_state.texture_array_bind_group().clone();

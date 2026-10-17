@@ -1,51 +1,38 @@
 use crate::{
     geom::ModelVertexData,
     renderer::{
-        bindings::{texture_bgl_entries, UNIFORM_BGL_ENTRY},
+        bindings::{Bindable, UniformBuffer},
         instance::BasicInstanceData,
         shader_type::create_shader,
         state::BoundTexture,
-        state::MeshRef,
         Display, Pipeline, PipelineBuilder, RenderPass, RenderState, Texture,
+        ViewProjectionUniforms,
     },
 };
 
 pub struct SpriteRenderer {
     pipeline: Pipeline<(ModelVertexData, BasicInstanceData)>,
     sprite_atlas_texture: BoundTexture,
-    quad_mesh: MeshRef,
 }
 
 impl SpriteRenderer {
     pub fn new(state: &mut RenderState, display: &Display, sprite_atlas: Texture) -> Self {
         let sprite_shader = &create_shader::<(), (ModelVertexData, BasicInstanceData)>(
             display,
-            "instanced",
+            "sprites instanced",
             SPRITE_SHADER.to_string(),
         );
-        let main_texture_bgl =
-            display
-                .device()
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("sprite atlast texture layout"),
-                    entries: &texture_bgl_entries(sprite_atlas.format()),
-                });
-        let view_proj_uniform_bgl =
-            display
-                .device()
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("view proj uniform bg layout"),
-                    entries: &[UNIFORM_BGL_ENTRY],
-                });
-        let pipeline = PipelineBuilder::new("Default Render Pipeline")
-            .with_bind_group_layouts(vec![&main_texture_bgl, &view_proj_uniform_bgl])
-            .build(display.device(), &sprite_shader);
         let sprite_atlas_texture = state.bind_texture(display, sprite_atlas);
-        let quad_mesh = state.quad_mesh();
+        let view_proj_uniform_bgl = UniformBuffer::<ViewProjectionUniforms>::create_layout(
+            display.device(),
+            "view proj uniform bg layout",
+        );
+        let pipeline = PipelineBuilder::new("Default Render Pipeline")
+            .with_bind_group_layouts(vec![sprite_atlas_texture.layout(), &view_proj_uniform_bgl])
+            .build(display.device(), &sprite_shader);
         Self {
             pipeline,
             sprite_atlas_texture,
-            quad_mesh,
         }
     }
 
@@ -55,7 +42,7 @@ impl SpriteRenderer {
         sprites: impl Iterator<Item = &'a BasicInstanceData>,
     ) {
         r.set_bind_group(0, self.sprite_atlas_texture.bind_group(), &[]);
-        let mut b = r.draw_instanced_scene(self.quad_mesh, &self.pipeline);
+        let mut b = r.draw_instanced_scene(r.render_state.quad_mesh(), &self.pipeline);
         for s in sprites {
             b.add(s);
         }

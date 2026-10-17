@@ -1,23 +1,19 @@
-use itertools::Itertools;
-
 use crate::{
     geom::{ModelVertexData, Point},
     renderer::{
         bindings::{
-            create_uniform_bind_group, DepthTextureView, UniformBindGroup, ViewProjectionUniforms,
-            UNIFORM_BGL_ENTRY,
+            create_uniform_bind_group, Bindable, DepthTextureView, UniformBindGroup, UniformBuffer,
+            ViewProjectionUniforms,
         },
-        instance::InstanceDataWithNormalMatrix,
+        instance::{InstanceDataWithNormalMatrix, ObjectData},
         shader_type::{create_shader, GlobalUniforms},
-        state::BoundTexture,
+        state::{write_scene_draw_calls, BoundTexture, ColorTarget},
         PipelineBuilder,
     },
+    transform::Transform,
 };
 
-use super::{
-    instance::InstanceRenderData, lighting::LightsUniform, Display, Pipeline, RenderState, Texture,
-    TextureBuilder,
-};
+use super::{lighting::LightsUniform, Display, Pipeline, RenderState, Texture, TextureBuilder};
 
 pub const MAX_LIGHTS: usize = 8;
 
@@ -59,7 +55,11 @@ pub struct ShadowMappingPass {
     pub depth_bias_state: wgpu::DepthBiasState,
     last_depth_bias_state: wgpu::DepthBiasState,
     view_proj_bind_groups: [UniformBindGroup<ViewProjectionUniforms>; MAX_LIGHTS],
+    indirect_command_buffer: wgpu::Buffer,
 }
+
+const CMD_BUFFER_SIZE: u64 =
+    64000 * std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>() as u64;
 
 impl ShadowMappingPass {
     pub fn new(state: &mut RenderState, display: &Display) -> Self {
@@ -103,6 +103,12 @@ impl ShadowMappingPass {
             slope_scale: 0.025,
             clamp: 1.0,
         };
+        let indirect_command_buffer = display.device().create_buffer(&wgpu::BufferDescriptor {
+            label: Some("forward pass command buffer"),
+            size: CMD_BUFFER_SIZE,
+            usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         Self {
             shadow_map_pipeline: Self::build_shadow_map_pipeline(display, depth_bias_state),
             shadow_map,
@@ -111,6 +117,7 @@ impl ShadowMappingPass {
             last_depth_bias_state: Default::default(),
             shadow_map_debug_textures,
             view_proj_bind_groups,
+            indirect_command_buffer,
         }
     }
 
@@ -118,20 +125,14 @@ impl ShadowMappingPass {
         display: &Display,
         depth_bias_state: wgpu::DepthBiasState,
     ) -> Pipeline<(ModelVertexData, InstanceDataWithNormalMatrix)> {
-        let global_uniform_bgl =
-            display
-                .device()
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("global uniform bg layout"),
-                    entries: &[UNIFORM_BGL_ENTRY],
-                });
-        let view_proj_uniform_bgl =
-            display
-                .device()
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("view proj uniform bg layout"),
-                    entries: &[UNIFORM_BGL_ENTRY],
-                });
+        let global_uniform_bgl = UniformBuffer::<GlobalUniforms>::create_layout(
+            display.device(),
+            "global uniform bg layout",
+        );
+        let view_proj_uniform_bgl = UniformBuffer::<ViewProjectionUniforms>::create_layout(
+            display.device(),
+            "view proj uniform bg layout",
+        );
         PipelineBuilder::new("Shadow Map Render Pipeline")
             .with_cull_mode(Some(wgpu::Face::Front))
             .with_color_target_states(vec![Some(wgpu::ColorTargetState {
@@ -160,12 +161,12 @@ impl ShadowMappingPass {
         &self.shadow_map
     }
 
-    pub fn run(
+    pub fn run<T: Transform>(
         &mut self,
         state: &mut RenderState,
         display: &Display,
         lights_uniform: &LightsUniform,
-        scene: &[InstanceRenderData<InstanceDataWithNormalMatrix>],
+        scene: &[ObjectData<T>],
         instance_buffer: &wgpu::Buffer,
     ) {
         if self.depth_bias_state != self.last_depth_bias_state {
@@ -173,6 +174,7 @@ impl ShadowMappingPass {
             self.last_depth_bias_state = self.depth_bias_state;
         }
 
+        let count = write_scene_draw_calls(display, &self.indirect_command_buffer, scene, false);
         let command_buffers = lights_uniform.lights.iter().enumerate().map(|(i, light)| {
             self.view_proj_bind_groups[i].update(
                 display.queue(),
@@ -182,41 +184,18 @@ impl ShadowMappingPass {
                 .render_pass(
                     &display,
                     "Shadow Mapping Pass",
-                    &[&self.shadow_map_debug_textures[i].resource.view],
+                    &[ColorTarget::from(
+                        &self.shadow_map_debug_textures[i].resource.view,
+                    )],
                     Some(&self.shadow_map_target_views[i]),
                     |r| {
                         r.set_pipeline(&self.shadow_map_pipeline);
                         let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
                         r.set_bind_group(0, &global_uniforms, &[]);
                         r.set_bind_group(1, self.view_proj_bind_groups[i].bind_group(), &[]);
-                        r.set_scene_buffers();
                         r.set_vertex_buffer(1, instance_buffer.slice(..));
 
-                        let mut draw_offset = 0;
-                        for (mesh, group) in &scene
-                            .iter()
-                            .filter(|i| i.casts_shadow)
-                            .group_by(|i| &i.mesh)
-                        {
-                            let start = draw_offset;
-                            draw_offset += group.count() as u32;
-                            r.draw_indexed(mesh.indices(), mesh.base_vertex, start..draw_offset);
-                        }
-                        // let mut objects = scene.iter().peekable();
-                        // while let Some(first) = objects.next() {
-                        //     let mut b = r.draw_instanced_scene(
-                        //         first.mesh.clone(),
-                        //         &self.shadow_map_pipeline,
-                        //     );
-                        //     b.add(first);
-                        //     while let Some(object) = objects.peek() {
-                        //         if object.mesh != first.mesh {
-                        //             break;
-                        //         }
-                        //         b.add(&object.instance);
-                        //         objects.next();
-                        //     }
-                        // }
+                        r.multi_draw_indexed_indirect(&self.indirect_command_buffer, 0, count);
                     },
                 )
                 .command_buffer()

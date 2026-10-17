@@ -3,7 +3,7 @@ use crate::{
     renderer::{
         bindings::{
             create_uniform_bind_group, texture_bgl_entries, BindGroup, Bindable, UniformBindGroup,
-            ViewProjectionUniforms, UNIFORM_BGL_ENTRY,
+            UniformBuffer, ViewProjectionUniforms,
         },
         geometry::GeometryBuffers,
         instance::BasicInstanceData,
@@ -162,20 +162,14 @@ impl LightingPass {
                     label: Some("main texture"),
                     entries: &texture_bgl_entries(TextureBuilder::DEFAULT_FORMAT),
                 });
-        let global_uniform_bgl =
-            display
-                .device()
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("global uniform bg layout"),
-                    entries: &[UNIFORM_BGL_ENTRY],
-                });
-        let view_proj_uniform_bgl =
-            display
-                .device()
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("view proj uniform bg layout"),
-                    entries: &[UNIFORM_BGL_ENTRY],
-                });
+        let global_uniform_bgl = UniformBuffer::<GlobalUniforms>::create_layout(
+            display.device(),
+            "global uniform bg layout",
+        );
+        let view_proj_uniform_bgl = UniformBuffer::<ViewProjectionUniforms>::create_layout(
+            display.device(),
+            "view proj uniform bg layout",
+        );
         let geometry_pass_bgl =
             GeometryBuffers::create_layout(display.device(), "geometry buffers");
         let lights_uniform = create_uniform_bind_group(display.device(), LightsUniform::default());
@@ -232,10 +226,11 @@ impl LightingPass {
         );
         self.view_proj_bind_group
             .update(display.queue(), *view_projection);
-        let occlusion_map = occlusion_map.unwrap_or_else(|| state.default_texture().clone());
+        let occlusion_map =
+            occlusion_map.unwrap_or_else(|| state.default_texture_bind_group().clone());
         let quad = state.quad_mesh();
         state
-            .render_pass(display, "Lighting Pass", &[destination], None, |r| {
+            .render_pass(display, "Lighting Pass", &[destination.into()], None, |r| {
                 r.set_bind_group(0, &occlusion_map, &[]);
                 let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
                 r.set_bind_group(1, &global_uniforms, &[]);

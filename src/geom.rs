@@ -2,13 +2,6 @@ use glam::{vec2, Vec2, Vec3, Vec4};
 use shadertype_derive::{ShaderType, VertexInput};
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, ShaderType, VertexInput)]
-pub struct BasicVertexData {
-    pub position: Vec4,
-    pub tex_coords: Vec2,
-}
-
-#[repr(C)]
 #[derive(Debug, Default, Copy, Clone, ShaderType, VertexInput)]
 pub struct ModelVertexData {
     pub position: Vec4,
@@ -141,8 +134,6 @@ impl Default for Rect {
 }
 
 pub mod quad {
-    use glam::vec3;
-
     use super::*;
 
     #[inline]

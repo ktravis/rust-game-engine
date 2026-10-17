@@ -207,6 +207,18 @@ pub trait ShaderUniformType {
     fn raw<'a>(&'a self) -> &'a Self::Raw;
 }
 
+impl ShaderUniformType for Vec3 {
+    type Raw = Self;
+
+    fn definition() -> String {
+        "vec3<f32>".into()
+    }
+
+    fn raw<'a>(&'a self) -> &'a Self::Raw {
+        self
+    }
+}
+
 macro_rules! impl_vertex_data_type {
     (@count) => {0usize};
     (@count $head:expr, $($tail:expr,)*) => {

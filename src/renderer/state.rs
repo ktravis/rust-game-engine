@@ -1,14 +1,15 @@
 use std::{
     collections::HashMap,
     marker::PhantomData,
-    num::NonZeroU32,
+    num::{NonZero, NonZeroU32},
     ops::{Deref, DerefMut, Range},
 };
 
 use bytemuck::Zeroable;
 use glam::{Mat3A, Mat4, Quat, Vec2, Vec4};
+use itertools::Itertools;
 use shadertype_derive::shader_uniform_type;
-use wgpu::util::DeviceExt;
+use wgpu::{util::DeviceExt, wgt::DrawIndexedIndirectArgs};
 
 use super::{
     display::Display,
@@ -23,11 +24,12 @@ use crate::{
     geom::{quad, ModelVertexData, Point, Rect},
     renderer::{
         bindings::{
-            create_uniform_bind_group, texture_bgl_entries, BindGroup, DepthTextureView,
-            UniformBindGroup, UNIFORM_BGL_ENTRY,
+            create_uniform_bind_group, texture_bgl_entries, BindGroup, Bindable, DepthTextureView,
+            UniformBindGroup, UniformBuffer,
         },
-        instance::BasicInstanceData,
+        instance::{BasicInstanceData, ObjectData},
         shader_type::{create_shader, VertexInput, VertexInputs},
+        ViewProjectionUniforms,
     },
     transform::Transform,
 };
@@ -46,6 +48,45 @@ impl MeshRef {
 }
 
 pub type BoundTexture = BindGroup<Texture>;
+
+#[derive(Debug, Clone)]
+pub enum ColorTarget<'a> {
+    TextureView(&'a wgpu::TextureView),
+    WithOps {
+        view: &'a wgpu::TextureView,
+        ops: wgpu::Operations<wgpu::Color>,
+    },
+}
+
+impl<'a> ColorTarget<'a> {
+    pub const DEFAULT_OPS: wgpu::Operations<wgpu::Color> = wgpu::Operations {
+        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+        store: wgpu::StoreOp::Store,
+    };
+
+    pub fn into_attachment(&self) -> wgpu::RenderPassColorAttachment<'a> {
+        match self {
+            ColorTarget::TextureView(view) => wgpu::RenderPassColorAttachment {
+                view,
+                ops: Self::DEFAULT_OPS,
+                resolve_target: None,
+                depth_slice: None,
+            },
+            ColorTarget::WithOps { view, ops } => wgpu::RenderPassColorAttachment {
+                view,
+                ops: ops.clone(),
+                resolve_target: None,
+                depth_slice: None,
+            },
+        }
+    }
+}
+
+impl<'a> From<&'a wgpu::TextureView> for ColorTarget<'a> {
+    fn from(value: &'a wgpu::TextureView) -> Self {
+        Self::TextureView(value)
+    }
+}
 
 #[derive(Debug, Default)]
 #[shader_uniform_type]
@@ -167,11 +208,48 @@ impl PartialRenderPass<'_> {
     }
 }
 
+pub fn write_scene_draw_calls<T: Transform>(
+    display: &Display,
+    buffer: &wgpu::Buffer,
+    scene: &[ObjectData<T>],
+    draw_non_shadow_casters: bool,
+) -> u32 {
+    let mut draw_offset = 0;
+    let mut draw_calls = 0;
+    let mut n = 0;
+    {
+        let mut buf = display
+            .queue()
+            .write_buffer_with(buffer, 0, NonZero::new(buffer.size()).unwrap())
+            .unwrap();
+
+        for (mesh, group) in &scene
+            .iter()
+            .filter(|i| draw_non_shadow_casters || i.casts_shadow)
+            .group_by(|i| &i.mesh)
+        {
+            let draw_call = DrawIndexedIndirectArgs {
+                base_vertex: mesh.base_vertex,
+                first_index: mesh.index_start,
+                index_count: mesh.index_end - mesh.index_start,
+                first_instance: draw_offset,
+                instance_count: group.count() as u32,
+            };
+            draw_offset += draw_call.instance_count as u32;
+            let b = bytemuck::bytes_of(&draw_call);
+            buf.slice(n..n + b.len()).copy_from_slice(b);
+            n += b.len();
+            draw_calls += 1;
+        }
+    }
+    draw_calls
+}
+
 pub struct RenderState {
     pub global_uniforms: UniformBindGroup<GlobalUniforms>,
     quad_mesh: MeshRef,
 
-    instance_storage: InstanceStorage,
+    pub instance_storage: InstanceStorage,
 
     texture_bind_group_layouts: HashMap<wgpu::TextureFormat, wgpu::BindGroupLayout>,
     default_texture: BoundTexture,
@@ -199,11 +277,10 @@ impl RenderState {
         let global_uniforms = create_uniform_bind_group(device, GlobalUniforms::zeroed());
         let instance_storage = InstanceStorage::new(display, 1024);
 
-        let view_proj_uniform_bgl =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("view proj uniform bg layout"),
-                entries: &[UNIFORM_BGL_ENTRY],
-            });
+        let view_proj_uniform_bgl = UniformBuffer::<ViewProjectionUniforms>::create_layout(
+            device,
+            "view proj uniform bg layout",
+        );
         let main_texture_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("main texture"),
             entries: &texture_bgl_entries(TextureBuilder::DEFAULT_FORMAT),
@@ -283,7 +360,7 @@ impl RenderState {
         name: &str,
         // TODO: this could be a tuple of typed TextureView's instead, which would allow them to be
         // different formats with validation on pass outputs?
-        color_targets: &[&wgpu::TextureView],
+        color_targets: &[ColorTarget<'_>],
         depth_target: Option<&DepthTextureView>,
         pass: impl FnOnce(&mut RenderPass<'_, '_>),
     ) -> PartialRenderPass<'a> {
@@ -303,23 +380,13 @@ impl RenderState {
                     label: Some(&format!("Render Pass Encoder({name})")),
                 });
         {
-            let color_attachments: [Option<wgpu::RenderPassColorAttachment>;
-                Self::MAX_COLOR_ATTACHMENTS] = std::array::from_fn(|i| {
-                color_targets
-                    .get(i)
-                    .map(|view| wgpu::RenderPassColorAttachment {
-                        view,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: wgpu::StoreOp::Store,
-                        },
-                        resolve_target: None,
-                        depth_slice: None,
-                    })
-            });
+            let color_attachments = color_targets
+                .into_iter()
+                .map(|ct| Some(ct.into_attachment()))
+                .collect::<Vec<_>>();
             let raw_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(name),
-                color_attachments: &color_attachments[..color_targets.len()],
+                color_attachments: &color_attachments[..],
                 depth_stencil_attachment: depth_target.map(|target| {
                     wgpu::RenderPassDepthStencilAttachment {
                         view: target.raw(),
@@ -336,6 +403,10 @@ impl RenderState {
             pass(&mut render_pass);
         }
         PartialRenderPass { display, encoder }
+    }
+
+    pub fn default_texture_bind_group(&self) -> &wgpu::BindGroup {
+        self.default_texture.bind_group()
     }
 
     pub fn add_texture(&mut self, t: Texture) -> u32 {
@@ -476,19 +547,13 @@ impl RenderState {
             },
         ));
     }
-
-    pub fn default_texture(&self) -> &wgpu::BindGroup {
-        self.default_texture.bind_group()
-    }
 }
 
 pub struct RenderPass<'a, 'p> {
     pub render_state: &'a mut RenderState,
     display: &'p Display,
     raw_pass: wgpu::RenderPass<'p>,
-
-    current_draw_range: Range<u32>,
-    scene_mesh_set: bool,
+    // current_draw_range: Range<u32>,
 }
 
 impl<'a, 'p> Deref for RenderPass<'a, 'p> {
@@ -506,42 +571,28 @@ impl<'a, 'p> DerefMut for RenderPass<'a, 'p> {
 }
 
 impl<'a, 'p> RenderPass<'a, 'p> {
-    const TEXTURE_BIND_GROUP_INDEX: u32 = 0;
-
     fn new(
         render_state: &'a mut RenderState,
         display: &'p Display,
-        raw_pass: wgpu::RenderPass<'p>,
+        mut raw_pass: wgpu::RenderPass<'p>,
     ) -> Self {
+        raw_pass.set_vertex_buffer(
+            0,
+            render_state.scene_vertex_buffer.as_ref().unwrap().slice(..),
+        );
+        raw_pass.set_index_buffer(
+            render_state.scene_index_buffer.as_ref().unwrap().slice(..),
+            wgpu::IndexFormat::Uint16,
+        );
         Self {
             display,
             render_state,
             raw_pass,
-            current_draw_range: 0..0,
-            scene_mesh_set: false,
+            // current_draw_range: 0..0,
         }
     }
 
     pub fn draw_scene_mesh(&mut self, mesh: MeshRef, instances: Range<u32>) {
-        if !self.scene_mesh_set {
-            self.raw_pass.set_vertex_buffer(
-                0,
-                self.render_state
-                    .scene_vertex_buffer
-                    .as_ref()
-                    .unwrap()
-                    .slice(..),
-            );
-            self.raw_pass.set_index_buffer(
-                self.render_state
-                    .scene_index_buffer
-                    .as_ref()
-                    .unwrap()
-                    .slice(..),
-                wgpu::IndexFormat::Uint16,
-            );
-            self.scene_mesh_set = true;
-        }
         self.raw_pass
             .draw_indexed(mesh.indices(), mesh.base_vertex, instances);
     }
@@ -560,7 +611,7 @@ impl<'a, 'p> RenderPass<'a, 'p> {
     ) {
         let texture = texture
             .into()
-            .unwrap_or(self.render_state.default_texture());
+            .unwrap_or(self.render_state.default_texture_bind_group());
         let transform = transform.as_mat4();
         let mesh = self.render_state.quad_mesh;
         self.raw_pass
@@ -588,11 +639,8 @@ impl<'a, 'p> RenderPass<'a, 'p> {
         transform: impl Transform,
         opts: TextDisplayOptions,
     ) {
-        self.raw_pass.set_bind_group(
-            Self::TEXTURE_BIND_GROUP_INDEX,
-            font.texture().bind_group(),
-            &[],
-        );
+        self.raw_pass
+            .set_bind_group(0, font.texture().bind_group(), &[]);
         let m = transform.as_mat4();
         let p = &self.render_state.text_pipeline.clone();
         let mut batch = self.draw_instanced_scene(self.render_state.quad_mesh, p);
@@ -611,15 +659,6 @@ impl<'a, 'p> RenderPass<'a, 'p> {
         }
     }
 
-    pub fn set_scene_buffers(&mut self) {
-        // XXX: temp
-        let b = self.render_state.scene_vertex_buffer.clone().unwrap();
-        self.set_vertex_buffer(0, b.slice(..));
-        let b = self.render_state.scene_index_buffer.clone().unwrap();
-        self.set_index_buffer(b.slice(..), wgpu::IndexFormat::Uint16);
-        self.scene_mesh_set = true;
-    }
-
     // TODO: we could require I: InstanceInput or something and have that set step mode?
     // TODO: this doesn't really *need* to set the pipeline, it's mostly enforcing that V and I are
     // all aligned. Could potentially build the pipeline into the render_pass creation, so that
@@ -631,19 +670,12 @@ impl<'a, 'p> RenderPass<'a, 'p> {
         // TODO: split the association of the pipeline out into another wrapper method on
         // RenderPass (maybe ::use_pipeline)?
         pipeline: &Pipeline<(V, I)>,
-    ) -> Batcher<'r, 'a, 'p, V, I> {
+    ) -> Batcher<'r, 'p, I> {
         self.raw_pass.set_pipeline(pipeline.raw());
-        if !self.scene_mesh_set {
-            self.set_scene_buffers();
-        }
-        let draw_range_start = self.current_draw_range.start;
         Batcher {
-            render_pass: self,
-            // instance_storage: &mut self.render_state.instance_storage,
-            // display: self.display,
-            // raw_pass: &mut self.raw_pass,
-            draw_count: 0,
-            draw_range_start,
+            display: self.display,
+            render_pass: &mut self.raw_pass,
+            instance_storage: &mut self.render_state.instance_storage,
             base_vertex: mesh.base_vertex,
             mesh_indices: mesh.indices(),
             _marker: PhantomData,
@@ -651,48 +683,33 @@ impl<'a, 'p> RenderPass<'a, 'p> {
     }
 }
 
-pub struct Batcher<'r, 'x: 'r, 'y: 'r, V: VertexInput, I: VertexInput> {
-    render_pass: &'r mut RenderPass<'x, 'y>,
-    draw_count: u32,
-    draw_range_start: u32,
+pub struct Batcher<'r, 'y: 'r, I: VertexInput> {
+    display: &'y Display,
+    instance_storage: &'r mut InstanceStorage,
+    render_pass: &'r mut wgpu::RenderPass<'y>,
     base_vertex: i32,
     mesh_indices: Range<u32>,
-    _marker: PhantomData<(V, I)>,
+    _marker: PhantomData<I>,
 }
 
-impl<'r, 'x: 'r, 'y: 'r, V: VertexInput, I: VertexInput> Batcher<'r, 'x, 'y, V, I> {
+impl<'r, 'y: 'r, I: VertexInput> Batcher<'r, 'y, I> {
     pub fn add(&mut self, instance: &I) {
-        self.render_pass.render_state.instance_storage.add(instance);
-        self.draw_count += 1;
+        self.instance_storage.add(instance);
     }
 
     fn flush(&mut self) {
-        if self.draw_count == 0 {
-            return;
-        }
-        // TODO: make this instance range calculation internal to the instance storage
-        self.render_pass.current_draw_range.start += self.draw_count;
-        self.render_pass
-            .render_state
-            .instance_storage
-            .update_buffer(self.render_pass.display);
-        let buf = self
-            .render_pass
-            .render_state
-            .instance_storage
-            .buffer()
-            .clone();
+        let buf = self.instance_storage.update_buffer(self.display).clone();
         // NOTE: this has to be done once we know the size of the buffer
         self.render_pass.set_vertex_buffer(1, buf.slice(..));
-        self.render_pass.draw_indexed(
-            self.mesh_indices.clone(),
-            self.base_vertex,
-            self.draw_range_start..(self.draw_range_start + self.draw_count),
-        );
+        let draw_range = self.instance_storage.draw_range.clone();
+        // move draw range cursor to the end
+        self.instance_storage.draw_range.start = draw_range.end;
+        self.render_pass
+            .draw_indexed(self.mesh_indices.clone(), self.base_vertex, draw_range);
     }
 }
 
-impl<'r, 'x: 'r, 'y: 'r, V: VertexInput, I: VertexInput> Drop for Batcher<'r, 'x, 'y, V, I> {
+impl<'r, 'y: 'r, I: VertexInput> Drop for Batcher<'r, 'y, I> {
     fn drop(&mut self) {
         self.flush();
     }

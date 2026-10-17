@@ -11,7 +11,7 @@ use rust_game_engine::renderer::bindings::{
 use rust_game_engine::renderer::forward::ForwardGeometryPass;
 use rust_game_engine::renderer::geometry::GeometryPass;
 use rust_game_engine::renderer::instance::{
-    BasicInstanceData, InstanceDataWithNormalMatrix, InstanceStorage,
+    BasicInstanceData, InstanceDataWithNormalMatrix, InstanceStorage, ObjectData,
 };
 use rust_game_engine::renderer::lighting::{Light, LightKind};
 use rust_game_engine::renderer::model::Model;
@@ -31,8 +31,7 @@ use rust_game_engine::camera::Camera;
 use rust_game_engine::geom::{cube, Point, Rect};
 use rust_game_engine::input::{Axis, Button, Key, Toggle};
 use rust_game_engine::renderer::{
-    instance::InstanceRenderData, text::TextDisplayOptions, Display, ScalingMode, TextureBuilder,
-    ViewProjectionUniforms,
+    text::TextDisplayOptions, Display, ScalingMode, TextureBuilder, ViewProjectionUniforms,
 };
 use rust_game_engine::sprite_manager::SpriteManager;
 use rust_game_engine::transform::{Transform, Transform2D, Transform3D};
@@ -375,120 +374,82 @@ impl AppState for State {
 
         // let mut scene = vec![];
         let mut scene = vec![
-            InstanceRenderData {
+            ObjectData {
                 texture: Some(self.crate_texture),
                 mesh: self.cube_mesh.clone(),
-                instance: InstanceDataWithNormalMatrix {
-                    texture: self.crate_texture,
-                    ..InstanceDataWithNormalMatrix::from_basic(
-                        Default::default(),
-                        view_projection.view,
-                    )
-                },
+                normal_matrix: Mat3::from_mat4(view_projection.view).inverse().transpose(),
                 casts_shadow: true,
+                ..Default::default()
             },
-            // InstanceRenderData {
-            //     mesh: self.cube_mesh,
-            //     instance: InstanceDataWithNormalMatrix::from_basic(
-            //         BasicInstanceData {
-            //             tint: vec4(1.0, 0.9, 0.9, 1.0).into(),
-            //             transform: Transform3D {
-            //                 position: vec3(
-            //                     -1.0 + f32::sin(ctx.frame_timing.time()) * 5.0,
-            //                     1.5,
-            //                     -0.4,
-            //                 ),
-            //                 ..Default::default()
-            //             }
-            //             .as_mat4(),
-            //             ..Default::default()
-            //         },
-            //         view_proj.view,
-            //     ),
-            //     texture: None,
-            //     pipeline: None,
-            // },
-            InstanceRenderData {
-                mesh: self.cube_mesh.clone(),
-                texture: None,
-                instance: InstanceDataWithNormalMatrix {
-                    texture: self.cat_texture,
-                    ..InstanceDataWithNormalMatrix::from_basic(
-                        BasicInstanceData {
-                            subtexture: Rect::new(-0.5, -0.5, 2.0, 2.0),
-                            // tint: vec4(0.88, 0.82, 0.8, 1.0).into(),
-                            transform: Transform3D {
-                                position: vec3(0.0, -1.5, 0.0),
-                                scale: vec3(20.0, 0.5, 20.0),
-                                ..Default::default()
-                            }
-                            .as_mat4(),
-                            ..Default::default()
-                        },
-                        view_projection.view,
-                    )
-                },
-                casts_shadow: true,
-                // texture: None,
-                // pipeline: None,
+            {
+                let transform = Transform3D {
+                    position: vec3(0.0, -1.5, 0.0),
+                    scale: vec3(20.0, 0.5, 20.0),
+                    ..Default::default()
+                };
+                ObjectData {
+                    mesh: self.cube_mesh.clone(),
+                    texture: Some(self.cat_texture),
+                    subtexture: Some(Rect::new(-0.5, -0.5, 2.0, 2.0)),
+                    transform,
+                    normal_matrix: Mat3::from_mat4(view_projection.view * transform.as_mat4())
+                        .inverse()
+                        .transpose(),
+                    casts_shadow: true,
+                    ..Default::default()
+                }
             },
         ];
         match self.scene {
             Scene::Cubes => {
-                scene.extend(self.cubes.iter().map(|t| InstanceRenderData {
-                    mesh: self.cube_mesh.clone(),
-                    instance: InstanceDataWithNormalMatrix::from_basic(
-                        BasicInstanceData {
-                            transform: t.as_mat4(),
-                            ..Default::default()
-                        },
-                        view_projection.view,
-                    ),
-                    texture: None,
-                    casts_shadow: true,
+                scene.extend(self.cubes.iter().map(|t| {
+                    ObjectData {
+                        mesh: self.cube_mesh.clone(),
+                        transform: t.clone(),
+                        normal_matrix: Mat3::from_mat4(view_projection.view * t.as_mat4())
+                            .inverse()
+                            .transpose(),
+                        casts_shadow: true,
+                        ..Default::default()
+                    }
                 }));
             }
             Scene::Model => {
+                let transform = Transform3D {
+                    position: vec3(0.0, 0.0, 5.0),
+                    ..Default::default()
+                };
+                let normal_matrix = Mat3::from_mat4(view_projection.view * transform.as_mat4())
+                    .inverse()
+                    .transpose();
                 for (mesh, mat) in &self.model_meshes {
-                    scene.push(InstanceRenderData {
+                    scene.push(ObjectData {
                         mesh: mesh.clone(),
-                        instance: InstanceDataWithNormalMatrix::from_basic(
-                            BasicInstanceData {
-                                tint: mat.as_ref().map(|m| m.diffuse.into()).unwrap_or_default(),
-                                transform: Transform3D {
-                                    position: vec3(0.0, 0.0, 5.0),
-                                    // scale: vec3(0.02, 0.02, 0.02),
-                                    ..Default::default()
-                                }
-                                .as_mat4(),
-                                ..Default::default()
-                            },
-                            view_projection.view,
-                        ),
-                        texture: None,
+                        transform,
+                        normal_matrix,
+                        tint: mat.as_ref().map(|m| m.diffuse.into()).unwrap_or_default(),
                         casts_shadow: true,
+                        ..Default::default()
                     });
                 }
             }
             Scene::Sponza => {
+                let transform = Transform3D {
+                    // position: vec3(0.0, 0.0, 5.0),
+                    scale: vec3(0.02, 0.02, 0.02),
+                    ..Default::default()
+                };
+                let normal_matrix = Mat3::from_mat4(view_projection.view * transform.as_mat4())
+                    .inverse()
+                    .transpose();
                 for (mesh, mat) in &self.sponza_meshes {
-                    scene.push(InstanceRenderData {
+                    scene.push(ObjectData {
                         mesh: mesh.clone(),
-                        instance: InstanceDataWithNormalMatrix::from_basic(
-                            BasicInstanceData {
-                                tint: mat.as_ref().map(|m| m.diffuse.into()).unwrap_or_default(),
-                                transform: Transform3D {
-                                    // position: vec3(0.0, 0.0, 5.0),
-                                    scale: vec3(0.02, 0.02, 0.02),
-                                    ..Default::default()
-                                }
-                                .as_mat4(),
-                                ..Default::default()
-                            },
-                            view_projection.view,
-                        ),
-                        texture: None,
+                        tint: mat.as_ref().map(|m| m.diffuse.into()).unwrap_or_default(),
+                        transform,
+                        normal_matrix,
                         casts_shadow: true,
+                        ..Default::default()
                     });
                 }
             }
@@ -496,33 +457,31 @@ impl AppState for State {
 
         if ctx.input.debug.on && self.show_light_volumes {
             for light in &self.lights {
-                scene.push(InstanceRenderData {
+                let transform =
+                    Transform3D::from_matrix(light.debug_transform(&self.camera.frustum()));
+                // transform: Mat4::from_scale_rotation_translation(
+                //     vec3(0.15, 0.15, 0.15),
+                //     Quat::from_rotation_arc(Vec3::Y, pos.normalize()),
+                //     pos,
+                // ) * Mat4::from_translation(Vec3::Y),
+                let normal_matrix = Mat3::from_mat4(view_projection.view * transform.as_mat4());
+                scene.push(ObjectData {
                     mesh: self.cube_mesh.clone(),
-                    instance: InstanceDataWithNormalMatrix {
-                        material: 1,
-                        ..InstanceDataWithNormalMatrix::from_basic(
-                            BasicInstanceData {
-                                transform: light.debug_transform(&self.camera.frustum()),
-                                // transform: Mat4::from_scale_rotation_translation(
-                                //     vec3(0.15, 0.15, 0.15),
-                                //     Quat::from_rotation_arc(Vec3::Y, pos.normalize()),
-                                //     pos,
-                                // ) * Mat4::from_translation(Vec3::Y),
-                                tint: (light.color * Color::from((1.0, 1.0, 1.0, 0.5))).into(),
-                                ..Default::default()
-                            },
-                            view_projection.view,
-                        )
-                    },
+                    material: 1,
+                    transform,
+                    normal_matrix,
+                    tint: (light.color * Color::from((1.0, 1.0, 1.0, 0.5))).into(),
                     texture: None,
                     casts_shadow: false,
+                    ..Default::default()
                 });
             }
         }
 
         self.instance_storage.clear();
         for o in &scene {
-            self.instance_storage.add(&o.instance);
+            self.instance_storage
+                .add(&InstanceDataWithNormalMatrix::from(o));
         }
         self.instance_storage.update_buffer(&ctx.display);
 
@@ -594,11 +553,11 @@ impl AppState for State {
             .render_pass(
                 &ctx.display,
                 "Default Pass",
-                &[display_view.view()],
+                &[display_view.view().into()],
                 Some(display_view.display().depth_texture_view()),
                 |r| {
-                    let default_texture = self.forward_pass.color_target.bind_group().clone();
-                    r.set_bind_group(0, &default_texture, &[]);
+                    let screen_texture = self.forward_pass.color_target.bind_group().clone();
+                    r.set_bind_group(0, &screen_texture, &[]);
                     r.set_bind_group(1, self.proj_matrix_bind_group.bind_group(), &[]);
                     r.draw_quad(
                         self.forward_pass.color_target.bind_group(),
@@ -636,18 +595,27 @@ impl AppState for State {
                         },
                         TextDisplayOptions::default(),
                     );
+                    r.draw_text(
+                        &self.default_font,
+                        "hi there",
+                        Transform2D {
+                            position: vec2(20.0, ctx.display.size_pixels().y as f32 - 50.0),
+                            ..Default::default()
+                        },
+                        TextDisplayOptions::default(),
+                    );
 
-                    // r.draw_quad(
-                    //     // self.shadow_mapping_pass.shadow_map_debug_textures[0].bind_group(),
-                    //     occlusion_map.as_ref(),
-                    //     Transform2D {
-                    //         position: vec2(ctx.display.size_pixels().x as f32 - 266.0, 10.0),
-                    //         scale: Vec2::splat(256.0),
-                    //         ..Default::default()
-                    //     },
-                    //     Color::WHITE,
-                    //     Rect::new(0.0, 0.0, 1.0, 1.0),
-                    // );
+                    r.draw_quad(
+                        // self.shadow_mapping_pass.shadow_map_debug_textures[0].bind_group(),
+                        occlusion_map.as_ref(),
+                        Transform2D {
+                            position: vec2(ctx.display.size_pixels().x as f32 - 266.0, 10.0),
+                            scale: glam::Vec2::splat(256.0),
+                            ..Default::default()
+                        },
+                        Color::WHITE,
+                        Rect::new(0.0, 0.0, 1.0, 1.0),
+                    );
                 },
             )
             .encoder();
@@ -694,6 +662,31 @@ impl AppState for State {
                                     ui.selectable_value(&mut self.scene, Scene::Sponza, "sponza");
                                 });
 
+                            ui.separator();
+                            {
+                                let skybox_color =
+                                    self.forward_pass.lighting_group.skybox_color.deref_mut();
+                                let mut c = egui::Rgba::from_rgb(
+                                    skybox_color.x,
+                                    skybox_color.y,
+                                    skybox_color.z,
+                                );
+                                ui.horizontal(|ui| {
+                                    ui.label("Global light");
+                                    egui::color_picker::color_edit_button_rgba(
+                                        ui,
+                                        &mut c,
+                                        egui::color_picker::Alpha::Opaque,
+                                    );
+                                });
+                                let v = vec3(c.r(), c.g(), c.b());
+                                if *skybox_color != v {
+                                    self.forward_pass
+                                        .lighting_group
+                                        .skybox_color
+                                        .update(ctx.display.queue(), v);
+                                }
+                            }
                             ui.separator();
                             ui.label("Shadows");
                             // let lights_uniform = self.forward_pass.lights_uniform.deref_mut();
