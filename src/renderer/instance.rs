@@ -1,7 +1,7 @@
 use std::ops::{Deref, Range};
 
 use glam::{Mat3, Mat4};
-use shadertype_derive::{ShaderType, VertexInput};
+use shadertype_derive::{ShaderNamedType, VertexInput};
 
 use crate::color::Color;
 use crate::geom::Rect;
@@ -43,7 +43,7 @@ impl<I> Deref for InstanceRenderData<I> {
 // TODO: rename "PerInstanceData"
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, ShaderType, VertexInput)]
+#[derive(Debug, Default, Clone, Copy, ShaderNamedType, VertexInput)]
 #[step_mode(instance)] // TODO: this should be #[vertex_input(step_mode = instance)]
 pub struct BasicInstanceData {
     pub subtexture: Rect,
@@ -72,7 +72,7 @@ impl<T: Transform> From<&ObjectData<T>> for BasicInstanceData {
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, ShaderType, VertexInput)]
+#[derive(Debug, Default, Clone, Copy, ShaderNamedType, VertexInput)]
 #[step_mode(instance)] // TODO: this should be #[vertex_input(step_mode = instance)]
 pub struct InstanceDataWithNormalMatrix {
     pub subtexture: Rect,

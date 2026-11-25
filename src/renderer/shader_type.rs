@@ -1,45 +1,77 @@
 use glam::{Mat3, Mat3A, Mat4, Vec2, Vec3, Vec4};
-use shadertype_derive::shader_uniform_type;
+use shadertype_derive::shader_uniform_data;
 
-use crate::{color::Color, geom::Rect, renderer::Display};
+use crate::{color::Color, geom::Rect};
 
-pub trait ShaderType {
+pub trait ShaderBuiltin {}
+
+pub trait ShaderNamedType {
     fn wgsl_name() -> String;
 }
 
-pub trait ShaderTypeAligned: ShaderType {
+pub trait ShaderDefinedType {
+    fn definitions() -> Vec<String>;
+}
+
+impl ShaderDefinedType for () {
+    fn definitions() -> Vec<String> {
+        vec![]
+    }
+}
+
+impl<T: ShaderBuiltin> ShaderDefinedType for T {
+    fn definitions() -> Vec<String> {
+        vec![]
+    }
+}
+
+pub trait ShaderTypeAligned {
     const ALIGNMENT: usize;
 }
 
-macro_rules! impl_basic_shader_type {
+pub trait ShaderTypeDefinitions {
+    fn definitions() -> Vec<String> {
+        vec![]
+    }
+}
+
+macro_rules! impl_shader_builtin {
     ($t:ty, $name:expr) => {
-        impl ShaderType for $t {
+        impl ShaderNamedType for $t {
             fn wgsl_name() -> String {
                 $name.into()
             }
         }
+        impl ShaderBuiltin for $t {}
     };
     ($t:ty, $name:expr, align: $align:expr) => {
-        impl_basic_shader_type!($t, $name);
+        impl_shader_builtin!($t, $name);
         impl ShaderTypeAligned for $t {
             const ALIGNMENT: usize = $align;
         }
     };
 }
 
-impl_basic_shader_type!(i32, "i32", align: 4);
-impl_basic_shader_type!(u32, "u32", align: 4);
-impl_basic_shader_type!(f32, "f32", align: 4);
-impl_basic_shader_type!(Mat3A, "mat3x3<f32>", align: 16);
-impl_basic_shader_type!(Mat4, "mat4x4<f32>", align: 16);
-impl_basic_shader_type!(Vec2, "vec2<f32>", align: 8);
-impl_basic_shader_type!(Vec3, "vec3<f32>", align: 16);
-impl_basic_shader_type!(Vec4, "vec4<f32>", align: 16);
-impl_basic_shader_type!(Color, "vec4<f32>", align: 16);
+impl_shader_builtin!(i32, "i32", align: 4);
+impl_shader_builtin!(u32, "u32", align: 4);
+impl_shader_builtin!(f32, "f32", align: 4);
+impl_shader_builtin!(Mat3, "mat3x3<f32>", align: 16);
+impl_shader_builtin!(Mat3A, "mat3x3<f32>", align: 16);
+impl_shader_builtin!(Mat4, "mat4x4<f32>", align: 16);
+impl_shader_builtin!(Vec2, "vec2<f32>", align: 8);
+impl_shader_builtin!(Vec3, "vec3<f32>", align: 16);
+impl_shader_builtin!(Vec4, "vec4<f32>", align: 16);
+impl_shader_builtin!(Color, "vec4<f32>", align: 16);
 
-impl<T: ShaderType, const N: usize> ShaderType for [T; N] {
+impl<T: ShaderNamedType, const N: usize> ShaderNamedType for [T; N] {
     fn wgsl_name() -> String {
         std::format!("array<{}, {}>", T::wgsl_name(), N)
+    }
+}
+
+impl<T: ShaderDefinedType, const N: usize> ShaderDefinedType for [T; N] {
+    fn definitions() -> Vec<String> {
+        T::definitions()
     }
 }
 
@@ -201,22 +233,10 @@ pub(crate) fn expand_vertex_attributes(
         .collect::<Vec<_>>()
 }
 
-pub trait ShaderUniformType {
+pub trait ShaderUniformData {
     type Raw: bytemuck::Pod + bytemuck::Zeroable;
     fn definition() -> String;
-    fn raw<'a>(&'a self) -> &'a Self::Raw;
-}
-
-impl ShaderUniformType for Vec3 {
-    type Raw = Self;
-
-    fn definition() -> String {
-        "vec3<f32>".into()
-    }
-
-    fn raw<'a>(&'a self) -> &'a Self::Raw {
-        self
-    }
+    fn raw(&self) -> Self::Raw;
 }
 
 macro_rules! impl_vertex_data_type {
@@ -304,16 +324,6 @@ macro_rules! wgsl {
     };
 }
 
-pub trait ShaderUniforms {
-    fn definition() -> String;
-}
-
-impl ShaderUniforms for () {
-    fn definition() -> String {
-        "".to_string()
-    }
-}
-
 // TODO: should be able to define methods/helper functions for wgsl that will be included in the
 // definition
 // example:
@@ -324,17 +334,16 @@ impl ShaderUniforms for () {
 //       instance.transform_4,
 //   );
 
-impl<U: ShaderUniformType> ShaderUniforms for U {
-    fn definition() -> String {
-        <U as ShaderUniformType>::definition()
-    }
-}
-
 macro_rules! impl_shader_uniforms_tuple {
     ($($T:ident),*) => {
-        impl<$($T: ShaderUniforms),*> ShaderUniforms for ($($T),*) {
-            fn definition() -> String {
-                [$(<$T as ShaderUniforms>::definition()),*].concat()
+        impl<$($T: ShaderNamedType),*> ShaderNamedType for ($($T),*) {
+            fn wgsl_name() -> String {
+                "".into()
+            }
+        }
+        impl<$($T: ShaderDefinedType),*> ShaderDefinedType for ($($T),*) {
+            fn definitions() -> Vec<String> {
+                [$(<$T as ShaderDefinedType>::definitions()),*].into_iter().flatten().collect()
             }
         }
     };
@@ -421,22 +430,54 @@ impl_vertex_inputs_tuple!(T1, T2, T3, T4);
 impl_vertex_inputs_tuple!(T1, T2, T3, T4, T5);
 impl_vertex_inputs_tuple!(T1, T2, T3, T4, T5, T6);
 
-pub fn create_shader<U: ShaderUniforms, V: VertexInputs>(
-    display: &Display,
-    name: &'static str,
-    src: String,
-) -> wgpu::ShaderModule {
-    let shader_src = std::borrow::Cow::Owned([U::definition(), V::definition(), src].concat());
-    display
-        .device()
-        .create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(name),
-            source: wgpu::ShaderSource::Wgsl(shader_src),
-        })
+#[macro_export]
+macro_rules! create_shader_ex {
+    ($display:expr, {
+        name => $name:literal,
+        src => $src:expr,
+        inputs => $inputs:ty,
+        $(defs => [
+            $($defs:ty),* $(,)?
+        ], )?
+        bind_groups => {
+            $($bname:ident => $btype:ty,)*
+        } $(,)?
+    }) => {
+        {
+            let mut u = std::collections::HashSet::new();
+            let definitions = ([
+                $(
+                    $(<$defs as ::rust_game_engine::renderer::shader_type::ShaderDefinedType>::definitions(),)*
+                )?
+                $(<$btype as ::rust_game_engine::renderer::shader_type::ShaderDefinedType>::definitions(),)*
+            ] as [Vec<String>; _]).into_iter().flatten().filter(|d: &String| {
+                let seen = u.contains(d);
+                u.insert(d.clone());
+                !seen
+            }).collect::<Vec<_>>().join("\n");
+            let mut i = 0;
+            $display
+                .device()
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some($name),
+                    source: wgpu::ShaderSource::Wgsl(dbg!(std::borrow::Cow::Owned([
+                        <$inputs as ::rust_game_engine::renderer::shader_type::VertexInputs>::definition(),
+                        definitions,
+                        $({
+                            i += 1;
+                            let s = <$btype as ::rust_game_engine::renderer::bindings::Bindable>::shader_bindings(stringify!($bname), i-1, &mut 0);
+                            s
+                        },)*
+                        $src,
+                    ].concat()))),
+                })
+        }
+    };
 }
 
-#[derive(Debug, PartialEq)]
-#[shader_uniform_type]
+#[repr(C, align(16))]
+#[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+#[shader_uniform_data]
 pub struct GlobalUniforms {
     pub time: f32,
     #[skip]
@@ -444,21 +485,26 @@ pub struct GlobalUniforms {
     pub screen_size: Vec2,
 }
 
-#[cfg(test)]
-mod testing {
-    // use super::super::InstanceDataWithNormalMatrix;
-    // use super::VertexInput;
-    //
-    #[test]
-    fn test_blah() {
-        // InstanceDataWithNormalMatrix::vertex_attributes()
-        //     .iter()
-        //     .zip(
-        //         InstanceDataWithNormalMatrix::vertex_layout()
-        //             .attributes
-        //             .iter(),
-        //     )
-        //     .for_each(|(v, v2)| assert_eq!(v, v2));
-        assert!(true);
+impl ShaderUniformData for Vec3 {
+    type Raw = Self;
+
+    fn definition() -> String {
+        "".into()
+    }
+
+    fn raw(&self) -> Self::Raw {
+        *self
+    }
+}
+
+impl ShaderUniformData for Mat4 {
+    type Raw = Self;
+
+    fn definition() -> String {
+        "".into()
+    }
+
+    fn raw(&self) -> Self::Raw {
+        *self
     }
 }

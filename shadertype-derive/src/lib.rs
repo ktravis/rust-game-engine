@@ -1,15 +1,15 @@
-use quote::{quote, quote_spanned};
+use quote::{quote, quote_spanned, ToTokens};
 use syn::{
-    Data, DeriveInput, Error, Ident, ItemStruct, LitInt, parse, parse_macro_input, spanned::Spanned
+    Data, DeriveInput, Error, Ident, ItemStruct, LitInt, Path, Token, parse::{self, Parse}, parse_macro_input, spanned::Spanned
 };
 
-#[proc_macro_derive(ShaderType)] // attributes(bind, overlap_mode))]
-pub fn derive_shader_type(ts: proc_macro::TokenStream) -> proc_macro::TokenStream {
+#[proc_macro_derive(ShaderNamedType)] // attributes(bind, overlap_mode))]
+pub fn derive_shader_named_type(ts: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let ast = syn::parse_macro_input!(ts as DeriveInput);
     let ident = ast.ident.clone();
     let name = ident.to_string();
     quote_spanned! {ast.span()=>
-        impl ::rust_game_engine::renderer::shader_type::ShaderType for #ident {
+        impl ::rust_game_engine::renderer::shader_type::ShaderNamedType for #ident {
             fn wgsl_name() -> String {
                 #name.into()
             }
@@ -161,16 +161,128 @@ pub fn derive_vertex_input_type(ts: proc_macro::TokenStream) -> proc_macro::Toke
     .into()
 }
 
+fn is_basic_wgsl_type(t: &str) -> bool {
+    let vec_re = regex::Regex::new(r"^vec[2-4]([ifuh]|<(.*)>)$").unwrap();
+    let mat_re = regex::Regex::new(r"^mat[2-4]x[2-4]([fh]|<(.*)>)$").unwrap();
+    let array_re = regex::Regex::new(r"^array<([^,]*)(,\s*\d+)?>$").unwrap();
+
+    match t {
+        "bool" | "u32" | "i32" | "f32" | "f16" => true,
+        "atomic<u32>" | "atomic<i32>" => true,
+        "texture_external" | "texture_depth_2d" | "texture_depth_2d_array" | "texture_depth_cube" | "texture_depth_cube_array" => true,
+        "sampler" | "sampler_comparison" => true,
+        _ if t.starts_with("texture_1d<") => true,
+        _ if t.starts_with("texture_storage_1d<") => true,
+        _ if t.starts_with("texture_2d<") => true,
+        _ if t.starts_with("texture_storage_2d<") => true,
+        _ if t.starts_with("texture_2d_array<") => true,
+        _ if t.starts_with("texture_storage_2d_array<") => true,
+        _ if t.starts_with("texture_3d<") => true,
+        _ if t.starts_with("texture_storage_3d<") => true,
+        _ if t.starts_with("texture_multisampled_2d<") => true,
+        _ if t.starts_with("texture_depth_multisampled_2d<") => true,
+        _ => {
+            if vec_re.is_match(t) {
+                return true;
+            }
+            if mat_re.is_match(t) {
+                return true;
+            }
+            if let Some(m) = array_re.captures(t) {
+                return is_basic_wgsl_type(m.get(1).unwrap().as_str());
+            }
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::is_basic_wgsl_type;
+
+    #[test]
+    fn test_is_basic_wgsl_type() {
+        assert!(is_basic_wgsl_type("i32"));
+        assert!(is_basic_wgsl_type("vec2<i32>"));
+        assert!(is_basic_wgsl_type("array<i32>"));
+        assert!(is_basic_wgsl_type("array<i32, 3>"));
+        assert!(!is_basic_wgsl_type("Blah"));
+        assert!(!is_basic_wgsl_type("array<Blah>"));
+        assert!(!is_basic_wgsl_type("array<Blah, 12>"));
+    }
+}
+
+struct ShaderUniformDataArgs {
+    _raw_token: Ident,
+    _eq_token: Token![=],
+    raw_type: Path,
+}
+
+impl Parse for ShaderUniformDataArgs {
+    fn parse(input: parse::ParseStream) -> syn::Result<Self> {
+        let _raw_token: Ident = input.parse()?;
+        if _raw_token != "Raw" {
+            return Err(syn::Error::new_spanned(_raw_token, "expected `Raw`"));
+        }
+        Ok(Self{
+            _raw_token,
+            _eq_token: input.parse()?,
+            raw_type: input.parse()?,
+        })
+    }
+}
+
 #[proc_macro_attribute]
-pub fn shader_uniform_type(
+pub fn shader_uniform_data(
     args: proc_macro::TokenStream,
     input: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    let _ = parse_macro_input!(args as parse::Nothing);
+    let mut repr_attr = quote!();
+    let mut raw_type = quote!(Self);
+    let mut self_is_raw = true;
+    if args.is_empty() {
+        let _ = parse_macro_input!(args as parse::Nothing);
+        repr_attr = quote!(#[repr(C, align(16))]);
+    } else {
+        let args = parse_macro_input!(args as ShaderUniformDataArgs);
+        raw_type = args.raw_type.to_token_stream();
+        self_is_raw = false;
+    }
     let mut input = syn::parse_macro_input!(input as ItemStruct);
     let struct_ident = input.ident.clone();
+    let name = struct_ident.to_string();
     let maude = quote!(::rust_game_engine::renderer::shader_type);
+
+    if !self_is_raw {
+    return quote_spanned! {input.span()=>
+        #repr_attr
+        #input
+
+        impl #maude::ShaderUniformData for #struct_ident {
+            type Raw = #raw_type;
+            fn definition() -> String {
+                <#raw_type as #maude::ShaderUniformData>::definition()
+            }
+            fn raw(&self) -> Self::Raw {
+                From::from(self.clone())
+            }
+        }
+        impl #maude::ShaderNamedType for #struct_ident {
+            fn wgsl_name() -> String {
+                <#raw_type as #maude::ShaderNamedType>::wgsl_name()
+            }
+        }
+        impl #maude::ShaderDefinedType for #struct_ident {
+            fn definitions() -> Vec<String> {
+                <#raw_type as #maude::ShaderDefinedType>::definitions()
+            }
+        }
+    }
+    .into();
+    }
+
     let mut aligns = vec![];
+    let mut defs = vec![];
     let (asserts, sb): (Vec<_>, Vec<_>) = input.fields.iter_mut().filter_map(|f| {
         for (i, attr) in  f.attrs.iter_mut().enumerate() {
             if attr.path().is_ident("skip") {
@@ -184,7 +296,10 @@ pub fn shader_uniform_type(
             .expect("Field did not have a name");
         let name = id.to_string();
         let ty = &f.ty;
+
         aligns.push(quote_spanned!(ty.span()=> <#ty as #maude::ShaderTypeAligned>::ALIGNMENT));
+        
+        defs.push(quote_spanned!(ty.span()=> <#ty as #maude::ShaderDefinedType>::definitions()));
         Some((
             quote_spanned! {id.span()=>
                 const _: () = {
@@ -197,18 +312,19 @@ pub fn shader_uniform_type(
                 }
             },
             quote_spanned! {ty.span()=>
-                format!("  {}: {},", #name, <#ty as #maude::ShaderType>::wgsl_name())
+                format!("  {}: {},", #name, <#ty as #maude::ShaderNamedType>::wgsl_name())
             }
         ))
     }).unzip();
 
-    let name = struct_ident.to_string();
+    // TODO: need to emit #raw_type::definition() if !self_is_raw, same with SDT
     quote_spanned! {input.span()=>
-        unsafe impl ::bytemuck::Zeroable for #struct_ident { }
-        unsafe impl ::bytemuck::Pod for #struct_ident { }
+        // unsafe impl ::bytemuck::Zeroable for #struct_ident { }
+        // unsafe impl ::bytemuck::Pod for #struct_ident { }
 
-        #[repr(C, align(16))]
-        #[derive(Copy, Clone, ::shadertype_derive::ShaderType)]
+        // #[repr(C, align(16))]
+        // #[derive(Copy, Clone)]
+        #repr_attr
         #input
 
         #(#asserts;)*
@@ -229,13 +345,27 @@ pub fn shader_uniform_type(
                 max
             };
         }
-        impl #maude::ShaderUniformType for #struct_ident {
-            type Raw = Self;
+
+        impl #maude::ShaderUniformData for #struct_ident {
+            type Raw = #raw_type;
             fn definition() -> String {
                 format!("struct {} {{\n{}\n}}\n", #name, [#(#sb,)*].join("\n"))
             }
-            fn raw<'a>(&'a self) -> &'a Self::Raw {
-                self
+            fn raw(&self) -> Self::Raw {
+                From::from(self.clone())
+            }
+        }
+        impl #maude::ShaderNamedType for #struct_ident {
+            fn wgsl_name() -> String {
+                #name.into()
+            }
+        }
+        impl #maude::ShaderDefinedType for #struct_ident {
+            fn definitions() -> Vec<String> {
+                [
+                    #(#defs,)*
+                    vec![<Self as #maude::ShaderUniformData>::definition()],
+                ].into_iter().flatten().collect()
             }
         }
     }

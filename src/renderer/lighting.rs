@@ -1,35 +1,8 @@
 use bytemuck::Zeroable;
 use glam::{vec3, Mat4, Quat, Vec3, Vec4, Vec4Swizzles};
-use shadertype_derive::shader_uniform_type;
+use shadertype_derive::shader_uniform_data;
 
-use crate::{
-    camera::Frustum,
-    color::Color,
-    renderer::bindings::{UniformData, ViewProjectionUniforms},
-};
-
-#[shader_uniform_type]
-pub struct LightRaw {
-    pub direction: glam::f32::Vec3,
-    pub kind: u32,
-    pub color: glam::f32::Vec4,
-    pub view_proj: glam::f32::Mat4,
-    pub position: glam::f32::Vec3,
-    pub radius: f32,
-    pub reach: f32,
-    #[skip]
-    pub _pad: [u8; 12u32 as usize],
-}
-
-impl Default for LightRaw {
-    fn default() -> Self {
-        Self {
-            view_proj: Mat4::IDENTITY,
-            ..Zeroable::zeroed()
-        }
-    }
-}
-
+use crate::{camera::Frustum, color::Color, renderer::bindings::ViewProjectionUniforms};
 #[derive(Copy, Clone, Debug)]
 pub enum LightKind {
     Directional {
@@ -91,10 +64,34 @@ impl LightKind {
     }
 }
 
+#[repr(C, align(16))]
+#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
+#[shader_uniform_data]
+pub struct LightRaw {
+    pub direction: glam::f32::Vec3,
+    pub kind: u32,
+    pub color: glam::f32::Vec4,
+    pub view_proj: glam::f32::Mat4,
+    pub position: glam::f32::Vec3,
+    pub radius: f32,
+    pub reach: f32,
+    #[skip]
+    pub _pad: [u8; 12u32 as usize],
+}
+
+impl Default for LightRaw {
+    fn default() -> Self {
+        Self {
+            view_proj: Mat4::IDENTITY,
+            ..Zeroable::zeroed()
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub struct Light {
-    pub color: Color,
     pub kind: LightKind,
+    pub color: Color,
 }
 
 impl Light {
@@ -242,7 +239,9 @@ impl From<LightKind> for Light {
     }
 }
 
-#[shader_uniform_type]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
+#[shader_uniform_data]
 pub struct LightingUniformsRaw {
     pub items: [LightRaw; 8u32 as usize],
     pub count: u32,
@@ -253,6 +252,7 @@ pub struct LightingUniformsRaw {
 }
 
 #[derive(Clone, Debug)]
+#[shader_uniform_data(Raw=LightingUniformsRaw)]
 pub struct LightsUniform {
     pub lights: Vec<Light>,
     pub view_frustum: Frustum,
@@ -275,23 +275,21 @@ impl Default for LightsUniform {
     }
 }
 
-impl UniformData for LightsUniform {
-    type Raw = LightingUniformsRaw;
-
-    fn raw(&self) -> Self::Raw {
+impl From<LightsUniform> for LightingUniformsRaw {
+    fn from(value: LightsUniform) -> Self {
         LightingUniformsRaw {
             items: std::array::from_fn(|i| {
-                if i < self.lights.len() {
-                    self.lights[i].to_raw(&self.view_frustum)
+                if i < value.lights.len() {
+                    value.lights[i].to_raw(&value.view_frustum)
                 } else {
                     Default::default()
                 }
             }),
-            count: self.lights.len() as _,
-            shadow_bias_minimum: self.shadow_bias_minimum,
-            shadow_bias_factor: self.shadow_bias_factor,
-            shadow_blur_half_kernel_size: self.shadow_blur_half_kernel_size,
-            ambient_color: self.ambient_color.into(),
+            count: value.lights.len() as _,
+            shadow_bias_minimum: value.shadow_bias_minimum,
+            shadow_bias_factor: value.shadow_bias_factor,
+            shadow_blur_half_kernel_size: value.shadow_blur_half_kernel_size,
+            ambient_color: value.ambient_color.into(),
         }
     }
 }

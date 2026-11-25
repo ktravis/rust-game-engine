@@ -1,14 +1,14 @@
 use std::{
     collections::HashMap,
     marker::PhantomData,
-    num::{NonZero, NonZeroU32},
+    num::NonZero,
     ops::{Deref, DerefMut, Range},
 };
 
 use bytemuck::Zeroable;
-use glam::{Mat3A, Mat4, Quat, Vec2, Vec4};
+use glam::{Mat4, Quat, Vec2, Vec4};
 use itertools::Itertools;
-use shadertype_derive::shader_uniform_type;
+use shadertype_derive::shader_uniform_data;
 use wgpu::{util::DeviceExt, wgt::DrawIndexedIndirectArgs};
 
 use super::{
@@ -25,10 +25,10 @@ use crate::{
     renderer::{
         bindings::{
             create_uniform_bind_group, texture_bgl_entries, BindGroup, Bindable, DepthTextureView,
-            UniformBindGroup, UniformBuffer,
+            MaterialGroup, TextureBindingArray, UniformBindGroup, UniformBuffer,
         },
         instance::{BasicInstanceData, ObjectData},
-        shader_type::{create_shader, VertexInput, VertexInputs},
+        shader_type::{VertexInput, VertexInputs},
         ViewProjectionUniforms,
     },
     transform::Transform,
@@ -88,27 +88,22 @@ impl<'a> From<&'a wgpu::TextureView> for ColorTarget<'a> {
     }
 }
 
-#[derive(Debug, Default)]
-#[shader_uniform_type]
+#[shader_uniform_data]
+#[derive(Copy, Clone, Debug, Default, bytemuck::Zeroable, bytemuck::Pod)]
 pub struct ModelData {
     pub uv_scale: Vec2,
     pub uv_offset: Vec2,
     pub tint: Vec4,
     pub transform: Mat4,
-    pub normal_matrix: Mat3A,
+    /// only a mat3
+    pub normal_matrix: Mat4,
     pub material: u32,
+    #[skip]
+    pub _pad: [u32; 3u32 as usize],
 }
 
 const DEFAULT_SHADER: &'static str = crate::wgsl!(
     r#"
-@group(0) @binding(0)
-var t_diffuse: texture_2d<f32>;
-@group(0) @binding(1)
-var s_diffuse: sampler;
-
-@group(1) @binding(0)
-var<uniform> projection: mat4x4<f32>;
-
 var<immediate> model_data: ModelData;
 
 struct VertexOutput {
@@ -129,20 +124,20 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return model_data.tint * textureSample(t_diffuse, s_diffuse, in.tex_coords);
+    return model_data.tint * textureSample(diffuse_view, diffuse_sampler, in.tex_coords);
 }
 "#
 );
 
 const TEXT_SHADER: &'static str = crate::wgsl!(
     r#"
-@group(0) @binding(0)
-var t_diffuse: texture_2d<f32>;
-@group(0) @binding(1)
-var s_diffuse: sampler;
-
-@group(1) @binding(0)
-var<uniform> projection: mat4x4<f32>;
+// @group(0) @binding(0)
+// var t_diffuse: texture_2d<f32>;
+// @group(0) @binding(1)
+// var s_diffuse: sampler;
+//
+// @group(1) @binding(0)
+// var<uniform> projection: mat4x4<f32>;
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
@@ -177,7 +172,7 @@ fn median(r: f32, g: f32, b: f32) -> f32 {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let msd = textureSample(t_diffuse, s_diffuse, in.tex_coords);
+    let msd = textureSample(diffuse_view, diffuse_sampler, in.tex_coords);
     let sd = median(msd.r, msd.g, msd.b);
     let w = fwidth(sd) * 0.5;
     let opacity = smoothstep(0.5 - w, 0.5 + w, sd);
@@ -264,9 +259,9 @@ pub struct RenderState {
 
     textures: Vec<Texture>,
     texture_array: Option<wgpu::BindGroup>,
-    // TODO: annoying to make this pub
-    pub texture_array_bgl: Option<wgpu::BindGroupLayout>,
 }
+
+pub type TextureArray<'a> = TextureBindingArray<'a, 128>;
 
 impl RenderState {
     const MAX_COLOR_ATTACHMENTS: usize = 8;
@@ -285,20 +280,29 @@ impl RenderState {
             label: Some("main texture"),
             entries: &texture_bgl_entries(TextureBuilder::DEFAULT_FORMAT),
         });
-        let default_shader = &create_shader::<ModelData, ModelVertexData>(
-            display,
-            "default",
-            DEFAULT_SHADER.to_string(),
-        );
+        let default_shader = &create_shader_ex!(display, {
+            name => "default",
+            src => DEFAULT_SHADER.to_string(),
+            inputs => ModelVertexData,
+            defs => [ModelData],
+            bind_groups => {
+                diffuse => MaterialGroup,
+                projection => UniformBuffer<Mat4>,
+            }
+        });
         let default_pipeline = PipelineBuilder::new("default pipeline")
             .with_bind_group_layouts(vec![&main_texture_bgl, &view_proj_uniform_bgl])
             .with_immediate_size(std::mem::size_of::<ModelData>() as u32)
             .build(display.device(), &default_shader);
-        let text_shader = &create_shader::<(), (ModelVertexData, BasicInstanceData)>(
-            display,
-            "text",
-            TEXT_SHADER.to_string(),
-        );
+        let text_shader = &create_shader_ex!(display, {
+            name => "text",
+            src => TEXT_SHADER.to_string(),
+            inputs => (ModelVertexData, BasicInstanceData),
+            bind_groups => {
+                diffuse => MaterialGroup,
+                projection => UniformBuffer<Mat4>,
+            }
+        });
         let text_pipeline = PipelineBuilder::new("Text Render Pipeline")
             .with_bind_group_layouts(vec![&main_texture_bgl, &view_proj_uniform_bgl])
             .build(display.device(), &text_shader);
@@ -345,7 +349,6 @@ impl RenderState {
             default_texture,
             textures: vec![t],
             texture_array: None,
-            texture_array_bgl: None,
         }
     }
 
@@ -420,71 +423,11 @@ impl RenderState {
     pub fn upload_textures(&mut self, display: &Display) {
         assert_eq!(self.texture_array, None, "texture array already bound");
         assert!(self.textures.len() > 0, "no added textures to commit");
-        let format = self.textures[0].format();
-        let bgl_entries = {
-            let sample_type = format
-                .sample_type(Some(wgpu::TextureAspect::All), None)
-                .expect(&format!(
-                    "non-sampleable texture format {:?} used in binding",
-                    format
-                ));
-            vec![
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type,
-                    },
-                    count: NonZeroU32::new(self.textures.len() as _),
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(if format.has_depth_aspect() {
-                        wgpu::SamplerBindingType::Comparison
-                    } else {
-                        match sample_type {
-                            wgpu::TextureSampleType::Float { filterable: false } => {
-                                wgpu::SamplerBindingType::NonFiltering
-                            }
-                            _ => wgpu::SamplerBindingType::Filtering,
-                        }
-                    }),
-                    count: NonZeroU32::new(self.textures.len() as _),
-                },
-            ]
-        };
-        let layout = display
-            .device()
-            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some(&format!("texture array({format:?})")),
-                entries: &bgl_entries,
-            });
-        let (views, samplers): (Vec<_>, Vec<_>) =
-            self.textures.iter().map(|t| (&t.view, &t.sampler)).unzip();
-        let _ = self
-            .texture_array
-            .insert(
-                display
-                    .device()
-                    .create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some(&format!("bind group (texture array({format:?})")),
-                        layout: &layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureViewArray(&views),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::SamplerArray(&samplers),
-                            },
-                        ],
-                    }),
-            );
-        let _ = self.texture_array_bgl.insert(layout);
+        let ta = BindGroup::new(
+            display.device(),
+            TextureArray::<'_>::new(&self.textures, &self.default_texture.resource),
+        );
+        self.texture_array = Some(ta.bind_group().clone());
     }
 
     pub fn texture_array_bind_group(&self) -> &wgpu::BindGroup {
@@ -624,8 +567,9 @@ impl<'a, 'p> RenderPass<'a, 'p> {
                 uv_offset: subtexture.pos,
                 tint: c.into(),
                 transform,
-                normal_matrix: Mat3A::IDENTITY,
+                normal_matrix: Mat4::IDENTITY,
                 material: 0,
+                ..Zeroable::zeroed()
             }),
         );
         self.draw_scene_mesh(mesh, 0..1);

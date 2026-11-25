@@ -1,17 +1,21 @@
 use std::{
     fmt::{Debug, Formatter},
     marker::PhantomData,
+    num::NonZeroU32,
     ops::{Deref, DerefMut},
 };
 
 use bytemuck::Zeroable;
 use glam::{Mat4, Vec3, Vec4};
-use shadertype_derive::shader_uniform_type;
+use shadertype_derive::shader_uniform_data;
 use wgpu::util::DeviceExt;
 
 use crate::{
     camera::Camera,
-    renderer::{shader_type::ShaderUniformType, Texture},
+    renderer::{
+        shader_type::{ShaderBuiltin, ShaderDefinedType, ShaderNamedType, ShaderUniformData},
+        Texture,
+    },
 };
 
 // TODO: pipeline layout is the thing that needs to stay the same between draw calls to different
@@ -27,7 +31,7 @@ use crate::{
 // [ ] when drawing, each pipeline/pass should accept anything that can be `Into` its required data
 // type (instance data etc)
 
-pub fn create_uniform_bind_group<U: UniformData>(
+pub fn create_uniform_bind_group<U: ShaderNamedType + ShaderUniformData>(
     device: &wgpu::Device,
     uniform: U,
 ) -> UniformBindGroup<U> {
@@ -35,7 +39,9 @@ pub fn create_uniform_bind_group<U: UniformData>(
     BindGroup::<UniformBuffer<U>>::new(device, resource)
 }
 
-#[shader_uniform_type]
+#[derive(Copy, Clone, Debug, bytemuck::Zeroable, bytemuck::Pod)]
+#[shader_uniform_data]
+#[repr(C)]
 pub struct ViewProjectionUniforms {
     pub view: Mat4,
     pub projection: Mat4,
@@ -76,9 +82,30 @@ impl Default for ViewProjectionUniforms {
     }
 }
 
+fn binding_annotations(group_index: u32, binding_offset: &mut u32) -> String {
+    let s = format!("@group({group_index}) @binding({})", *binding_offset);
+    *binding_offset += 1;
+    s
+}
+
 pub struct TextureView<S = f32, const D: u8 = 2, const F: bool = true> {
     inner: wgpu::TextureView,
     _marker: PhantomData<S>,
+}
+
+impl<S: ShaderNamedType, const D: u8, const F: bool> ShaderBuiltin for TextureView<S, D, F> {}
+
+impl<S: ShaderNamedType, const D: u8, const F: bool> ShaderNamedType for TextureView<S, D, F> {
+    fn wgsl_name() -> String {
+        format!(
+            "texture_{}d<{}>",
+            match D {
+                1 | 2 | 3 => D,
+                _ => panic!("invalid texture view dimension: {}", D),
+            },
+            S::wgsl_name(),
+        )
+    }
 }
 
 impl<S, const D: u8, const F: bool> TextureView<S, D, F> {
@@ -126,6 +153,15 @@ impl<const D: u8, const F: bool> Bindable for TextureView<f32, D, F> {
             // },
         ]
     }
+
+    fn shader_bindings(name: &str, group_index: u32, binding_offset: &mut u32) -> String {
+        format!(
+            "{} var {}: {};",
+            binding_annotations(group_index, binding_offset),
+            name,
+            <Self as ShaderNamedType>::wgsl_name()
+        )
+    }
 }
 
 impl<const D: u8, const F: bool> Bindable for TextureView<u32, D, F> {
@@ -154,6 +190,15 @@ impl<const D: u8, const F: bool> Bindable for TextureView<u32, D, F> {
             },
             count: None,
         }]
+    }
+
+    fn shader_bindings(name: &str, group_index: u32, binding_offset: &mut u32) -> String {
+        format!(
+            "{} var {}: {};",
+            binding_annotations(group_index, binding_offset),
+            name,
+            <Self as ShaderNamedType>::wgsl_name()
+        )
     }
 }
 
@@ -184,6 +229,15 @@ impl<const D: u8, const F: bool> Bindable for TextureView<i32, D, F> {
             count: None,
         }]
     }
+
+    fn shader_bindings(name: &str, group_index: u32, binding_offset: &mut u32) -> String {
+        format!(
+            "{} var {}: {};",
+            binding_annotations(group_index, binding_offset),
+            name,
+            <Self as ShaderNamedType>::wgsl_name()
+        )
+    }
 }
 
 impl<S, const D: u8, const F: bool> From<wgpu::TextureView> for TextureView<S, D, F> {
@@ -198,6 +252,20 @@ impl<S, const D: u8, const F: bool> From<wgpu::TextureView> for TextureView<S, D
 #[derive(Clone)]
 pub struct DepthTextureView<const D: u8 = 2> {
     inner: wgpu::TextureView,
+}
+
+impl<const D: u8> ShaderBuiltin for DepthTextureView<D> {}
+
+impl<const D: u8> ShaderNamedType for DepthTextureView<D> {
+    fn wgsl_name() -> String {
+        format!(
+            "texture_depth_{}d",
+            match D {
+                1 | 2 | 3 => D,
+                _ => panic!("invalid texture view dimension: {}", D),
+            },
+        )
+    }
 }
 
 impl<const D: u8> Bindable for DepthTextureView<D> {
@@ -226,6 +294,15 @@ impl<const D: u8> Bindable for DepthTextureView<D> {
             count: None,
         }]
     }
+
+    fn shader_bindings(name: &str, group_index: u32, binding_offset: &mut u32) -> String {
+        format!(
+            "{} var {}: {};",
+            binding_annotations(group_index, binding_offset),
+            name,
+            <Self as ShaderNamedType>::wgsl_name()
+        )
+    }
 }
 
 impl<const D: u8> DepthTextureView<D> {
@@ -245,6 +322,14 @@ impl<const D: u8> From<wgpu::TextureView> for DepthTextureView<D> {
 pub struct DepthTextureArrayView {
     inner: wgpu::TextureView,
 }
+
+impl ShaderNamedType for DepthTextureArrayView {
+    fn wgsl_name() -> String {
+        "texture_depth_2d_array".into()
+    }
+}
+
+impl ShaderBuiltin for DepthTextureArrayView {}
 
 impl Bindable for DepthTextureArrayView {
     fn entries(&self) -> Vec<wgpu::BindGroupEntry<'_>> {
@@ -266,6 +351,15 @@ impl Bindable for DepthTextureArrayView {
             count: None,
         }]
     }
+
+    fn shader_bindings(name: &str, group_index: u32, binding_offset: &mut u32) -> String {
+        format!(
+            "{} var {}: {};",
+            binding_annotations(group_index, binding_offset),
+            name,
+            <Self as ShaderNamedType>::wgsl_name()
+        )
+    }
 }
 
 impl DepthTextureArrayView {
@@ -273,61 +367,6 @@ impl DepthTextureArrayView {
         &self.inner
     }
 }
-
-// #[derive(Clone)]
-// pub struct TextureBlock<const N: usize, const F: bool = true> {
-//     texture_views: [wgpu::TextureView; N],
-//     sampler: wgpu::Sampler,
-// }
-//
-// impl<const N: usize, const F: bool> BindGroup<TextureBlock<N, F>> {
-//     pub fn for_texture_block(
-//         device: &wgpu::Device,
-//         // layout: &wgpu::BindGroupLayout,
-//         resource: Texture,
-//     ) -> Self {
-//     /*
-//     fn entries(&self) -> Vec<wgpu::BindGroupEntry<'_>> {
-//         vec![
-//             wgpu::BindGroupEntry {
-//                 binding: 0,
-//                 resource: wgpu::BindingResource::TextureViewArray(
-//                     &self.texture_views.iter().collect_vec(),
-//                 ),
-//             },
-//             wgpu::BindGroupEntry {
-//                 binding: 1,
-//                 resource: wgpu::BindingResource::Sampler(&self.sampler),
-//             },
-//         ]
-//     }
-//
-//     fn layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
-//         vec![
-//             wgpu::BindGroupLayoutEntry {
-//                 binding: 0,
-//                 visibility: wgpu::ShaderStages::FRAGMENT,
-//                 ty: wgpu::BindingType::Texture {
-//                     multisampled: false,
-//                     view_dimension: wgpu::TextureViewDimension::D2Array,
-//                     sample_type: TextureSampleType::Depth,
-//                 },
-//                 count: N,
-//             },
-//             wgpu::BindGroupLayoutEntry {
-//                 binding: 1,
-//                 visibility: wgpu::ShaderStages::FRAGMENT,
-//                 ty: wgpu::BindingType::Sampler(if F {
-//                     wgpu::SamplerBindingType::Filtering
-//                 } else {
-//                     wgpu::SamplerBindingType::NonFiltering
-//                 }),
-//                 count: None,
-//             },
-//         ]
-//     }
-//     */
-// }
 
 impl From<wgpu::TextureView> for DepthTextureArrayView {
     fn from(inner: wgpu::TextureView) -> Self {
@@ -341,6 +380,14 @@ pub struct TextureSampler<const F: bool = true> {
     inner: wgpu::Sampler,
 }
 
+impl<const F: bool> ShaderBuiltin for TextureSampler<F> {}
+
+impl<const F: bool> ShaderNamedType for TextureSampler<F> {
+    fn wgsl_name() -> String {
+        "sampler".into()
+    }
+}
+
 impl<const F: bool> TextureSampler<F> {
     pub fn raw(&self) -> &wgpu::Sampler {
         &self.inner
@@ -349,6 +396,14 @@ impl<const F: bool> TextureSampler<F> {
 
 pub type FilteringSampler = TextureSampler<true>;
 pub type NonFilteringSampler = TextureSampler<false>;
+
+pub const fn non_comparison_sampler(filtering: bool) -> wgpu::SamplerBindingType {
+    if filtering {
+        wgpu::SamplerBindingType::Filtering
+    } else {
+        wgpu::SamplerBindingType::NonFiltering
+    }
+}
 
 impl<const F: bool> Bindable for TextureSampler<F> {
     fn entries(&self) -> Vec<wgpu::BindGroupEntry<'_>> {
@@ -362,13 +417,18 @@ impl<const F: bool> Bindable for TextureSampler<F> {
         vec![wgpu::BindGroupLayoutEntry {
             binding: 0,
             visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Sampler(if F {
-                wgpu::SamplerBindingType::Filtering
-            } else {
-                wgpu::SamplerBindingType::NonFiltering
-            }),
+            ty: wgpu::BindingType::Sampler(non_comparison_sampler(F)),
             count: None,
         }]
+    }
+
+    fn shader_bindings(name: &str, group_index: u32, binding_offset: &mut u32) -> String {
+        format!(
+            "{} var {}: {};",
+            binding_annotations(group_index, binding_offset),
+            name,
+            <Self as ShaderNamedType>::wgsl_name()
+        )
     }
 }
 
@@ -381,6 +441,14 @@ impl<const F: bool> From<wgpu::Sampler> for TextureSampler<F> {
 #[derive(Clone)]
 pub struct ComparisonSampler {
     inner: wgpu::Sampler,
+}
+
+impl ShaderBuiltin for ComparisonSampler {}
+
+impl ShaderNamedType for ComparisonSampler {
+    fn wgsl_name() -> String {
+        "sampler_comparison".into()
+    }
 }
 
 impl Bindable for ComparisonSampler {
@@ -398,6 +466,15 @@ impl Bindable for ComparisonSampler {
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
             count: None,
         }]
+    }
+
+    fn shader_bindings(name: &str, group_index: u32, binding_offset: &mut u32) -> String {
+        format!(
+            "{} var {}: {};",
+            binding_annotations(group_index, binding_offset),
+            name,
+            <Self as ShaderNamedType>::wgsl_name()
+        )
     }
 }
 
@@ -453,6 +530,12 @@ pub trait Bindable /*: Sized*/ {
             label: Some(name),
             entries: &Self::layout_entries(),
         })
+    }
+
+    fn shader_bindings<'a>(name: &'a str, group_index: u32, binding_offset: &mut u32) -> String;
+
+    fn wgsl_var_suffix() -> String {
+        "".into()
     }
 
     // this requires the Sized bound, do we care?
@@ -557,44 +640,17 @@ impl<T: Bindable> DerefMut for BindGroup<T> {
     }
 }
 
-pub trait UniformData {
-    type Raw: bytemuck::Pod + bytemuck::Zeroable;
-    fn raw(&self) -> Self::Raw;
-}
-
-impl<U> UniformData for U
-where
-    U: ShaderUniformType,
-{
-    type Raw = <Self as ShaderUniformType>::Raw;
-    fn raw(&self) -> Self::Raw {
-        *<Self as ShaderUniformType>::raw(self)
-    }
-}
-
-impl ShaderUniformType for Mat4 {
-    type Raw = Self;
-
-    fn definition() -> String {
-        "mat4x4<f32>".to_string()
-    }
-
-    fn raw<'a>(&'a self) -> &'a Self::Raw {
-        self
-    }
-}
-
 // TODO: make this into a proc macro etc
 #[macro_export]
 macro_rules! define_bind_group {
-    ($sv:vis $name:ident {
+    ($sv:vis $name:ident $(<$($generics:tt),*>)? {
         $($fv:vis $f:ident: $t:ty,)*
     }) => (
-        $sv struct $name {
+        $sv struct $name $(<$($generics),*>)? {
             $($fv $f: $t,)*
         }
 
-        impl Bindable for $name {
+        impl $(<$($generics),*>)? Bindable for $name $(<$($generics),*>)? {
             fn entries(&self) -> Vec<wgpu::BindGroupEntry<'_>> {
                 let ev = [
                     $(self.$f.entries(),)*
@@ -627,6 +683,25 @@ macro_rules! define_bind_group {
                     }
                 }
                 x
+            }
+            fn shader_bindings(name: &str, group_index: u32, binding_offset: &mut u32) -> String {
+                [
+                    $({
+                        <$t as ::rust_game_engine::renderer::bindings::Bindable>::shader_bindings(
+                            &format!("{name}_{}", stringify!($f)),
+                            group_index,
+                            binding_offset,
+                        )
+                    },)*
+                ].join("\n")
+            }
+        }
+
+        impl $(<$($generics),*>)? ::rust_game_engine::renderer::shader_type::ShaderDefinedType for $name $(<$($generics),*>)? {
+            fn definitions() -> Vec<String> {
+                [
+                    $(<$t as ::rust_game_engine::renderer::shader_type::ShaderDefinedType>::definitions() ,)*
+                ].into_iter().flatten().collect::<Vec<_>>()
             }
         }
     )
@@ -665,12 +740,26 @@ define_bind_group! {
 //     }
 // }
 
-pub struct UniformBuffer<U: UniformData> {
+pub struct UniformBuffer<U: ShaderNamedType + ShaderUniformData> {
     uniform: U,
     buffer: wgpu::Buffer,
 }
 
-impl<U: UniformData> Deref for UniformBuffer<U> {
+impl<U: ShaderNamedType + ShaderUniformData + ShaderDefinedType> ShaderDefinedType
+    for UniformBuffer<U>
+{
+    fn definitions() -> Vec<String> {
+        U::definitions()
+    }
+}
+
+impl<U: ShaderNamedType + ShaderUniformData> ShaderNamedType for UniformBuffer<U> {
+    fn wgsl_name() -> String {
+        U::wgsl_name()
+    }
+}
+
+impl<U: ShaderNamedType + ShaderUniformData> Deref for UniformBuffer<U> {
     type Target = U;
 
     fn deref(&self) -> &Self::Target {
@@ -678,13 +767,13 @@ impl<U: UniformData> Deref for UniformBuffer<U> {
     }
 }
 
-impl<U: UniformData> DerefMut for UniformBuffer<U> {
+impl<U: ShaderNamedType + ShaderUniformData> DerefMut for UniformBuffer<U> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.uniform
     }
 }
 
-impl<U: UniformData> UniformBuffer<U> {
+impl<U: ShaderNamedType + ShaderUniformData> UniformBuffer<U> {
     pub fn new(device: &wgpu::Device, uniform: U) -> Self {
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(&format!("Uniform Buffer ({})", std::any::type_name::<U>())),
@@ -709,7 +798,7 @@ impl<U: UniformData> UniformBuffer<U> {
     }
 }
 
-impl<U: UniformData> Bindable for UniformBuffer<U> {
+impl<U: ShaderNamedType + ShaderUniformData> Bindable for UniformBuffer<U> {
     fn entries(&self) -> Vec<wgpu::BindGroupEntry<'_>> {
         vec![wgpu::BindGroupEntry {
             binding: 0,
@@ -729,66 +818,157 @@ impl<U: UniformData> Bindable for UniformBuffer<U> {
             count: None,
         }]
     }
+
+    fn shader_bindings(name: &str, group_index: u32, binding_offset: &mut u32) -> String {
+        format!(
+            "{} var{} {}: {};",
+            binding_annotations(group_index, binding_offset),
+            Self::wgsl_var_suffix(),
+            name,
+            <U as ShaderNamedType>::wgsl_name()
+        )
+    }
+
+    fn wgsl_var_suffix() -> String {
+        "<uniform>".into()
+    }
 }
 
 pub type UniformBindGroup<T> = BindGroup<UniformBuffer<T>>;
 
-/*
-    @group(3) @binding(0)
-    var<uniform> lights: LightingUniformsRaw;
-    @group(3) @binding(1)
-    var shadow_map: texture_depth_2d_array;
-    @group(3) @binding(2)
-    var shadow_map_sampler: sampler_comparison;
+pub struct TextureBindingArray<'a, const N: usize, T = TextureView> {
+    views: Vec<&'a wgpu::TextureView>,
+    samplers: Vec<&'a wgpu::Sampler>,
+    // placeholder_texture: Texture,
+    // _n: [(); N],
+    _marker: PhantomData<T>,
+}
 
-    &wgpu::BindGroupLayoutDescriptor {
-        label: Some("group3"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0u32,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1u32,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    multisampled: false,
-                    view_dimension: wgpu::TextureViewDimension::D2Array,
-                    sample_type: wgpu::TextureSampleType::Depth,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 2u32,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-                count: None,
-            },
-        ],
+impl<'a, const N: usize, T: Bindable + ShaderNamedType> ShaderBuiltin
+    for TextureBindingArray<'a, N, T>
+{
+}
+
+impl<'a, const N: usize, T: Bindable + ShaderNamedType> TextureBindingArray<'a, N, T> {
+    pub fn new(textures: &'a [Texture], placeholder_texture: &'a Texture) -> Self {
+        assert!(textures.len() <= N);
+        let (views, samplers): (Vec<_>, Vec<_>) = textures
+            .iter()
+            .chain(std::iter::repeat(placeholder_texture))
+            .take(N)
+            .map(|t| (&t.view, &t.sampler))
+            .unzip();
+        Self {
+            views,
+            samplers,
+            // placeholder_texture,
+            _marker: PhantomData,
+        }
     }
+}
 
-    &wgpu::BindGroupDescriptor {
-        label: Some("lighting bind group"),
-        layout: &lights_uniform_bgl,
-        entries: &[
+impl<'a, const N: usize, T: Bindable + ShaderNamedType> Bindable for TextureBindingArray<'a, N, T> {
+    fn entries(&self) -> Vec<wgpu::BindGroupEntry<'_>> {
+        vec![
             wgpu::BindGroupEntry {
                 binding: 0,
-                resource: lights_uniform.buffer().as_entire_binding(),
+                resource: wgpu::BindingResource::TextureViewArray(&self.views),
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::TextureView(&shadow_map.view),
+                resource: wgpu::BindingResource::SamplerArray(&self.samplers),
             },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::Sampler(&shadow_map.sampler),
-            },
-        ],
+        ]
     }
-*/
+
+    fn layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
+        vec![
+            wgpu::BindGroupLayoutEntry {
+                count: NonZeroU32::new(N as _),
+                ..T::layout_entries()[0]
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                count: NonZeroU32::new(N as _),
+                ..FilteringSampler::layout_entries()[0]
+            },
+        ]
+    }
+
+    fn shader_bindings(name: &str, group_index: u32, binding_offset: &mut u32) -> String {
+        let views = format!("@group({group_index}) @binding({binding_offset}) var {name}_views: binding_array<{}, {N}>;", T::wgsl_name());
+        *binding_offset += 1;
+        let samplers = format!("@group({group_index}) @binding({binding_offset}) var {name}_samplers: binding_array<{}, {N}>;", FilteringSampler::wgsl_name());
+        format!("{views}\n{samplers}")
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::num::NonZeroU32;
+
+    use glam::Mat4;
+
+    use crate::renderer::bindings::UniformBuffer;
+
+    use super::{Bindable, TextureBindingArray};
+
+    #[test]
+    fn test_texture_binding_array_layout_entries() {
+        assert_eq!(
+            TextureBindingArray::<24>::layout_entries(),
+            vec![
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: NonZeroU32::new(24),
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering,),
+                    count: NonZeroU32::new(24),
+                },
+            ]
+        )
+    }
+
+    #[test]
+    fn test_texture_binding_array_shader_bindings() {
+        const EXPECTED_BINDINGS: &str = r#"
+@group(0) @binding(0) var texture_array_views: binding_array<texture_2d<f32>, 24>;
+@group(0) @binding(1) var texture_array_samplers: binding_array<sampler, 24>;
+        "#;
+
+        assert_eq!(
+            TextureBindingArray::<24>::shader_bindings("texture_array", 0, &mut 0).trim_ascii(),
+            EXPECTED_BINDINGS.trim_ascii(),
+        )
+    }
+
+    define_bind_group! {
+        pub TestBindGroup<'a> {
+            pub globals: UniformBuffer<Mat4>,
+            pub materials: TextureBindingArray<'a, 128>,
+        }
+    }
+
+    #[test]
+    fn test_texture_binding_array_in_bind_group_macro() {
+        const EXPECTED_BINDINGS: &str = r#"
+@group(0) @binding(0) var<uniform> foo_globals: mat4x4<f32>;
+@group(0) @binding(1) var foo_materials_views: binding_array<texture_2d<f32>, 128>;
+@group(0) @binding(2) var foo_materials_samplers: binding_array<sampler, 128>;
+        "#;
+
+        assert_eq!(
+            TestBindGroup::shader_bindings("foo", 0, &mut 0).trim_ascii(),
+            EXPECTED_BINDINGS.trim_ascii(),
+        )
+    }
+}

@@ -2,18 +2,17 @@ use glam::Vec3;
 use wgpu::TextureUsages;
 
 use crate::{
-    define_bind_group,
+    create_shader_ex, define_bind_group,
     geom::{ModelVertexData, Point},
     renderer::{
         bindings::{
             create_uniform_bind_group, BindGroup, Bindable, ComparisonSampler,
-            DepthTextureArrayView, DepthTextureView, MaterialGroup, TextureSampler,
-            UniformBindGroup, UniformBuffer,
+            DepthTextureArrayView, DepthTextureView, MaterialGroup, TextureBindingArray,
+            TextureSampler, UniformBindGroup, UniformBuffer,
         },
         instance::{InstanceDataWithNormalMatrix, ObjectData},
-        lighting::{LightRaw, LightingUniformsRaw},
-        shader_type::{create_shader, GlobalUniforms},
-        state::{write_scene_draw_calls, BoundTexture, ColorTarget},
+        shader_type::GlobalUniforms,
+        state::{write_scene_draw_calls, BoundTexture, ColorTarget, TextureArray},
     },
     transform::Transform,
 };
@@ -25,12 +24,6 @@ use super::{
 
 const SKYBOX_SHADER: &'static str = crate::wgsl!(
     r#"
-@group(0) @binding(0)
-var<uniform> view_proj_uniforms: ViewProjectionUniforms;
-
-@group(1) @binding(3)
-var<uniform> skybox_color: vec3<f32>;
-
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
 }
@@ -46,15 +39,12 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4(skybox_color, 1.0);
+    return vec4(lighting_group_skybox_color, 1.0);
 }"#
 );
 
 const DEPTH_ONLY_SHADER: &'static str = crate::wgsl!(
     r#"
-@group(0) @binding(0)
-var<uniform> view_proj_uniforms: ViewProjectionUniforms;
-
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
 }
@@ -83,17 +73,6 @@ fn fs_main(in: VertexOutput) { }"#
 
 const FORWARD_LIGHTING_SHADER: &'static str = crate::wgsl!(
     r#"
-@group(0) @binding(0)
-var texture_array: binding_array<texture_2d<f32>, 256>;
-@group(0) @binding(1)
-var sampler_array: binding_array<sampler, 256>;
-
-@group(1) @binding(0)
-var<uniform> global_uniforms: GlobalUniforms;
-
-@group(2) @binding(0)
-var<uniform> view_proj_uniforms: ViewProjectionUniforms;
-
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) tex_coords: vec2<f32>,
@@ -135,32 +114,18 @@ fn vs_main(
     return out;
 }
 
-@group(3) @binding(0)
-var<uniform> lights: LightingUniformsRaw;
-@group(3) @binding(1)
-var shadow_map: texture_depth_2d_array;
-@group(3) @binding(2)
-var shadow_map_sampler: sampler_comparison;
-@group(3) @binding(3)
-var<uniform> skybox_color: vec3<f32>;
-
-@group(4) @binding(0)
-var occlusion_map: texture_2d<f32>;
-@group(4) @binding(1)
-var occlusion_map_sampler: sampler;
-
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let view_pos = in.view_pos;
-    let albedo_spec = in.tint_color * textureSample(texture_array[in.texture], sampler_array[in.texture], in.tex_coords);
+    let albedo_spec = in.tint_color * textureSample(texture_array_views[in.texture], texture_array_samplers[in.texture], in.tex_coords);
 
-    let texelSize = 1.0 / f32(textureDimensions(shadow_map).x);
+    let texelSize = 1.0 / f32(textureDimensions(lighting_group_shadow_maps_view).x);
 
     var total_light = vec3(0.0, 0.0, 0.0);
 
     // Material properties
     // TODO: this ignores tint alpha
-    let MaterialAmbientColor = lights.ambient_color.rgb;
+    let MaterialAmbientColor = lighting_group_lights.ambient_color.rgb;
     let MaterialDiffuseColor = albedo_spec.rgb;
     let MaterialSpecularColor = vec3(0.4, 0.4, 0.4);
 
@@ -173,29 +138,29 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (in.material == 1) {
         return vec4(MaterialAmbientColor * MaterialDiffuseColor, albedo_spec.a);
     }
-    let ao = textureSample(occlusion_map, occlusion_map_sampler, in.clip_position.xy / global_uniforms.screen_size).r;
+    let ao = textureSample(occlusion_map_view, occlusion_map_sampler, in.clip_position.xy / global_uniforms.screen_size).r;
 
     total_light += ao * MaterialAmbientColor * MaterialDiffuseColor;
 
-    for (var i = 0u; i < lights.count; i++) {
+    for (var i = 0u; i < lighting_group_lights.count; i++) {
         var visibility = 1.0;
 
-        if lights.items[i].kind == 1 { // spot light
-            let light_to_fragment = in.world_pos.xyz - lights.items[i].position;
+        if lighting_group_lights.items[i].kind == 1 { // spot light
+            let light_to_fragment = in.world_pos.xyz - lighting_group_lights.items[i].position;
             let light_dist_sqr = dot(light_to_fragment, light_to_fragment);
-            let spot_factor = dot(normalize(light_to_fragment), lights.items[i].direction);
-            let reach_sqr = pow(lights.items[i].reach, 2.0);
-            if spot_factor > lights.items[i].radius && light_dist_sqr < reach_sqr {
-                visibility = (1.0 - (1.0 - spot_factor) * 1.0 / (1.0 - lights.items[i].radius));
+            let spot_factor = dot(normalize(light_to_fragment), lighting_group_lights.items[i].direction);
+            let reach_sqr = pow(lighting_group_lights.items[i].reach, 2.0);
+            if spot_factor > lighting_group_lights.items[i].radius && light_dist_sqr < reach_sqr {
+                visibility = (1.0 - (1.0 - spot_factor) * 1.0 / (1.0 - lighting_group_lights.items[i].radius));
             } else {
                 visibility = 0.0;
             }
         }
 
-        let LightColor = lights.items[i].color.rgb;
-        let LightPower = lights.items[i].color.a;
+        let LightColor = lighting_group_lights.items[i].color.rgb;
+        let LightPower = lighting_group_lights.items[i].color.a;
         // Direction of the light (from the fragment to the light)
-        let light_pos_view = (view_proj_uniforms.view * vec4(lights.items[i].position, 1.0)).xyz - eyeCoords;
+        let light_pos_view = (view_proj_uniforms.view * vec4(lighting_group_lights.items[i].position, 1.0)).xyz - eyeCoords;
         let l = normalize(light_pos_view);
 
         // Cosine of the angle between the normal and the light direction, 
@@ -215,11 +180,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         //  - Looking elsewhere -> < 1
         let cosAlpha = clamp(dot(E, R), 0.0, 1.0);
 
-        var bias = lights.shadow_bias_factor * tan(acos(cosTheta));
+        var bias = lighting_group_lights.shadow_bias_factor * tan(acos(cosTheta));
         // bias = clamp(bias, 0.0, 0.01);
         // var bias = 0.0001;
 
-        let shadow_pos = lights.items[i].view_proj * in.world_pos;
+        let shadow_pos = lighting_group_lights.items[i].view_proj * in.world_pos;
 
         let flip_correction = vec2<f32>(0.5, -0.5);
         let proj_correction = 1.0 / shadow_pos.w;
@@ -228,9 +193,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         var occlusion = 0.0;
 
         var weight = 0.0;
-        for (var x = -lights.shadow_blur_half_kernel_size; x <= lights.shadow_blur_half_kernel_size; x++) {
-            for (var y = -lights.shadow_blur_half_kernel_size; y <= lights.shadow_blur_half_kernel_size; y++) {
-                let s = textureSampleCompare(shadow_map, shadow_map_sampler, ShadowCoord.xy + vec2(f32(x), f32(y)) * texelSize, i, (shadow_pos.z) / shadow_pos.w - bias);
+        for (var x = -lighting_group_lights.shadow_blur_half_kernel_size; x <= lighting_group_lights.shadow_blur_half_kernel_size; x++) {
+            for (var y = -lighting_group_lights.shadow_blur_half_kernel_size; y <= lighting_group_lights.shadow_blur_half_kernel_size; y++) {
+                let s = textureSampleCompare(lighting_group_shadow_maps_view, lighting_group_shadow_maps_sampler, ShadowCoord.xy + vec2(f32(x), f32(y)) * texelSize, i, (shadow_pos.z) / shadow_pos.w - bias);
                 occlusion += 1.0 - s;
                 weight += 1.0;
             }
@@ -312,10 +277,14 @@ impl ForwardGeometryPass {
             .with_bind_group_layouts(vec![&view_proj_uniform_bgl])
             .build(
                 display.device(),
-                &create_shader::<
-                    (GlobalUniforms, ViewProjectionUniforms),
-                    (ModelVertexData, InstanceDataWithNormalMatrix),
-                >(display, "depth_only", DEPTH_ONLY_SHADER.to_string()),
+                &create_shader_ex!(display, {
+                    name => "depth_only",
+                    src => DEPTH_ONLY_SHADER.to_string(),
+                    inputs => (ModelVertexData, InstanceDataWithNormalMatrix),
+                    bind_groups => {
+                        view_proj_uniforms => UniformBuffer<ViewProjectionUniforms>,
+                    }
+                }),
             );
         let occlusion_map_layout = MaterialGroup::create_layout(display.device(), "occlusion map");
         let lighting_group = BindGroup::new(
@@ -337,11 +306,15 @@ impl ForwardGeometryPass {
             .with_bind_group_layouts(vec![&view_proj_uniform_bgl, lighting_group.layout()])
             .build(
                 display.device(),
-                &create_shader::<ViewProjectionUniforms, ModelVertexData>(
-                    display,
-                    "skybox",
-                    SKYBOX_SHADER.to_string(),
-                ),
+                &create_shader_ex!(display, {
+                    name => "skybox",
+                    src => SKYBOX_SHADER.to_string(),
+                    inputs => ModelVertexData,
+                    bind_groups => {
+                        view_proj_uniforms => UniformBuffer<ViewProjectionUniforms>,
+                        lighting_group => LightingGroup,
+                    }
+                }),
             );
         let view_proj_bind_group =
             create_uniform_bind_group(display.device(), ViewProjectionUniforms::default());
@@ -353,7 +326,7 @@ impl ForwardGeometryPass {
             })])
             .with_depth_stencil_state(depth_stencil_state)
             .with_bind_group_layouts(vec![
-                state.texture_array_bgl.as_ref().unwrap(),
+                &TextureArray::<'_>::create_layout(display.device(), "texture array"),
                 &global_uniform_bgl,
                 &view_proj_uniform_bgl,
                 lighting_group.layout(),
@@ -361,15 +334,18 @@ impl ForwardGeometryPass {
             ])
             .build(
                 display.device(),
-                &create_shader::<
-                    (
-                        GlobalUniforms,
-                        ViewProjectionUniforms,
-                        LightRaw,
-                        LightingUniformsRaw,
-                    ),
-                    (ModelVertexData, InstanceDataWithNormalMatrix),
-                >(display, "forward", FORWARD_LIGHTING_SHADER.to_string()),
+                &create_shader_ex!(display, {
+                    name => "forward",
+                    src => FORWARD_LIGHTING_SHADER.to_string(),
+                    inputs => (ModelVertexData, InstanceDataWithNormalMatrix),
+                    bind_groups => {
+                        texture_array => TextureBindingArray<128>,
+                        global_uniforms => UniformBuffer<GlobalUniforms>,
+                        view_proj_uniforms => UniformBuffer<ViewProjectionUniforms>,
+                        lighting_group => LightingGroup,
+                        occlusion_map => MaterialGroup,
+                    }
+                }),
             );
         let color_target = state.bind_texture(display, color_target);
 

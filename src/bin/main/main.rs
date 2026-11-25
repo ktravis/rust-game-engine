@@ -386,7 +386,8 @@ impl AppState for State {
                     position: vec3(0.0, -1.5, 0.0),
                     scale: vec3(20.0, 0.5, 20.0),
                     ..Default::default()
-                };
+                }
+                .as_mat4();
                 ObjectData {
                     mesh: self.cube_mesh.clone(),
                     texture: Some(self.cat_texture),
@@ -405,7 +406,7 @@ impl AppState for State {
                 scene.extend(self.cubes.iter().map(|t| {
                     ObjectData {
                         mesh: self.cube_mesh.clone(),
-                        transform: t.clone(),
+                        transform: t.as_mat4(),
                         normal_matrix: Mat3::from_mat4(view_projection.view * t.as_mat4())
                             .inverse()
                             .transpose(),
@@ -418,7 +419,8 @@ impl AppState for State {
                 let transform = Transform3D {
                     position: vec3(0.0, 0.0, 5.0),
                     ..Default::default()
-                };
+                }
+                .as_mat4();
                 let normal_matrix = Mat3::from_mat4(view_projection.view * transform.as_mat4())
                     .inverse()
                     .transpose();
@@ -438,7 +440,8 @@ impl AppState for State {
                     // position: vec3(0.0, 0.0, 5.0),
                     scale: vec3(0.02, 0.02, 0.02),
                     ..Default::default()
-                };
+                }
+                .as_mat4();
                 let normal_matrix = Mat3::from_mat4(view_projection.view * transform.as_mat4())
                     .inverse()
                     .transpose();
@@ -457,13 +460,7 @@ impl AppState for State {
 
         if ctx.input.debug.on && self.show_light_volumes {
             for light in &self.lights {
-                let transform =
-                    Transform3D::from_matrix(light.debug_transform(&self.camera.frustum()));
-                // transform: Mat4::from_scale_rotation_translation(
-                //     vec3(0.15, 0.15, 0.15),
-                //     Quat::from_rotation_arc(Vec3::Y, pos.normalize()),
-                //     pos,
-                // ) * Mat4::from_translation(Vec3::Y),
+                let transform = light.debug_transform(&self.camera.frustum());
                 let normal_matrix = Mat3::from_mat4(view_projection.view * transform.as_mat4());
                 scene.push(ObjectData {
                     mesh: self.cube_mesh.clone(),
@@ -509,15 +506,15 @@ impl AppState for State {
         });
 
         // Rotate spotlights
-        self.lights
-            .iter_mut()
-            .enumerate()
-            .for_each(|(i, light)| match &mut light.kind {
-                LightKind::Directional { .. } => todo!(),
-                LightKind::Spot { direction, .. } => {
-                    *direction = Mat3::from_rotation_y((i as f32 + 0.5) * 0.01) * *direction;
-                }
-            });
+        // self.lights
+        //     .iter_mut()
+        //     .enumerate()
+        //     .for_each(|(i, light)| match &mut light.kind {
+        //         LightKind::Directional { .. } => todo!(),
+        //         LightKind::Spot { direction, .. } => {
+        //             *direction = Mat3::from_rotation_y((i as f32 + 0.5) * 0.01) * *direction;
+        //         }
+        //     });
 
         self.forward_pass
             .lighting_group

@@ -1,7 +1,9 @@
+use bytemuck::Zeroable;
+use glam::Mat4;
 use wgpu::TextureUsages;
 
 use crate::{
-    define_bind_group,
+    create_shader_ex, define_bind_group,
     geom::{ModelVertexData, Point},
     renderer::{
         bindings::{
@@ -10,7 +12,6 @@ use crate::{
             ViewProjectionUniforms,
         },
         instance::InstanceDataWithNormalMatrix,
-        shader_type::{create_shader, GlobalUniforms},
         state::{ColorTarget, ModelData},
     },
 };
@@ -21,17 +22,6 @@ use super::{
 
 const GEOMETRY_SHADER: &'static str = crate::wgsl!(
     r#"
-@group(0) @binding(0)
-var t_diffuse: texture_2d<f32>;
-@group(0) @binding(1)
-var s_diffuse: sampler;
-
-@group(1) @binding(0)
-var<uniform> global_uniforms: GlobalUniforms;
-
-@group(2) @binding(0)
-var<uniform> view_proj_uniforms: ViewProjectionUniforms;
-
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) tex_coords: vec2<f32>,
@@ -51,7 +41,7 @@ fn vs_main(
     let model_view = (view_proj_uniforms.view * model_data.transform);
     let model_view_pos = model_view * vertex.position;
     out.clip_position = view_proj_uniforms.projection * model_view_pos;
-    out.view_space_normal = normalize(model_data.normal_matrix * vertex.normal);
+    out.view_space_normal = normalize(model_data.normal_matrix * vec4f(vertex.normal, 1.0)).xyz;
     out.view_pos = model_view_pos;
     out.tint_color = model_data.tint;
     return out;
@@ -71,7 +61,7 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
     var out: FragmentOutput;
     out.g_position = in.view_pos;
     out.g_normal = vec4(normalize(in.view_space_normal), 0.0);
-    out.g_albedo_spec = in.tint_color * textureSample(t_diffuse, s_diffuse, in.tex_coords);
+    out.g_albedo_spec = in.tint_color * textureSample(diffuse_view, diffuse_sampler, in.tex_coords);
     return out;
 }
 "#
@@ -122,10 +112,6 @@ impl GeometryPass {
             )
             .build(display.device(), size);
         let main_texture_bgl = MaterialGroup::create_layout(display.device(), "main texture");
-        let global_uniform_bgl = UniformBuffer::<GlobalUniforms>::create_layout(
-            display.device(),
-            "global uniform bg layout",
-        );
         let view_proj_uniform_bgl = UniformBuffer::<ViewProjectionUniforms>::create_layout(
             display.device(),
             "view proj uniform bg layout",
@@ -157,16 +143,23 @@ impl GeometryPass {
             }))
             .with_bind_group_layouts(vec![
                 &main_texture_bgl,
-                &global_uniform_bgl,
+                &GeometryBuffers::create_layout(display.device(), "geometry buffers"),
                 &view_proj_uniform_bgl,
             ])
             .with_immediate_size(std::mem::size_of::<ModelData>() as u32)
             .build(
                 display.device(),
-                &create_shader::<
-                    (GlobalUniforms, ViewProjectionUniforms, ModelData),
-                    ModelVertexData,
-                >(display, "geometry", GEOMETRY_SHADER.to_string()),
+                &create_shader_ex!(display, {
+                    name => "geometry",
+                    src => GEOMETRY_SHADER.to_string(),
+                    inputs => ModelVertexData,
+                    defs => [ModelData],
+                    bind_groups => {
+                        diffuse => MaterialGroup,
+                        g => GeometryBuffers,
+                        view_proj_uniforms => UniformBuffer<ViewProjectionUniforms>,
+                    }
+                }),
             );
         let bind_group = BindGroup::new(
             display.device(),
@@ -216,9 +209,7 @@ impl GeometryPass {
                     r.set_pipeline(&self.pipeline);
                     let default_texture = r.render_state.default_texture_bind_group().clone();
                     r.set_bind_group(0, &default_texture, &[]);
-                    let global_uniforms = r.render_state.global_uniforms.bind_group().clone();
-                    r.set_bind_group(1, &global_uniforms, &[]);
-                    r.set_bind_group(2, self.view_proj_bind_group.bind_group(), &[]);
+                    r.set_bind_group(1, self.view_proj_bind_group.bind_group(), &[]);
                     for render_data in scene {
                         let tex = default_texture.clone();
                         // TODO: update for bindless textures
@@ -235,12 +226,12 @@ impl GeometryPass {
                                 uv_offset: render_data.subtexture.pos,
                                 tint: render_data.tint.into(),
                                 transform: render_data.transform,
-                                normal_matrix: render_data.normal_matrix.into(),
+                                normal_matrix: Mat4::from_mat3(render_data.normal_matrix),
                                 material: render_data.material,
+                                ..Zeroable::zeroed()
                             }),
                         );
                         r.draw_scene_mesh(render_data.mesh.clone(), 0..1);
-                        // r.draw_mesh(render_data.mesh);
                     }
                 },
             )

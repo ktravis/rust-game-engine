@@ -1,8 +1,8 @@
 use glam::{vec2, Vec2, Vec3, Vec4};
-use shadertype_derive::{ShaderType, VertexInput};
+use shadertype_derive::{ShaderNamedType, VertexInput};
 
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, ShaderType, VertexInput)]
+#[derive(Debug, Default, Copy, Clone, ShaderNamedType, VertexInput)]
 pub struct ModelVertexData {
     pub position: Vec4,
     pub tex_coords: Vec2,

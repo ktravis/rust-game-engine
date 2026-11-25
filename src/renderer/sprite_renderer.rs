@@ -1,9 +1,10 @@
+use glam::Mat4;
+
 use crate::{
     geom::ModelVertexData,
     renderer::{
-        bindings::{Bindable, UniformBuffer},
+        bindings::{Bindable, MaterialGroup, UniformBuffer},
         instance::BasicInstanceData,
-        shader_type::create_shader,
         state::BoundTexture,
         Display, Pipeline, PipelineBuilder, RenderPass, RenderState, Texture,
         ViewProjectionUniforms,
@@ -17,11 +18,15 @@ pub struct SpriteRenderer {
 
 impl SpriteRenderer {
     pub fn new(state: &mut RenderState, display: &Display, sprite_atlas: Texture) -> Self {
-        let sprite_shader = &create_shader::<(), (ModelVertexData, BasicInstanceData)>(
-            display,
-            "sprites instanced",
-            SPRITE_SHADER.to_string(),
-        );
+        let sprite_shader = &create_shader_ex!(display, {
+            name => "sprites instanced",
+            src => SPRITE_SHADER.to_string(),
+            inputs => (ModelVertexData, BasicInstanceData),
+            bind_groups => {
+                diffuse => MaterialGroup,
+                projection => UniformBuffer<Mat4>,
+            }
+        });
         let sprite_atlas_texture = state.bind_texture(display, sprite_atlas);
         let view_proj_uniform_bgl = UniformBuffer::<ViewProjectionUniforms>::create_layout(
             display.device(),
@@ -55,13 +60,13 @@ impl SpriteRenderer {
 
 const SPRITE_SHADER: &'static str = crate::wgsl!(
     r#"
-@group(0) @binding(0)
-var t_diffuse: texture_2d<f32>;
-@group(0) @binding(1)
-var s_diffuse: sampler;
-
-@group(1) @binding(0)
-var<uniform> projection: mat4x4<f32>;
+// @group(0) @binding(0)
+// var t_diffuse: texture_2d<f32>;
+// @group(0) @binding(1)
+// var s_diffuse: sampler;
+//
+// @group(1) @binding(0)
+// var<uniform> projection: mat4x4<f32>;
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
@@ -92,7 +97,7 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return in.tint_color * textureSample(t_diffuse, s_diffuse, in.tex_coords);
+    return in.tint_color * textureSample(diffuse_view, diffuse_sampler, in.tex_coords);
 }
 "#
 );

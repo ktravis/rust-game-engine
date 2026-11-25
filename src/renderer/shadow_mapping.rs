@@ -6,7 +6,7 @@ use crate::{
             ViewProjectionUniforms,
         },
         instance::{InstanceDataWithNormalMatrix, ObjectData},
-        shader_type::{create_shader, GlobalUniforms},
+        shader_type::GlobalUniforms,
         state::{write_scene_draw_calls, BoundTexture, ColorTarget},
         PipelineBuilder,
     },
@@ -19,12 +19,6 @@ pub const MAX_LIGHTS: usize = 8;
 
 const SHADOW_MAPPING_SHADER: &'static str = crate::wgsl!(
     r#"
-@group(0) @binding(0)
-var<uniform> global_uniforms: GlobalUniforms;
-
-@group(1) @binding(0)
-var<uniform> view_proj_uniforms: ViewProjectionUniforms;
-
 @vertex
 fn vs_main(
     vertex: ModelVertexData,
@@ -150,10 +144,15 @@ impl ShadowMappingPass {
             .with_bind_group_layouts(vec![&global_uniform_bgl, &view_proj_uniform_bgl])
             .build(
                 display.device(),
-                &create_shader::<
-                    (GlobalUniforms, ViewProjectionUniforms),
-                    (ModelVertexData, InstanceDataWithNormalMatrix),
-                >(display, "shadow_map", SHADOW_MAPPING_SHADER.to_string()),
+                &create_shader_ex!(display, {
+                    name => "shadow_map",
+                    src => SHADOW_MAPPING_SHADER.to_string(),
+                    inputs => (ModelVertexData, InstanceDataWithNormalMatrix),
+                    bind_groups => {
+                        global_uniforms => UniformBuffer<GlobalUniforms>,
+                        view_proj_uniforms => UniformBuffer<ViewProjectionUniforms>,
+                    }
+                }),
             )
     }
 

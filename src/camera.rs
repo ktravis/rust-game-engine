@@ -1,4 +1,5 @@
 use glam::{vec3, vec4, Mat4, Vec3, Vec4, Vec4Swizzles};
+use shadertype_derive::shader_uniform_data;
 
 #[derive(Debug, Copy, Clone)]
 pub struct Camera {
@@ -131,7 +132,9 @@ impl Default for Camera {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default, bytemuck::Zeroable, bytemuck::Pod)]
+#[shader_uniform_data]
+#[repr(C)]
 pub struct Frustum {
     pub nlt: Vec4,
     pub nrt: Vec4,

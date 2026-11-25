@@ -1,14 +1,15 @@
 use crate::{
+    create_shader_ex, define_bind_group,
     geom::ModelVertexData,
     renderer::{
         bindings::{
-            create_uniform_bind_group, texture_bgl_entries, BindGroup, Bindable, UniformBindGroup,
-            UniformBuffer, ViewProjectionUniforms,
+            create_uniform_bind_group, texture_bgl_entries, BindGroup, Bindable, ComparisonSampler,
+            DepthTextureArrayView, MaterialGroup, UniformBindGroup, UniformBuffer,
+            ViewProjectionUniforms,
         },
         geometry::GeometryBuffers,
         instance::BasicInstanceData,
-        lighting::{LightRaw, LightingUniformsRaw},
-        shader_type::{create_shader, GlobalUniforms},
+        shader_type::GlobalUniforms,
         PipelineBuilder, TextureBuilder,
     },
 };
@@ -21,9 +22,9 @@ use super::{
 const DEFERRED_LIGHTING_SHADER: &'static str = crate::wgsl!(
     r#"
 @group(0) @binding(0)
-var t_diffuse: texture_2d<f32>;
+var diffuse_view: texture_2d<f32>;
 @group(0) @binding(1)
-var s_diffuse: sampler;
+var diffuse_sampler: sampler;
 
 @group(1) @binding(0)
 var<uniform> global_uniforms: GlobalUniforms;
@@ -60,39 +61,39 @@ fn vs_main(
 }
 
 @group(3) @binding(0)
-var g_position: texture_2d<f32>;
+var g_position_view: texture_2d<f32>;
 @group(3) @binding(1)
 var g_position_sampler: sampler;
 @group(3) @binding(2)
-var g_normal: texture_2d<f32>;
+var g_normal_view: texture_2d<f32>;
 @group(3) @binding(3)
 var g_normal_sampler: sampler;
 @group(3) @binding(4)
-var g_albedo_spec: texture_2d<f32>;
+var g_albedo_spec_view: texture_2d<f32>;
 @group(3) @binding(5)
 var g_albedo_spec_sampler: sampler;
 
 @group(4) @binding(0)
-var<uniform> lights: LightingUniformsRaw;
+var<uniform> lighting_lights: LightingUniformsRaw;
 @group(4) @binding(1)
-var shadow_map: texture_depth_2d_array;
+var lighting_shadow_maps_view: texture_depth_2d_array;
 @group(4) @binding(2)
-var shadow_map_sampler: sampler_comparison;
+var lighting_shadow_maps_sampler: sampler_comparison;
 
 const AMBIENT_LIGHT_FACTOR = vec3(0.5, 0.5, 0.5);
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let view_pos = textureSample(g_position, g_position_sampler, in.tex_coords);
-    let view_space_normal = textureSample(g_normal, g_normal_sampler, in.tex_coords);
-    let albedo_spec = in.tint_color * textureSample(g_albedo_spec, g_albedo_spec_sampler, in.tex_coords);
+    let view_pos = textureSample(g_position_view, g_position_sampler, in.tex_coords);
+    let view_space_normal = textureSample(g_normal_view, g_normal_sampler, in.tex_coords);
+    let albedo_spec = in.tint_color * textureSample(g_albedo_spec_view, g_albedo_spec_sampler, in.tex_coords);
 
     // let view_pos = view_proj_uniforms.view * world_pos;
 
     var specular = vec4(0.0, 0.0, 0.0, 0.0);
     var diffuse = vec4(0.0, 0.0, 0.0, 0.0);
-    var total_light = vec4(clamp(textureSample(t_diffuse, s_diffuse, in.tex_coords).r, 0.0, 1.0));
-    // let ao = textureSample(t_diffuse, s_diffuse, in.tex_coords).r;
+    var total_light = vec4(clamp(textureSample(diffuse_view, diffuse_sampler, in.tex_coords).r, 0.0, 1.0));
+    // let ao = textureSample(diffuse_view, diffuse_sampler, in.tex_coords).r;
     // var total_light = vec4(0.8) * (1.0 - ao);
 
     for (var i = 0u; i < lights.count; i++) {
@@ -115,14 +116,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // } else {
         //     let light_coords = shadow_pos.xy * flip_correction * proj_correction + vec2<f32>(0.5, 0.5);
         //     let bias = max(lights.shadow_bias_factor * (1.0 - dot(view_space_normal.xyz, light_dir_v)), lights.shadow_bias_minimum);
-        //     // shadow = textureSampleCompare(shadow_map, shadow_map_sampler, light_coords, i, shadow_pos.z * proj_correction - bias);
+        //     // shadow = textureSampleCompare(shadow_maps_view, shadow_maps_sampler, light_coords, i, shadow_pos.z * proj_correction - bias);
         //
-        //     let dim = textureDimensions(shadow_map);
+        //     let dim = textureDimensions(shadow_maps_view);
         //     let texelSize = 1.0 / vec2(f32(dim.x), f32(dim.y));
         //     var weight = 0.0;
         //     for (var x = -lights.shadow_blur_half_kernel_size; x <= lights.shadow_blur_half_kernel_size; x++) {
         //         for (var y = -lights.shadow_blur_half_kernel_size; y <= lights.shadow_blur_half_kernel_size; y++) {
-        //             shadow += textureSampleCompare(shadow_map, shadow_map_sampler, light_coords + vec2(f32(x), f32(y)) * texelSize, i, shadow_pos.z * proj_correction - bias);
+        //             shadow += textureSampleCompare(shadow_maps_view, shadow_maps_sampler, light_coords + vec2(f32(x), f32(y)) * texelSize, i, shadow_pos.z * proj_correction - bias);
         //             weight += 1.0;
         //         }
         //     }
@@ -146,6 +147,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#
 );
+
+define_bind_group! {
+    pub LightingGroup {
+        pub lights: UniformBuffer<LightsUniform>,
+        pub shadow_maps_view: DepthTextureArrayView,
+        pub shadow_maps_sampler: ComparisonSampler,
+    }
+}
 
 pub struct LightingPass {
     pipeline: Pipeline<(ModelVertexData, BasicInstanceData)>,
@@ -184,19 +193,18 @@ impl LightingPass {
             .with_depth_stencil_state(None)
             .build(
                 display.device(),
-                &create_shader::<
-                    (
-                        GlobalUniforms,
-                        ViewProjectionUniforms,
-                        LightRaw,
-                        LightingUniformsRaw,
-                    ),
-                    (ModelVertexData, BasicInstanceData),
-                >(
-                    display,
-                    "deferred_lighting",
-                    DEFERRED_LIGHTING_SHADER.to_string(),
-                ),
+                &create_shader_ex!(display, {
+                    name => "deferred_lighting",
+                    src => DEFERRED_LIGHTING_SHADER.to_string(),
+                    inputs => (ModelVertexData, BasicInstanceData),
+                    bind_groups => {
+                        diffuse => MaterialGroup,
+                        global_uniforms => UniformBuffer<GlobalUniforms>,
+                        view_proj_uniforms => UniformBuffer<ViewProjectionUniforms>,
+                        g => GeometryBuffers,
+                        lighting => LightingGroup,
+                    }
+                }),
             );
         let view_proj_bind_group =
             create_uniform_bind_group(display.device(), ViewProjectionUniforms::default());

@@ -32,6 +32,7 @@
           pkg-config
           gdb
           renderdoc
+          cargo-flamegraph
         ];
         # };
         # commonArgs = {
